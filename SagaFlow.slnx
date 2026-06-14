@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/SagaFlow.SimpleShopping/SagaFlow.SimpleShopping.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/SagaFlow.Hosting/SagaFlow.Hosting.csproj" />
+    <Project Path="src/SagaFlow.Core/SagaFlow.Core.csproj" />
+    <Project Path="src/SagaFlow.Dashboard/SagaFlow.Dashboard.csproj" />
+    <Project Path="src/SagaFlow.Engine/SagaFlow.Engine.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SagaFlow.Hosting.Tests/SagaFlow.Hosting.Tests.csproj" />
+    <Project Path="tests/SagaFlow.Core.Tests/SagaFlow.Core.Tests.csproj" />
+    <Project Path="tests/SagaFlow.Engine.Tests/SagaFlow.Engine.Tests.csproj" />
+  </Folder>
+</Solution>

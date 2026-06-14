@@ -1,0 +1,17 @@
+name: purchase-process
+description: Placeholder purchase flow for the SagaFlow.SimpleShopping sample.
+steps:
+  - name: reserve-inventory
+    command: ReserveInventory
+    successEvent: InventoryReserved
+    failureEvent: InventoryReservationFailed
+    compensationCommand: ReleaseInventory
+  - name: authorize-payment
+    command: AuthorizePayment
+    successEvent: PaymentAuthorized
+    failureEvent: PaymentAuthorizationFailed
+    compensationCommand: RefundPayment
+  - name: create-shipment
+    command: CreateShipment
+    successEvent: ShipmentCreated
+    failureEvent: ShipmentCreationFailed
