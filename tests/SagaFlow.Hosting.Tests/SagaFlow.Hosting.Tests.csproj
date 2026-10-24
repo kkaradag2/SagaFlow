@@ -22,6 +22,13 @@
     <ProjectReference Include="..\..\src\SagaFlow.Hosting\SagaFlow.Hosting.csproj" />
     <ProjectReference Include="..\..\src\SagaFlow.Engine\SagaFlow.Engine.csproj" />
     <ProjectReference Include="..\..\src\SagaFlow.Core\SagaFlow.Core.csproj" />
+    <ProjectReference Include="..\..\samples\SagaFlow.SimpleShopping\SagaFlow.SimpleShopping.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
+  <Target Name="CopyDiscoveryProcessFixture" AfterTargets="Build">
+    <ItemGroup>
+      <DiscoveryProcessFixture Include="$(MSBuildProjectDirectory)\..\..\samples\SagaFlow.SimpleShopping\bin\$(Configuration)\$(TargetFramework)\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(DiscoveryProcessFixture)" DestinationFiles="@(DiscoveryProcessFixture->'$(OutDir)DiscoveryProcessFixture\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
 </Project>

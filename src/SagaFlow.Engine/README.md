@@ -1,6 +1,8 @@
 # SagaFlow.Engine
 
-Local saga orchestration skeleton aligned with the first five thesis feature groups:
+The process-definition foundation now parses and validates YAML, maintains immutable registry snapshots, and builds bounded Big-Picture definition graphs through an abstract remote client. See [definition documentation](../../docs/yaml-definition-discovery.md).
+
+Runtime orchestration remains a skeleton aligned with these thesis feature groups:
 
 - Declarative Process Definition
 - Local Coordination
