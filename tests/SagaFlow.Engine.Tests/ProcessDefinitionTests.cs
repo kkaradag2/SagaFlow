@@ -95,7 +95,7 @@ public sealed class ProcessDefinitionTests
     [Theory]
     [InlineData("result.available == true", true, true)]
     [InlineData(" result.available != false ", false, false)]
-    [InlineData("data.nested.value == false", true, false)]
+    [InlineData("result.nested.value == false", true, false)]
     public void ConditionGrammarProducesReusableSyntax(string text, bool equality, bool value)
     {
         var condition = ConditionParser.Parse(text);

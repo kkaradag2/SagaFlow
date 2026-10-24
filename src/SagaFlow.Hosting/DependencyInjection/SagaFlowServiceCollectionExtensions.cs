@@ -5,6 +5,9 @@ using SagaFlow.Engine.ProcessDefinition;
 using SagaFlow.Engine.Discovery;
 using SagaFlow.Hosting.Definitions;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using SagaFlow.Engine.ContextState;
+using SagaFlow.Engine.Messaging;
+using SagaFlow.Engine.Persistence.InMemory;
 
 namespace SagaFlow.Hosting.DependencyInjection;
 
@@ -27,7 +30,16 @@ public static class SagaFlowServiceCollectionExtensions
 
         services.AddSingleton(options);
         services.TryAddSingleton<ISagaDefinitionLoader, YamlSagaDefinitionLoader>();
-        services.AddSingleton<SagaCoordinator>();
+        services.TryAddSingleton<ISagaStateStore, InMemorySagaStateStore>();
+        services.TryAddSingleton<ISagaClock, SystemSagaClock>();
+        services.AddSingleton<TransitionResolver>();
+        services.AddSingleton<ProcessStateManager>();
+        services.AddScoped<SagaInstanceManager>();
+        services.AddScoped<CommandDispatcher>();
+        services.AddScoped<SagaStepExecutor>();
+        services.AddScoped<SagaCoordinator>();
+        services.AddScoped<ISagaFlow>(provider => provider.GetRequiredService<SagaCoordinator>());
+        services.AddScoped<OutcomeEventReceiver>();
         services.AddSingleton<ProcessDefinitionRegistry>();
         services.AddSingleton(publication);
         services.AddSingleton<DefinitionEndpointMapping>();

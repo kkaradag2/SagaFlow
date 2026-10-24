@@ -10,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using SagaFlow.Core.Definitions;
+using SagaFlow.Core.Abstractions;
 using SagaFlow.Engine.Coordination;
 using SagaFlow.Engine.Discovery;
 using SagaFlow.Engine.ProcessDefinition;
@@ -279,6 +280,8 @@ public sealed class DefinitionDiscoveryIntegrationTests
                 foreach (var source in references ?? []) options.Discovery.AllowedEndpoints.Add(source.Endpoint);
             });
             builder.Services.RemoveAll<SagaCoordinator>();
+            builder.Services.RemoveAll<ISagaFlow>();
+            builder.Services.RemoveAll<SagaFlow.Engine.Messaging.OutcomeEventReceiver>();
             var app = builder.Build();
             if (publish) app.MapSagaFlowDefinitionDiscovery();
             await app.StartAsync();
