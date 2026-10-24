@@ -31,8 +31,61 @@ public sealed class DefinitionGraphValidationTests
     [Fact]
     public void SelfLoopWithoutExitIsRejected() => Assert.Throws<DefinitionValidationException>(() => Validate([Step("first", "first")]));
 
+    [Theory]
+    [InlineData("completed", false)]
+    [InlineData("completed", true)]
+    [InlineData("compensation", false)]
+    [InlineData("compensation", true)]
+    public void CycleWithTerminalExitIsRejected(string terminal, bool reverseOrder)
+    {
+        var steps = new[] { Step("first", "second"), Step("second", "first", terminal) };
+        var error = Assert.Throws<DefinitionValidationException>(() => Validate(reverseOrder ? steps.Reverse().ToArray() : steps));
+        Assert.Contains("first -> second -> first", error.Message);
+    }
+
     [Fact]
-    public void CycleWithTerminalExitIsAllowed() => Validate([Step("first", "second"), Step("second", "first", "completed")]);
+    public void SelfLoopWithTerminalExitIsRejectedWithItsName()
+    {
+        var error = Assert.Throws<DefinitionValidationException>(() => Validate([Step("first", "first", "completed")]));
+        Assert.Contains("first -> first", error.Message);
+    }
+
+    [Fact]
+    public void ThreeStepCycleIsRejectedWithAllParticipants()
+    {
+        var error = Assert.Throws<DefinitionValidationException>(() => Validate(
+            [Step("third", "first", "compensation"), Step("first", "second"), Step("second", "third")]));
+        Assert.Contains("first -> second -> third -> first", error.Message);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ConditionalDiamondCanConvergeWithoutCreatingACycle(bool reverseOrder)
+    {
+        var steps = new[]
+        {
+            new SagaStepDefinition { Name = "first", Command = "Choose", Transitions =
+                [new() { Event = "success", When = "result.ready == true", NextStep = "left" },
+                 new() { Event = "success", Else = true, NextStep = "right" }] },
+            Step("left", "join"), Step("right", "join"), Step("join", "completed", "compensation")
+        };
+        Validate(reverseOrder ? steps.Reverse().ToArray() : steps);
+    }
+
+    [Fact]
+    public void ConditionalBranchesCanTerminateIndependently() => Validate(
+        [new() { Name = "first", Command = "Choose", Transitions =
+            [new() { Event = "success", When = "result.ready == true", NextStep = "left" },
+             new() { Event = "success", Else = true, NextStep = "right" }] },
+         Step("left", "completed"), Step("right", "compensation")]);
+
+    [Fact]
+    public void UnreachableFallbackDoesNotCreateAFalseCycle() => Validate(
+        [new() { Name = "first", Command = "Choose", Transitions =
+            [new() { Event = "success", When = "result.ready == true", NextStep = "completed" },
+             new() { Event = "success", When = "result.ready == false", NextStep = "compensation" },
+             new() { Event = "success", Else = true, NextStep = "first" }] }]);
 
     [Theory]
     [InlineData("completed")]

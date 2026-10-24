@@ -39,7 +39,7 @@ public sealed class TriggerInitialStepTests
     [InlineData("initialStep: payment", "", "initialStep")]
     public void MissingOrInvalidStartFieldsAreRejectedWithoutInferringListOrder(string before, string after, string expected)
     {
-        var error = Assert.Throws<DefinitionValidationException>(() => new DefinitionYamlCodec().Parse(Yaml.Replace(before, after)));
+        var error = Assert.Throws<DefinitionValidationException>(() => new DefinitionYamlCodec().Parse(Yaml.ReplaceLineEndings("\n").Replace(before, after)));
         Assert.Contains(expected, error.Message);
     }
 }

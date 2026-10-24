@@ -46,8 +46,13 @@ public sealed partial class ProcessDefinitionValidator
                 BooleanCondition? condition = null;
                 if (transition.When is not null)
                 {
-                    try { condition = ConditionParser.Parse(transition.When); }
-                    catch (FormatException ex) { Check(false, $"{prefix}, event '{transition.Event}': {ex.Message}"); }
+                    try
+                    {
+                        condition = ConditionParser.Parse(transition.When);
+                        Check(condition.PropertyPath.StartsWith("result.", StringComparison.Ordinal),
+                            $"{prefix}, event '{transition.Event}': invalid condition '{transition.When}'; property path must start with 'result.'.");
+                    }
+                    catch (FormatException ex) { Check(false, $"{prefix}, event '{transition.Event}': invalid condition '{transition.When}'; {ex.Message}"); }
                 }
                 rules.Add((transition, condition));
             }
@@ -96,6 +101,27 @@ public sealed partial class ProcessDefinitionValidator
 
         foreach (var name in steps.Keys.Except(reachable, StringComparer.Ordinal))
             check(false, $"step '{name}' is unreachable from initialStep '{definition.InitialStep}'.");
+
+        // Gray nodes are on the active DFS path; black nodes may safely be shared by DAG branches.
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var active = new HashSet<string>(StringComparer.Ordinal);
+        var path = new List<string>();
+        void Visit(string name)
+        {
+            visited.Add(name);
+            active.Add(name);
+            path.Add(name);
+            foreach (var target in edges[name])
+            {
+                if (!steps.ContainsKey(target)) continue; // Reserved terminals are not executable nodes.
+                if (active.Contains(target))
+                    check(false, $"executable step cycle detected: {string.Join(" -> ", path.Skip(path.IndexOf(target)).Append(target))}; each step may execute only once per Saga instance.");
+                else if (!visited.Contains(target)) Visit(target);
+            }
+            path.RemoveAt(path.Count - 1);
+            active.Remove(name);
+        }
+        Visit(definition.InitialStep);
 
         var predecessors = steps.Keys.ToDictionary(name => name, _ => new List<string>(), StringComparer.Ordinal);
         var terminalViable = new HashSet<string>(StringComparer.Ordinal);

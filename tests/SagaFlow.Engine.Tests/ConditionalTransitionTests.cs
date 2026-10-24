@@ -5,6 +5,31 @@ namespace SagaFlow.Engine.Tests;
 
 public sealed class ConditionalTransitionTests
 {
+    [Theory]
+    [InlineData("data.ready == true")]
+    [InlineData("context.ready == true")]
+    [InlineData("ready == true")]
+    [InlineData("result == true")]
+    [InlineData("Result.ready == true")]
+    public void YamlRejectsUnsupportedRootsWithProcessStepAndCondition(string expression)
+    {
+        var codec = new DefinitionYamlCodec();
+        var yaml = codec.Serialize(Definition([Conditional("result.ready == true"), Fallback()]))
+            .Replace("result.ready == true", expression, StringComparison.Ordinal);
+        var error = Assert.Throws<DefinitionValidationException>(() => codec.Parse(yaml));
+        Assert.Contains("order/order@1.0", error.Message);
+        Assert.Contains("step 'work'", error.Message);
+        Assert.Contains(expression, error.Message);
+    }
+
+    [Fact]
+    public void ParserOnlyChecksSyntaxWhileDefinitionValidatorEnforcesRuntimeRoot()
+    {
+        Assert.Equal("data.ready", ConditionParser.Parse("data.ready == true").PropertyPath);
+        var error = Assert.Throws<DefinitionValidationException>(() => Validate([Conditional("data.ready == true"), Fallback()]));
+        Assert.Contains("must start with 'result.'", error.Message);
+    }
+
     public static TheoryData<string, string> ExclusiveConditions => new()
     {
         { "result.available == true", "result.available == false" },
