@@ -1,0 +1,31 @@
+syntax = "proto3";
+package sagaflow.definitions.v1;
+option csharp_namespace = "SagaFlow.Hosting.Grpc.V1";
+
+// Visibility only. No execution or orchestration RPCs.
+service ProcessDefinitions {
+  rpc ListDefinitions (ListDefinitionsRequest) returns (ListDefinitionsResponse);
+  rpc GetDefinition (GetDefinitionRequest) returns (DefinitionEnvelope);
+}
+message ListDefinitionsRequest {}
+message ProcessIdentity {
+  string domain = 1;
+  string process = 2;
+  string version = 3;
+}
+message ListDefinitionsResponse {
+  uint32 protocol_version = 1;
+  repeated ProcessIdentity definitions = 2;
+}
+message GetDefinitionRequest {
+  string domain = 1;
+  string process = 2;
+  // Empty means resolve only if exactly one published version exists.
+  string version = 3;
+}
+message DefinitionEnvelope {
+  uint32 protocol_version = 1;
+  ProcessIdentity identity = 2;
+  // Canonical public YAML; physical paths are never included.
+  string canonical_yaml = 3;
+}

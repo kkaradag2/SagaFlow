@@ -4,7 +4,7 @@ SagaFlow.Net is a lightweight .NET library and embedded dashboard for defining, 
 
 SagaFlow.Net is developed as the software artifact of the thesis titled "A Local-Orchestration-Based Reference Architecture for Hybrid Saga Coordination in Microservice Architectures."
 
-Current status: Initial skeleton / research prototype.
+Current status: YAML process definition loading/validation and optional gRPC Big-Picture definition discovery are implemented. Runtime Saga execution remains a research scaffold. See [the definition contract, hosting instructions, and runnable discovery demonstration](docs/yaml-definition-discovery.md).
 
 SagaFlow does not require a separately deployed orchestration server. The engine is embedded into the domain starter microservice through the hosting integration.
 
