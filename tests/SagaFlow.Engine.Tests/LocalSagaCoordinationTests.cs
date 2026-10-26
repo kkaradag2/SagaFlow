@@ -154,7 +154,7 @@ public sealed class LocalSagaCoordinationTests
         var outcome = fixture.Outcome(fixture.Bus.Commands.Single());
         await fixture.Receiver.ReceiveAsync(outcome);
         var before = await fixture.State(id);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Receiver.ReceiveAsync(outcome));
+        await Assert.ThrowsAsync<DuplicateSagaOutcomeException>(() => fixture.Receiver.ReceiveAsync(outcome));
         var after = await fixture.State(id);
         Assert.Equal(before.Revision, after.Revision);
         Assert.Equal(2, fixture.Bus.Commands.Count);
@@ -168,7 +168,7 @@ public sealed class LocalSagaCoordinationTests
         var outcome = fixture.Outcome(fixture.Bus.Commands.Single(), success: false);
         await fixture.Receiver.ReceiveAsync(outcome);
         var before = await fixture.State(id);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Receiver.ReceiveAsync(outcome));
+        await Assert.ThrowsAsync<DuplicateSagaOutcomeException>(() => fixture.Receiver.ReceiveAsync(outcome));
         Assert.Equal(before.Revision, (await fixture.State(id)).Revision);
         Assert.Single(fixture.Bus.Commands);
     }
@@ -193,8 +193,7 @@ public sealed class LocalSagaCoordinationTests
             }
         };
         var before = await fixture.State(id);
-        if (mismatch == "instance") await Assert.ThrowsAsync<KeyNotFoundException>(() => fixture.Receiver.ReceiveAsync(invalid));
-        else await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Receiver.ReceiveAsync(invalid));
+        await Assert.ThrowsAsync<InvalidSagaOutcomeException>(() => fixture.Receiver.ReceiveAsync(invalid));
         Assert.Equal(before.Revision, (await fixture.State(id)).Revision);
         Assert.Single(fixture.Bus.Commands);
     }
@@ -244,6 +243,39 @@ public sealed class LocalSagaCoordinationTests
     }
 
     [Fact]
+    public async Task PublicationFailureDoesNotMakeALateOutcomeDuplicateOrChangeTerminalState()
+    {
+        var fixture = new CoordinationTestFixture(CoordinationTestFixture.Linear());
+        fixture.Bus.OnPublish = (_, _) => ValueTask.FromException(new IOException("transport unavailable"));
+        var dispatchError = await Assert.ThrowsAsync<SagaDispatchException>(
+            () => fixture.Coordinator.StartAsync("payload"));
+        var before = (await fixture.Store.FindAsync(dispatchError.InstanceId))!;
+        var outcome = new SagaOutcomeEvent
+        {
+            IsSuccess = true,
+            Headers = new()
+            {
+                SagaInstanceId = before.Id,
+                CorrelationId = before.CorrelationId,
+                StepId = dispatchError.StepId
+            },
+            Result = System.Text.Json.JsonSerializer.SerializeToElement(new { accepted = true })
+        };
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => fixture.Receiver.ReceiveAsync(outcome));
+
+        Assert.Contains("publication failed", error.Message);
+        var after = (await fixture.Store.FindAsync(dispatchError.InstanceId))!;
+        Assert.Equal(before.Revision, after.Revision);
+        Assert.Equal(SagaStatus.Failed, after.Status);
+        Assert.Null(after.CurrentStep);
+        var step = after.Steps.Single(candidate => candidate.StepId == dispatchError.StepId);
+        Assert.Equal(SagaStepStatus.Failed, step.Status);
+        Assert.Null(step.Result);
+    }
+
+    [Fact]
     public async Task MissingTransportFailsExplicitlyWithoutPretendingToPublish()
     {
         var fixture = new CoordinationTestFixture(CoordinationTestFixture.Linear());
@@ -263,7 +295,7 @@ public sealed class LocalSagaCoordinationTests
         var attempts = await Task.WhenAll(Enumerable.Range(0, 30).Select(_ => Task.Run(async () =>
         {
             try { await fixture.Receiver.ReceiveAsync(outcome); return true; }
-            catch (InvalidOperationException) { return false; }
+            catch (DuplicateSagaOutcomeException) { return false; }
         })));
         Assert.Equal(1, attempts.Count(success => success));
         Assert.Equal(2, fixture.Bus.Commands.Count);
