@@ -155,17 +155,7 @@ public sealed class LocalSagaCoordinationHostingTests
         name: purchase
         version: "1.0"
         domain: order
-        trigger:
-          event: OrderCreated
-        initialStep: pay
         steps:
-          - name: ship
-            command: CreateShipment
-            transitions:
-              - event: success
-                nextStep: completed
-              - event: failure
-                nextStep: compensation
           - name: pay
             command: AuthorizePayment
             compensation:
@@ -173,6 +163,13 @@ public sealed class LocalSagaCoordinationHostingTests
             transitions:
               - event: success
                 nextStep: ship
+              - event: failure
+                nextStep: compensation
+          - name: ship
+            command: CreateShipment
+            transitions:
+              - event: success
+                nextStep: completed
               - event: failure
                 nextStep: compensation
         """;

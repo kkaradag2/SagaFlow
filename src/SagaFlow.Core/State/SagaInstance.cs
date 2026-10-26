@@ -10,7 +10,6 @@ public sealed class SagaInstance
 
     public string DefinitionDomain { get; init; } = string.Empty;
     public string DefinitionVersion { get; init; } = string.Empty;
-    public string TriggerEvent { get; init; } = string.Empty;
     public string CorrelationId { get; init; } = string.Empty;
     public string? CurrentStep { get; set; }
     public JsonElement Context { get; set; } = JsonSerializer.SerializeToElement<object?>(null);

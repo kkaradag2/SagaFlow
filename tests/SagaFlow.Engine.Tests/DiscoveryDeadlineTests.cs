@@ -107,7 +107,7 @@ public sealed class DiscoveryDeadlineTests
         new(1, name, name, "1.0", new DefinitionYamlCodec().Serialize(Definition(name, sources)));
     private static SagaDefinition Definition(string name, BigPictureSourceDefinition[]? sources = null) => new()
     {
-        Name = name, Domain = name, Version = "1.0", Trigger = new() { Event = "Created" }, InitialStep = "work", BigPicture = sources ?? [],
+        Name = name, Domain = name, Version = "1.0", BigPicture = sources ?? [],
         Steps = [new() { Name = "work", Command = "Work", Transitions = [new() { Event = "success", NextStep = "completed" }] }]
     };
     private sealed class Client(Func<BigPictureSourceDefinition, CancellationToken, Task<RemoteDefinitionEnvelope>> get) : IRemoteDefinitionClient

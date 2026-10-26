@@ -6,8 +6,8 @@ namespace SagaFlow.Engine.Tests;
 public sealed class DefinitionGraphValidationTests
 {
     [Fact]
-    public void LinearFlowIsReachableFromExplicitInitialStepEvenWhenListedLast() => Validate(
-        [Step("second", "completed"), Step("first", "second")], "first");
+    public void LinearFlowStartsFromFirstListedStep() => Validate(
+        [Step("first", "second"), Step("second", "completed")]);
 
     [Fact]
     public void BranchingFlowCanTerminateThroughEitherReservedTarget() => Validate(
@@ -32,14 +32,12 @@ public sealed class DefinitionGraphValidationTests
     public void SelfLoopWithoutExitIsRejected() => Assert.Throws<DefinitionValidationException>(() => Validate([Step("first", "first")]));
 
     [Theory]
-    [InlineData("completed", false)]
-    [InlineData("completed", true)]
-    [InlineData("compensation", false)]
-    [InlineData("compensation", true)]
-    public void CycleWithTerminalExitIsRejected(string terminal, bool reverseOrder)
+    [InlineData("completed")]
+    [InlineData("compensation")]
+    public void CycleWithTerminalExitIsRejected(string terminal)
     {
         var steps = new[] { Step("first", "second"), Step("second", "first", terminal) };
-        var error = Assert.Throws<DefinitionValidationException>(() => Validate(reverseOrder ? steps.Reverse().ToArray() : steps));
+        var error = Assert.Throws<DefinitionValidationException>(() => Validate(steps));
         Assert.Contains("first -> second -> first", error.Message);
     }
 
@@ -54,14 +52,12 @@ public sealed class DefinitionGraphValidationTests
     public void ThreeStepCycleIsRejectedWithAllParticipants()
     {
         var error = Assert.Throws<DefinitionValidationException>(() => Validate(
-            [Step("third", "first", "compensation"), Step("first", "second"), Step("second", "third")]));
+            [Step("first", "second"), Step("second", "third"), Step("third", "first", "compensation")]));
         Assert.Contains("first -> second -> third -> first", error.Message);
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void ConditionalDiamondCanConvergeWithoutCreatingACycle(bool reverseOrder)
+    [Fact]
+    public void ConditionalDiamondCanConvergeWithoutCreatingACycle()
     {
         var steps = new[]
         {
@@ -70,7 +66,7 @@ public sealed class DefinitionGraphValidationTests
                  new() { Event = "success", Else = true, NextStep = "right" }] },
             Step("left", "join"), Step("right", "join"), Step("join", "completed", "compensation")
         };
-        Validate(reverseOrder ? steps.Reverse().ToArray() : steps);
+        Validate(steps);
     }
 
     [Fact]
@@ -93,7 +89,7 @@ public sealed class DefinitionGraphValidationTests
     public void SingleStepWithDirectTerminalOutcomeIsValid(string target) => Validate([Step("first", target)]);
 
     [Fact]
-    public void InvalidInitialStepIsRejected() => Assert.Throws<DefinitionValidationException>(() => Validate([Step("first", "completed")], "unknown"));
+    public void EmptyStepsAreRejected() => Assert.Throws<DefinitionValidationException>(() => Validate([]));
 
     [Fact]
     public void ClosedBranchIsRejectedEvenWhenAnotherBranchCanComplete()
@@ -124,6 +120,6 @@ public sealed class DefinitionGraphValidationTests
             : [new() { Event = "success", NextStep = successTarget }, new() { Event = "failure", NextStep = failureTarget }]
     };
 
-    private static void Validate(SagaStepDefinition[] steps, string initialStep = "first") => new ProcessDefinitionValidator().Validate(new()
-    { Name = "process", Domain = "domain", Version = "1.0", Trigger = new() { Event = "Created" }, InitialStep = initialStep, Steps = steps });
+    private static void Validate(SagaStepDefinition[] steps) => new ProcessDefinitionValidator().Validate(new()
+    { Name = "process", Domain = "domain", Version = "1.0", Steps = steps });
 }

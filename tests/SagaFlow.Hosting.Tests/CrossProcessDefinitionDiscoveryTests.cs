@@ -19,7 +19,6 @@ public sealed class CrossProcessDefinitionDiscoveryTests
             var published = new SagaDefinition
             {
                 Domain = "order", Name = "purchase-process", Version = "1.0",
-                Trigger = new() { Event = "OrderCreated" }, InitialStep = "payment",
                 Steps = [new() { Name = "payment", Command = "AuthorizePayment", Transitions = [new() { Event = "success", NextStep = "completed" }] }],
                 BigPicture = [new() { Domain = "fulfillment", Process = "fulfillment-process", Version = "1.0", Endpoint = catalog.Endpoint }]
             };
@@ -34,15 +33,14 @@ public sealed class CrossProcessDefinitionDiscoveryTests
             Assert.Equal(1, envelope.ProtocolVersion);
             Assert.Equal(("order", "purchase-process", "1.0"), (envelope.Domain, envelope.Process, envelope.Version));
             var retrieved = new DefinitionYamlCodec().Parse(envelope.CanonicalYaml);
-            Assert.Equal("OrderCreated", retrieved.Trigger.Event);
-            Assert.Equal("payment", retrieved.InitialStep);
+            Assert.Equal("payment", retrieved.Steps[0].Name);
             var relationship = Assert.Single(retrieved.BigPicture);
             Assert.Equal(("fulfillment", "fulfillment-process", "1.0", catalog.Endpoint),
                 (relationship.Domain, relationship.Process, relationship.Version, relationship.Endpoint));
 
             var root = new SagaDefinition
             {
-                Domain = "visibility", Name = "visibility-process", Version = "1.0", Trigger = new() { Event = "Requested" }, InitialStep = "view",
+                Domain = "visibility", Name = "visibility-process", Version = "1.0",
                 Steps = [new() { Name = "view", Command = "View", Transitions = [new() { Event = "success", NextStep = "completed" }] }], BigPicture = [source]
             };
             var registry = new ProcessDefinitionRegistry();

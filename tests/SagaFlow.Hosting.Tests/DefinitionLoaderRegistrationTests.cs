@@ -41,7 +41,7 @@ public sealed class DefinitionLoaderRegistrationTests
             Assert.Equal(directoryMode ? new[] { "a.yaml", "b.yml" } : new[] { "a.yaml" }, loader.Paths.Select(Path.GetFileName));
             Assert.All(app.Services.GetRequiredService<ProcessDefinitionRegistry>().Snapshot(), registered =>
             {
-                Assert.Equal("Decorated", registered.Definition.Trigger.Event);
+                Assert.Equal("work", registered.Definition.Steps[0].Name);
                 Assert.Equal(DefinitionOrigin.Local, registered.Origin);
             });
             await app.StopAsync();
@@ -53,9 +53,6 @@ public sealed class DefinitionLoaderRegistrationTests
         name: {{name}}
         version: "1.0"
         domain: order
-        trigger:
-          event: Created
-        initialStep: work
         steps:
           - name: work
             command: Work
@@ -73,8 +70,8 @@ public sealed class DefinitionLoaderRegistrationTests
             var parsed = await new YamlSagaDefinitionLoader().LoadAsync(path, cancellationToken);
             return new()
             {
-                Name = parsed.Name, Domain = parsed.Domain, Version = parsed.Version, InitialStep = parsed.InitialStep,
-                Trigger = new() { Event = "Decorated" }, Steps = parsed.Steps, BigPicture = parsed.BigPicture
+                Name = parsed.Name, Domain = parsed.Domain, Version = parsed.Version,
+                Steps = parsed.Steps, BigPicture = parsed.BigPicture
             };
         }
     }

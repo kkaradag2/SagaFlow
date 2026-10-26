@@ -10,12 +10,32 @@ namespace SagaFlow.Engine.Tests;
 
 public sealed class LocalSagaCoordinationTests
 {
+    [Fact]
+    public async Task StartsFromTheFirstListedStep()
+    {
+        var definition = new SagaDefinition
+        {
+            Domain = "domain", Name = "process", Version = "1.0",
+            Steps =
+            [
+                new() { Name = "second", Command = "SecondCommand", Transitions = [new() { Event = "success", NextStep = "first" }] },
+                new() { Name = "first", Command = "FirstCommand", Transitions = [new() { Event = "success", NextStep = "completed" }] }
+            ]
+        };
+        var fixture = new CoordinationTestFixture(definition);
+
+        var id = await fixture.Coordinator.StartAsync("payload");
+
+        Assert.Equal("second", (await fixture.State(id)).CurrentStep);
+        Assert.Equal("SecondCommand", Assert.Single(fixture.Bus.Commands).Name);
+    }
+
     [Theory]
     [InlineData(2)]
     [InlineData(10)]
-    public async Task CreatesDynamicPendingStepsAndDispatchesOnlyExplicitInitialStep(int count)
+    public async Task CreatesDynamicPendingStepsAndDispatchesFirstListedStep(int count)
     {
-        var definition = CoordinationTestFixture.Linear(count, reverseYamlOrder: true);
+        var definition = CoordinationTestFixture.Linear(count);
         var fixture = new CoordinationTestFixture(definition);
         var initial = fixture.Instances.Create(definition, new { orderId = 42 });
         Assert.All(initial.Steps, step => { Assert.Equal(SagaStepStatus.Pending, step.Status); Assert.Null(step.ExecutionOrder); });
@@ -26,7 +46,7 @@ public sealed class LocalSagaCoordinationTests
         Assert.Equal(SagaStatus.Running, state.Status);
         Assert.Equal("step-0", state.CurrentStep);
         Assert.True(Guid.TryParse(state.CorrelationId, out _));
-        Assert.Equal(("domain", "process", "1.0", "Created"), (state.DefinitionDomain, state.DefinitionName, state.DefinitionVersion, state.TriggerEvent));
+        Assert.Equal(("domain", "process", "1.0"), (state.DefinitionDomain, state.DefinitionName, state.DefinitionVersion));
         Assert.Equal(42, state.Context.GetProperty("orderId").GetInt32());
         Assert.True(state.CreatedAt <= state.UpdatedAt);
         var command = Assert.Single(fixture.Bus.Commands);
@@ -47,9 +67,9 @@ public sealed class LocalSagaCoordinationTests
     [Theory]
     [InlineData(2)]
     [InlineData(10)]
-    public async Task CompletesDifferentSizedFlowsInTransitionOrderRatherThanYamlOrder(int count)
+    public async Task CompletesDifferentSizedFlowsInTransitionOrder(int count)
     {
-        var fixture = new CoordinationTestFixture(CoordinationTestFixture.Linear(count, reverseYamlOrder: true));
+        var fixture = new CoordinationTestFixture(CoordinationTestFixture.Linear(count));
         var id = await fixture.Coordinator.StartAsync(new { value = 7 });
         for (var i = 0; i < count; i++)
             await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.ToArray()[i], result: new { done = i }));
@@ -70,7 +90,7 @@ public sealed class LocalSagaCoordinationTests
     [Fact]
     public async Task FailurePlansOnlySuccessfulCompensatableStepsInReverseActualOrder()
     {
-        var fixture = new CoordinationTestFixture(CoordinationTestFixture.Linear(4, reverseYamlOrder: true));
+        var fixture = new CoordinationTestFixture(CoordinationTestFixture.Linear(4));
         var id = await fixture.Coordinator.StartAsync(new { id = 9 });
         await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.ToArray()[0]));
         await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.ToArray()[1]));
@@ -112,8 +132,8 @@ public sealed class LocalSagaCoordinationTests
         var original = CoordinationTestFixture.Linear(3);
         var definition = new SagaDefinition
         {
-            Name = original.Name, Domain = original.Domain, Version = original.Version, Trigger = original.Trigger, InitialStep = original.InitialStep,
-            Steps = [original.Steps[2], new() { Name = "step-1", Command = "Command1", Transitions = original.Steps[1].Transitions }, original.Steps[0]]
+            Name = original.Name, Domain = original.Domain, Version = original.Version,
+            Steps = [original.Steps[0], new() { Name = "step-1", Command = "Command1", Transitions = original.Steps[1].Transitions }, original.Steps[2]]
         };
         var fixture = new CoordinationTestFixture(definition);
         var id = await fixture.Coordinator.StartAsync("payload");

@@ -1,12 +1,11 @@
 name: purchase-process
 version: "1.0"
 domain: order
-trigger:
-  event: OrderCreated
-initialStep: payment
 steps:
   - name: payment
     command: AuthorizePayment
+    timeoutLimit: 10s
+    maxAttempts: 3
     compensation:
       command: RefundPayment
     transitions:
@@ -14,8 +13,12 @@ steps:
         nextStep: inventory
       - event: failure
         nextStep: compensation
+      - event: timeout
+        nextStep: compensation
   - name: inventory
     command: ReserveInventory
+    timeoutLimit: 20s
+    maxAttempts: 2
     compensation:
       command: ReleaseInventory
     transitions:
@@ -26,6 +29,8 @@ steps:
         else: true
         nextStep: compensation
       - event: failure
+        nextStep: compensation
+      - event: timeout
         nextStep: compensation
   - name: shipment
     command: CreateShipment

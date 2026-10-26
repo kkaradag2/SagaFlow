@@ -40,8 +40,7 @@ public sealed class DefinitionDiscoveryIntegrationTests
         Assert.Equal(2, graph.Nodes.Count(n => n.Origin == DefinitionOrigin.Remote));
         Assert.All(graph.Nodes, node =>
         {
-            Assert.Equal("Created", node.Definition.Trigger.Event);
-            Assert.Equal("work", node.Definition.InitialStep);
+            Assert.Equal("work", node.Definition.Steps[0].Name);
         });
         Assert.Single(registry.Snapshot());
         Assert.All(b.App.Services.GetRequiredService<ProcessDefinitionRegistry>().Snapshot(), d => Assert.Equal(DefinitionOrigin.Local, d.Origin));
@@ -63,8 +62,7 @@ public sealed class DefinitionDiscoveryIntegrationTests
         var response = await client.GetDefinitionAsync(new() { Domain = "payment", Process = "payment-process", Version = "1.0" });
         Assert.Empty(new DefinitionYamlCodec().Parse(response.CanonicalYaml).BigPicture);
         var published = new DefinitionYamlCodec().Parse(response.CanonicalYaml);
-        Assert.Equal("Created", published.Trigger.Event);
-        Assert.Equal("work", published.InitialStep);
+        Assert.Equal("work", published.Steps[0].Name);
         Assert.DoesNotContain("private-internal", response.CanonicalYaml);
         Assert.DoesNotContain(host.Directory, response.CanonicalYaml);
         var ex = await Assert.ThrowsAsync<RpcException>(async () => await client.GetDefinitionAsync(new() { Domain = "payment", Process = "private-process" }));
@@ -243,7 +241,6 @@ public sealed class DefinitionDiscoveryIntegrationTests
     private static SagaDefinition Definition(string domain, string process, BigPictureSourceDefinition[]? sources = null, string version = "1.0") => new()
     {
         Domain = domain, Name = process, Version = version, BigPicture = sources ?? [],
-        Trigger = new() { Event = "Created" }, InitialStep = "work",
         Steps = [new() { Name = "work", Command = "DoWork", Transitions = [new() { Event = "success", NextStep = "completed" }, new() { Event = "failure", NextStep = "compensation" }] }]
     };
 

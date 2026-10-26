@@ -15,7 +15,7 @@ public sealed class InMemorySagaStateStoreTests
         using var document = JsonDocument.Parse("{\"amount\":17}");
         var instance = new SagaInstance
         {
-            DefinitionName = "process", DefinitionDomain = "order", DefinitionVersion = "1.0", TriggerEvent = "Created", CorrelationId = "correlation",
+            DefinitionName = "process", DefinitionDomain = "order", DefinitionVersion = "1.0", CorrelationId = "correlation",
             Context = document.RootElement, CurrentStep = "work", CreatedAt = now, UpdatedAt = now,
             Steps = [new() { StepName = "work", Command = "Work", Input = document.RootElement, Result = document.RootElement, ExecutionOrder = 1 }],
             Compensations = [new() { StepId = "work", Command = "Undo", Result = document.RootElement }]

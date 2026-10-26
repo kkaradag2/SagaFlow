@@ -14,23 +14,22 @@ public sealed partial class ProcessDefinitionValidator
         Check(IsIdentifier(definition.Name), "name must be an identifier (letters/digits/underscore/hyphen, starting with a letter).");
         Check(IsIdentifier(definition.Domain), "domain must be an identifier.");
         Check(IsVersion(definition.Version), "version must be a numeric major.minor or major.minor.patch (e.g. '1.0').");
-        Check(definition.Trigger is not null && IsIdentifier(definition.Trigger.Event), "trigger.event must be a nonempty event identifier.");
         Check(definition.Steps is { Count: > 0 }, "steps must contain at least one step.");
         Check(definition.Steps is null || definition.Steps.Count <= 256, "steps exceeds the PoC limit of 256.");
         var names = new HashSet<string>(StringComparer.Ordinal);
-        Check(IsIdentifier(definition.InitialStep), "initialStep must explicitly name an existing executable step.");
         foreach (var step in definition.Steps ?? [])
         {
             if (step is null) { Check(false, "steps cannot contain null entries."); continue; }
             Check(IsIdentifier(step.Name) && step.Name is not ("completed" or "compensation"), $"step '{step.Name}' has an invalid or reserved name.");
             Check(names.Add(step.Name ?? ""), $"duplicate step '{step.Name}'.");
         }
-        Check(names.Contains(definition.InitialStep ?? ""), $"initialStep '{definition.InitialStep}' does not refer to an existing step.");
         foreach (var step in definition.Steps ?? [])
         {
             if (step is null) continue;
             var prefix = $"step '{step.Name}'";
             Check(IsIdentifier(step.Command), $"{prefix}: command must be a nonempty identifier.");
+            Check(step.TimeoutLimit is null || IsPositiveDuration(step.TimeoutLimit), $"{prefix}: timeoutLimit must be a positive duration such as '10s', '30s', or '2m'.");
+            Check(step.MaxAttempts > 0, $"{prefix}: maxAttempts must be a positive integer.");
             if (step.Compensation is not null)
                 Check(IsIdentifier(step.Compensation.Command), $"{prefix}: compensation.command must be a nonempty identifier.");
             Check(step.Transitions is { Count: > 0 }, $"{prefix}: transitions must not be empty.");
@@ -39,7 +38,7 @@ public sealed partial class ProcessDefinitionValidator
             foreach (var transition in step.Transitions ?? [])
             {
                 if (transition is null) { Check(false, $"{prefix}: transitions cannot contain null entries."); continue; }
-                Check(transition.Event is "success" or "failure", $"{prefix}: transition event '{transition.Event}' must be success or failure.");
+                Check(transition.Event is "success" or "failure" or "timeout", $"{prefix}: transition event '{transition.Event}' must be success, failure, or timeout.");
                 Check(transition.NextStep is "completed" or "compensation" || (transition.NextStep is not null && names.Contains(transition.NextStep)), $"{prefix}: unknown nextStep '{transition.NextStep}'.");
                 Check(transition.Else is null or true, $"{prefix}, event '{transition.Event}': else must be true when supplied.");
                 Check(transition.Else is null || transition.When is null, $"{prefix}, event '{transition.Event}': else must not also contain when.");
@@ -92,15 +91,16 @@ public sealed partial class ProcessDefinitionValidator
         var steps = definition.Steps.ToDictionary(s => s.Name, StringComparer.Ordinal);
         var edges = steps.ToDictionary(pair => pair.Key,
             pair => ViableTransitions(pair.Value).Select(t => t.NextStep!).ToArray(), StringComparer.Ordinal);
-        var reachable = new HashSet<string>(StringComparer.Ordinal) { definition.InitialStep };
+        var startStep = definition.Steps[0].Name;
+        var reachable = new HashSet<string>(StringComparer.Ordinal) { startStep };
         var pending = new Queue<string>();
-        pending.Enqueue(definition.InitialStep);
+        pending.Enqueue(startStep);
         while (pending.TryDequeue(out var name))
             foreach (var target in edges[name])
                 if (steps.ContainsKey(target) && reachable.Add(target)) pending.Enqueue(target);
 
         foreach (var name in steps.Keys.Except(reachable, StringComparer.Ordinal))
-            check(false, $"step '{name}' is unreachable from initialStep '{definition.InitialStep}'.");
+            check(false, $"step '{name}' is unreachable from first step '{startStep}'.");
 
         // Gray nodes are on the active DFS path; black nodes may safely be shared by DAG branches.
         var visited = new HashSet<string>(StringComparer.Ordinal);
@@ -121,7 +121,7 @@ public sealed partial class ProcessDefinitionValidator
             path.RemoveAt(path.Count - 1);
             active.Remove(name);
         }
-        Visit(definition.InitialStep);
+        Visit(startStep);
 
         var predecessors = steps.Keys.ToDictionary(name => name, _ => new List<string>(), StringComparer.Ordinal);
         var terminalViable = new HashSet<string>(StringComparer.Ordinal);
@@ -134,7 +134,7 @@ public sealed partial class ProcessDefinitionValidator
             foreach (var predecessor in predecessors[name])
                 if (terminalViable.Add(predecessor)) pending.Enqueue(predecessor);
 
-        check(terminalViable.Contains(definition.InitialStep), $"initialStep '{definition.InitialStep}' has no reachable terminal path to completed or compensation.");
+        check(terminalViable.Contains(startStep), $"first step '{startStep}' has no reachable terminal path to completed or compensation.");
         foreach (var name in reachable.Except(terminalViable, StringComparer.Ordinal))
             check(false, $"step '{name}' cannot reach a terminal outcome (closed cycle or dead end).");
     }
@@ -153,6 +153,25 @@ public sealed partial class ProcessDefinitionValidator
 
     public static bool IsIdentifier(string? value) => value is { Length: <= 128 } && Identifier().IsMatch(value);
     public static bool IsVersion(string? value) => value is { Length: <= 64 } && VersionPattern().IsMatch(value);
+    public static bool IsPositiveDuration(string? value)
+    {
+        if (value is not { Length: <= 32 }) return false;
+        var match = DurationPattern().Match(value);
+        if (!match.Success || !long.TryParse(match.Groups[1].Value, out var amount) || amount <= 0) return false;
+        try
+        {
+            _ = match.Groups[2].Value switch
+            {
+                "ms" => TimeSpan.FromMilliseconds(amount),
+                "s" => TimeSpan.FromSeconds(amount),
+                "m" => TimeSpan.FromMinutes(amount),
+                "h" => TimeSpan.FromHours(amount),
+                _ => throw new InvalidOperationException()
+            };
+            return true;
+        }
+        catch (OverflowException) { return false; }
+    }
 
     public static bool TryEndpoint(string? value, out Uri uri)
     {
@@ -167,4 +186,6 @@ public sealed partial class ProcessDefinitionValidator
     private static partial Regex Identifier();
     [GeneratedRegex(@"\A(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*))?\z", RegexOptions.CultureInvariant)]
     private static partial Regex VersionPattern();
+    [GeneratedRegex(@"\A([1-9][0-9]*)(ms|s|m|h)\z", RegexOptions.CultureInvariant)]
+    private static partial Regex DurationPattern();
 }

@@ -17,7 +17,7 @@ public sealed class OrderService(ISagaFlow sagaFlow)
 }
 ```
 
-Buradaki domain tipleri uygulamaya aittir. Domain Service katılımcıları, command adlarını, trigger adını, step veya compensation kararlarını vermez. Core sözleşmesi:
+Buradaki domain tipleri uygulamaya aittir. Domain Service katılımcıları command adlarını, step veya compensation kararlarını vermez. Core sözleşmesi:
 
 ```csharp
 public interface ISagaFlow
@@ -27,7 +27,7 @@ public interface ISagaFlow
 }
 ```
 
-`AddSagaFlow` ile yapılandırılmış host, başlangıçta mevcut loader/registry mekanizmasını kullanır. `StartAsync` tam olarak bir `Local` tanım ister; sıfır yerel tanım veya birden fazla yerel süreç/sürüm açık hata üretir. Remote kayıtlar seçim dışında kalır. Latest-version seçimi veya trigger subscription yoktur; `Trigger.Event` yalnızca instance metadata'sında korunur.
+`AddSagaFlow` ile yapılandırılmış host, başlangıçta mevcut loader/registry mekanizmasını kullanır. `StartAsync` tam olarak bir `Local` tanım ister; sıfır yerel tanım veya birden fazla yerel süreç/sürüm açık hata üretir. Remote kayıtlar seçim dışında kalır. Latest-version seçimi veya trigger subscription yoktur.
 
 Uygulama gerçek bir `ISagaMessageBus` adapter'ını DI'a kaydetmelidir. Bu geliştirmede böyle bir adapter sunulmaz. Adapter yokken host YAML yükleyebilir ve tanım keşfi/dashboard hosting çalışabilir; `StartAsync` ise instance yaratmadan açık eksik-transport hatası verir. Testlerdeki kayıt yapan fake'ler yalnızca test projelerindedir.
 
@@ -37,19 +37,19 @@ Mevcut `SagaInstance` genişletilmiştir:
 
 - `Id`: mevcut string API'si korunarak Guid'nin `N` biçiminde saklanır; `StartAsync` Guid döndürür. `ISagaStateStore.FindAsync(Guid)` kolaylığı da vardır.
 - `DefinitionName`, `DefinitionDomain`, `DefinitionVersion`: tanımın tam kimliği; süreç ilerlerken yalnızca bu yerel kayıt kullanılır.
-- `TriggerEvent`, `CorrelationId`, `Status`, `CurrentStep`, `CreatedAt`, `UpdatedAt`, `FailureReason`.
+- `CorrelationId`, `Status`, `CurrentStep`, `CreatedAt`, `UpdatedAt`, `FailureReason`.
 - `Context`: başlangıç payload'ının bağımsız `JsonElement` karşılığı; System.Text.Json web/camelCase ayarları kullanılır. Null, primitive, array ve object JSON desteklenir; döngülü veya desteklenmeyen payload reddedilir.
 - `Steps`, `Compensations`, `Revision`: dinamik state listeleri ve store concurrency token'ı.
 
 Her YAML executable step'i için tek `SagaStepState` oluşturulur. `StepName` korunmuştur; `StepId` aynı YAML adını döndürür. State alanları `Command`, `ExecutionOrder`, `Input`, `Result`, `StartedAt`, `CompletedAt` içerir. Başlangıçta hepsi `Pending` ve sırasızdır. Ayrı `SagaStepStatus` enum'u `Pending`, `Dispatched`, `Completed`, `Failed` değerlerini içerir; eski scaffold'ın genel `SagaStatus` alanı yerine ileri yürütüme özgü durumlar kullanılır.
 
-İlk komut `InitialStep` üzerinden seçilir. Dispatch edilen her adımın gerçek sırası 1'den başlayarak atanır; YAML liste sırası etkili değildir. Her command aynı başlangıç JSON context'ini taşır; sonuçlar step'in `Result` alanında saklanır, context'e otomatik merge veya veri eşleme yapılmaz. Çalışmayan dalların state'i `Pending` kalır. Aynı step bir instance içinde ikinci kez dispatch edilemez.
+İlk komut `steps` listesinin ilk elemanından seçilir. Sonraki adımlar `transitions.nextStep` ile belirlenir ve gerçek dispatch sırası 1'den başlayarak atanır. Her command aynı başlangıç JSON context'ini taşır; sonuçlar step'in `Result` alanında saklanır, context'e otomatik merge veya veri eşleme yapılmaz. Çalışmayan dalların state'i `Pending` kalır. Aynı step bir instance içinde ikinci kez dispatch edilemez.
 
 ## StartAsync ve dispatch sınırı
 
 1. Tek yerel tanımı seç ve transport kaydını doğrula.
 2. Payload'ı serialize et, instance/correlation kimliklerini oluştur.
-3. Bütün step ve isteğe bağlı compensation state kayıtlarını oluştur; Saga'yı `Running`, aktif adımı `InitialStep` yap.
+3. Bütün step ve isteğe bağlı compensation state kayıtlarını oluştur; Saga'yı `Running`, aktif adımı listedeki ilk step yap.
 4. Instance'ı store'a kaydet; başlangıç kaydında bütün adımlar `Pending`'dir.
 5. Store'un atomik callback'i içinde ilk step'i claim et: `Dispatched`, gerçek sıra, input ve başlangıç zamanı atanır; `SagaCommand` hazırlanır.
 6. Store kilidi bırakıldıktan sonra `ISagaMessageBus.PublishAsync` çağrılır. Başarılı çağrının ardından Guid döndürülür.
@@ -82,7 +82,7 @@ Instance/correlation/step eşleşmesi, aktif Saga ve step'in `Dispatched` olmas�
 
 Eşleşen kategorinin koşulları önce değerlendirilir; eşleşme yoksa aynı kategorideki `else: true` veya unconditional default kullanılır. YAML liste sırası kararı değiştirmez. Yanlış metadata veya değerlendirilemeyen sonuç state'i değiştirmeden reddedilir; doğru sonuç daha sonra işlenebilir. Kategoride hiçbir kural yoksa diğer kategorinin fallback'i kullanılmaz.
 
-Kabul edilen outcome'un forward state'i ve bir sonraki command claim'i tek atomik güncellemede saklanır. `completed` Saga'yı `Completed`, `compensation` ise `CompensationRequested` yapar; terminal durumlarda CurrentStep temizlenir. Validator, `initialStep` üzerinden erişilebilen executable graph üzerinde DFS aktif yol kontrolüyle self-loop ve çok adımlı döngüleri, terminal çıkışları olsa bile reddeder; hata döngünün step adlarını içerir. Tamamlanmış DFS düğümlerine birleşen dallar geçerli DAG yapılarıdır. Önceki erişilebilirlik/terminal yol kontrolleri ve exhaustive koşullardan sonraki erişilemez fallback'in dışlanması korunur. Runtime'ın tek-seferlik dispatch savunması da korunur: daha önce çalıştırılmış bir step'e dönüş Saga'yı `Failed` yapar ve açık cycle/revisit hatası üretir.
+Kabul edilen outcome'un forward state'i ve bir sonraki command claim'i tek atomik güncellemede saklanır. `completed` Saga'yı `Completed`, `compensation` ise `CompensationRequested` yapar; terminal durumlarda CurrentStep temizlenir. Validator, listedeki ilk step üzerinden erişilebilen executable graph üzerinde DFS aktif yol kontrolüyle self-loop ve çok adımlı döngüleri, terminal çıkışları olsa bile reddeder; hata döngünün step adlarını içerir. Tamamlanmış DFS düğümlerine birleşen dallar geçerli DAG yapılarıdır. Önceki erişilebilirlik/terminal yol kontrolleri ve exhaustive koşullardan sonraki erişilemez fallback'in dışlanması korunur. Runtime'ın tek-seferlik dispatch savunması da korunur: daha önce çalıştırılmış bir step'e dönüş Saga'yı `Failed` yapar ve açık cycle/revisit hatası üretir.
 
 ## Compensation planı
 
@@ -120,7 +120,7 @@ dotnet build .\SagaFlow.slnx --no-restore
 dotnet test .\SagaFlow.slnx --no-build --no-restore
 ```
 
-Yeni testler: `LocalSagaCoordinationTests`, `RuntimeTransitionTests`, `InMemorySagaStateStoreTests`, `LocalSagaCoordinationHostingTests`. Bunlar gerçek runtime sınıfları ve gerçek InMemory state store üzerinde çalışır; command publish yalnızca test fake'leri üzerinden doğrulanır. Hosting testleri gerçek YAML startup ve DI scope doğrulaması kullanır; önceki gRPC/cross-process tanım keşfi testleri de korunmuştur. Discovery fixture'ı coordinator kaldırırken artık ona bağlı runtime entry point kayıtlarını da kaldırır. Eski construction smoke testi yeni bağımlılıklara uyarlandı. Trigger regression fixture'ında CRLF/LF normalizasyonu düzeltildi; test silinmedi.
+`LocalSagaCoordinationTests`, `RuntimeTransitionTests`, `InMemorySagaStateStoreTests` ve `LocalSagaCoordinationHostingTests` gerçek runtime sınıfları ve gerçek InMemory state store üzerinde çalışır; command publish yalnızca test fake'leri üzerinden doğrulanır. Hosting testleri gerçek YAML startup ve DI scope doğrulaması kullanır; gRPC/cross-process tanım keşfi testleri de korunmuştur.
 
 İlk runtime geliştirmesinin referansı: solution build sıfır uyarı ve sıfır hatayla geçti. Toplam 157 test geçti (Core 1, Engine 121, Hosting 35); başarısız veya atlanan test yok. Önceki 98 test korundu; 59 yeni davranış vakası eklendi. Testler 2 ve 10 adımlı akışları, conditional/else dallarını, ters compensation planını, 500 eşzamanlı atomik state güncellemesini, 30 eşzamanlı duplicate outcome'u, scoped DI, transport hataları ve cancellation sınırlarını kapsar.
 
@@ -132,6 +132,6 @@ Core: yeni `ISagaFlow`, yeni `SagaCompensationState`; genişletilmiş `ISagaStat
 
 Engine: mevcut `SagaCoordinator`, `SagaInstanceManager`, `SagaStepExecutor`, `TransitionResolver`, `ProcessStateManager`, `CommandDispatcher`, `OutcomeEventReceiver` uygulamaları; yeni `InMemorySagaStateStore`, bağımsız snapshot yardımcısı, `SystemSagaClock` ve `SagaDispatchException`.
 
-Hosting: mevcut `SagaFlowServiceCollectionExtensions` DI kayıtları. Testler: dört yeni davranış suite'i ve ortak test fixture'ı; mevcut engine smoke, trigger fixture ve discovery izolasyon fixture uyarlamaları. Dokümanlar: bu kılavuz, kök/Engine/Hosting README'leri ve definition-discovery kılavuzundaki güncel kapsam açıklaması. Yeni proje, paket, YAML biçimi veya production mesaj transport'u eklenmedi.
+Hosting: mevcut `SagaFlowServiceCollectionExtensions` DI kayıtları. Testler: davranış suite'leri, ortak fixture ve discovery izolasyon fixture'ları. Dokümanlar: bu kılavuz ve definition-discovery kılavuzundaki güncel kapsam açıklaması. Production mesaj transport'u eklenmedi.
 
 `await sagaFlow.StartAsync(payload)` kayıtlı test transport'u ile gerçekten instance oluşturur, bütün YAML adımlarını state'e aktarır, InMemory store'a kaydeder ve ilk command için portu çağırır. Gerçek broker yoktur; production host'ta adapter kaydı yoksa çağrı hata verir. InMemory verisi uygulama kapanınca kaybolur. Compensation execution/outcome/retry, durable inbox/outbox, participant mikroservisleri, restart recovery, çoklu process/sürüm seçimi ve runtime dashboard/observability kapsam dışıdır. Statik Big-Picture graph'ı runtime trace değildir ve tanım keşfi kodu değiştirilmemiştir.
