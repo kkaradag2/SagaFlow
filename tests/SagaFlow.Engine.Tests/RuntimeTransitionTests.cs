@@ -20,9 +20,6 @@ public sealed class RuntimeTransitionTests
             name: condition-process
             domain: order
             version: '1.0'
-            trigger:
-              event: Created
-            initialStep: work
             steps:
               - name: work
                 command: Work
@@ -98,7 +95,7 @@ public sealed class RuntimeTransitionTests
         [new() { Event = "success", When = "result.flags.available != false", NextStep = "yes" },
          new() { Event = "success", When = "result.flags.available != true", NextStep = "no" }] };
         var definition = new SagaDefinition { Name = baseDefinition.Name, Domain = baseDefinition.Domain, Version = baseDefinition.Version,
-            Trigger = baseDefinition.Trigger, InitialStep = "choose", Steps = [choose, ..baseDefinition.Steps.Where(s => s.Name != "choose")] };
+            Steps = [choose, ..baseDefinition.Steps.Where(s => s.Name != "choose")] };
         var fixture = new CoordinationTestFixture(definition);
         var id = await fixture.Coordinator.StartAsync("payload");
         await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.Single(), result: new { flags = new { available } }));
@@ -129,7 +126,7 @@ public sealed class RuntimeTransitionTests
     {
         var definition = new SagaDefinition
         {
-            Name = "process", Domain = "order", Version = "1.0", Trigger = new() { Event = "Created" }, InitialStep = "choose",
+            Name = "process", Domain = "order", Version = "1.0",
             Steps = [new() { Name = "choose", Command = "Choose", Compensation = new() { Command = "UndoChoose" }, Transitions =
                 [new() { Event = "success", When = "result.accepted == true", NextStep = "completed" },
                  new() { Event = "success", Else = true, NextStep = "compensation" }] }]
@@ -149,7 +146,7 @@ public sealed class RuntimeTransitionTests
     {
         var definition = new SagaDefinition
         {
-            Name = "process", Domain = "order", Version = "1.0", Trigger = new() { Event = "Created" }, InitialStep = "work",
+            Name = "process", Domain = "order", Version = "1.0",
             Steps = [new() { Name = "work", Command = "Work", Transitions = [new() { Event = "success", NextStep = "completed" }] }]
         };
         var fixture = new CoordinationTestFixture(definition);
@@ -166,9 +163,9 @@ public sealed class RuntimeTransitionTests
         var failure = new SagaTransitionDefinition { Event = "failure", NextStep = "compensation" };
         return new()
         {
-            Domain = "order", Name = "branch", Version = "1.0", Trigger = new() { Event = "Created" }, InitialStep = "choose",
-            Steps = [new() { Name = "no", Command = "DoNo", Transitions = [new() { Event = "success", NextStep = "completed" }] },
-                new() { Name = "choose", Command = "Choose", Compensation = new() { Command = "UndoChoose" }, Transitions = elseFirst ? [fallback, condition, failure] : [condition, fallback, failure] },
+            Domain = "order", Name = "branch", Version = "1.0",
+            Steps = [new() { Name = "choose", Command = "Choose", Compensation = new() { Command = "UndoChoose" }, Transitions = elseFirst ? [fallback, condition, failure] : [condition, fallback, failure] },
+                new() { Name = "no", Command = "DoNo", Transitions = [new() { Event = "success", NextStep = "completed" }] },
                 new() { Name = "yes", Command = "DoYes", Transitions = [new() { Event = "success", NextStep = "completed" }] }]
         };
     }

@@ -7,7 +7,7 @@ internal static class SagaStateSnapshot
     public static SagaInstance Copy(SagaInstance state) => new()
     {
         Id = state.Id, DefinitionName = state.DefinitionName, DefinitionDomain = state.DefinitionDomain,
-        DefinitionVersion = state.DefinitionVersion, TriggerEvent = state.TriggerEvent, CorrelationId = state.CorrelationId,
+        DefinitionVersion = state.DefinitionVersion, CorrelationId = state.CorrelationId,
         CurrentStep = state.CurrentStep, Status = state.Status, Context = state.Context.Clone(),
         CreatedAt = state.CreatedAt, UpdatedAt = state.UpdatedAt, FailureReason = state.FailureReason, Revision = state.Revision,
         Steps = Array.AsReadOnly(state.Steps.Select(step => new SagaStepState

@@ -4,18 +4,17 @@ SagaFlow now reads and validates declarative definitions and discovers a static 
 
 ## Model and YAML contract
 
-Existing init-only public DTOs are extended rather than replaced. `SagaDefinition` has `Name`, `Version`, `Domain`, required `Trigger` (`SagaTriggerDefinition.Event`), required `InitialStep`, `Steps`, and `BigPicture`. Steps have `Name`, `Command`, `Transitions`, and optional `Compensation`. Transitions have `Event`, optional `When`, optional `Else`, and `NextStep`. `BigPictureSourceDefinition` contains `Domain`, `Process`, `Endpoint`, and an optional `Version` pin.
+`SagaDefinition` has `Name`, `Version`, `Domain`, `Steps`, and `BigPicture`. Steps have `Name`, `Command`, optional `TimeoutLimit`, `MaxAttempts` (default `1`), `Transitions`, and optional `Compensation`. Transitions have `Event`, optional `When`, optional `Else`, and `NextStep`. `BigPictureSourceDefinition` contains `Domain`, `Process`, `Endpoint`, and an optional `Version` pin.
 
 ```yaml
 name: order-process
 version: "1.0"
 domain: order
-trigger:
-  event: OrderCreated
-initialStep: payment
 steps:
   - name: payment
     command: AuthorizePayment
+    timeoutLimit: 10s
+    maxAttempts: 3
     compensation:
       command: RefundPayment
     transitions:
@@ -23,8 +22,12 @@ steps:
         nextStep: inventory
       - event: failure
         nextStep: compensation
+      - event: timeout
+        nextStep: compensation
   - name: inventory
     command: ReserveInventory
+    timeoutLimit: 20s
+    maxAttempts: 2
     compensation:
       command: ReleaseInventory
     transitions:
@@ -35,6 +38,8 @@ steps:
         else: true
         nextStep: compensation
       - event: failure
+        nextStep: compensation
+      - event: timeout
         nextStep: compensation
   - name: shipment
     command: CreateShipment
@@ -55,13 +60,13 @@ bigPicture:
 
 Identifiers use ASCII letters, digits, underscore and hyphen, start with a letter, and have at most 128 characters. Identity is the exact, case-sensitive tuple `(domain, name, version)`. Versions use numeric `major.minor` or `major.minor.patch`, without leading zeroes. `1.0` and `1.0.0` are distinct identifiers; there is no implicit latest-version selection.
 
-`trigger.event` declares the event that starts the process and must be a nonempty event identifier. `initialStep` must explicitly name an existing step; YAML list order never supplies a default. Both fields survive serialization, immutable snapshots, gRPC publication and remote retrieval. These are definition fields only: no event subscription or process-start behavior is implemented. Older YAML missing either field must be updated.
+`trigger` and `initialStep` are no longer part of the contract. A nonempty `steps` list is required and its first element is the automatic start step. Later execution order is selected only by `transitions.nextStep`.
 
-Step names must be unique. `completed` and `compensation` are reserved targets and cannot be step names. Every step needs a command and at least one transition. Events are exactly `success` or `failure`; `when` is an additional predicate on that outcome. Targets must be a local step or a reserved target. Individual compensation definitions are optional; when supplied, their command must be valid.
+Step names must be unique. `completed` and `compensation` are reserved targets and cannot be step names. Every step needs a command and at least one transition. Events are exactly `success`, `failure`, or `timeout`; `when` is an additional predicate on that outcome. Targets must be a local step or a reserved target. Individual compensation definitions are optional; when supplied, their command must be valid. `timeoutLimit` accepts positive integer durations with `ms`, `s`, `m`, or `h` units. `maxAttempts` must be a positive integer and counts the initial send; omitted values default to `1`. Both fields are definition metadata only in this release: timeout tracking, retry execution, and automatic timeout transitions are not implemented yet.
 
 For each event category, at most one fallback/default is allowed. `else: true` is an explicit fallback and cannot contain `when`; `else: false` is rejected. A single unconditional transition is also a default and may accompany conditional rules. Conditions take precedence over the fallback independently of declaration order. Conditions on the same Boolean property must require opposite values. Equality and inequality normalize logically: `result.available == true` is equivalent to `result.available != false` and cannot coexist as a separate branch. Conditions on different properties are rejected together because they could both match. A single condition requires a fallback; an exhaustive pair of complementary Boolean conditions supplies complete Boolean coverage without an extra fallback. These are static validation rules, not a runtime evaluator; no outcome category is inferred if it has no rules.
 
-Graph validation starts at `initialStep`: every declared step must be reachable, and every reachable step must have a structural path to `completed` or `compensation`. Active-path DFS rejects reachable executable self-loops and multi-step cycles with their participant names, even when a terminal exit exists: each executable step may run only once per Saga instance. Completed DFS nodes may be shared by converging DAG branches without forming a cycle. A fallback behind exhaustive complementary conditions does not count as a viable edge. A one-step process that transitions directly to a terminal is valid; an empty process is not. Validation does not evaluate property values or correlate conditions across multiple steps.
+Graph validation starts at the first listed step: every declared step must be reachable, and every reachable step must have a structural path to `completed` or `compensation`. Active-path DFS rejects reachable executable self-loops and multi-step cycles with their participant names, even when a terminal exit exists: each executable step may run only once per Saga instance. Completed DFS nodes may be shared by converging DAG branches without forming a cycle. A fallback behind exhaustive complementary conditions does not count as a viable edge. A one-step process that transitions directly to a terminal is valid; an empty process is not. Validation does not evaluate property values or correlate conditions across multiple steps.
 
 ### Safe condition syntax
 
@@ -167,7 +172,7 @@ The test writes B's payment YAML and C's fulfillment YAML to their own temporary
 dotnet test .\tests\SagaFlow.Hosting.Tests\SagaFlow.Hosting.Tests.csproj --no-restore --filter FullyQualifiedName~CrossProcessDefinitionDiscoveryTests
 ```
 
-The hosting test project builds and copies the existing `SagaFlow.SimpleShopping` application as a process fixture (no new production service). The test launches that application through the .NET host in a separate OS process with an OS-assigned loopback port and an explicit HTTP/2 listener. It reads its readiness address from redirected output with a 15-second startup deadline. The test runner is the client process; its PID differs from the publisher PID. It retrieves actual YAML through gRPC, validates the identity/version/domain, `trigger.event`, and `initialStep`, and checks that the returned `bigPicture` entry points to another lightweight Domain Starter. It then discovers a three-node/two-edge graph through the child publisher while local ownership remains intact.
+The hosting test project builds and copies the existing `SagaFlow.SimpleShopping` application as a process fixture (no new production service). The test launches that application through the .NET host in a separate OS process with an OS-assigned loopback port and an explicit HTTP/2 listener. It reads its readiness address from redirected output with a 15-second startup deadline. The test runner is the client process; its PID differs from the publisher PID. It retrieves actual YAML through gRPC, validates the identity/version/domain and first step, and checks that the returned `bigPicture` entry points to another lightweight Domain Starter. It then discovers a three-node/two-edge graph through the child publisher while local ownership remains intact.
 
 The fixture kills and waits for the child process tree in `DisposeAsync`, including startup failure and assertion-failure paths; process exit and output draining each have a five-second bound. Temporary files are removed after shutdown. The test uses plain loopback HTTP/2, not development TLS: it does not verify certificate trust, authentication, production networking, or production service discovery. It is definition-discovery evidence only, not runtime Saga evidence.
 
@@ -193,7 +198,7 @@ The original implementation baseline had 57 passing tests. After all six review 
 Each correction was tested before moving to the next finding:
 
 ```powershell
-dotnet test .\tests\SagaFlow.Engine.Tests\SagaFlow.Engine.Tests.csproj --no-restore --filter FullyQualifiedName~TriggerInitialStepTests
+dotnet test .\tests\SagaFlow.Engine.Tests\SagaFlow.Engine.Tests.csproj --no-restore --filter FullyQualifiedName~DefinitionStartTests
 dotnet test .\tests\SagaFlow.Hosting.Tests\SagaFlow.Hosting.Tests.csproj --no-build --no-restore --filter "FullyQualifiedName~ThreeDomainsLoadTheirYamlAndDiscoverDefinitionGraphOverRealGrpc|FullyQualifiedName~PublicationListsOnlyAllowedLocalDefinitionsAndRedactsTopologyByDefault"
 dotnet test .\tests\SagaFlow.Engine.Tests\SagaFlow.Engine.Tests.csproj --no-restore --filter FullyQualifiedName~ConditionalTransitionTests
 dotnet test .\tests\SagaFlow.Engine.Tests\SagaFlow.Engine.Tests.csproj --no-restore --filter FullyQualifiedName~DefinitionGraphValidationTests
@@ -205,7 +210,7 @@ dotnet build .\SagaFlow.slnx --no-restore
 dotnet test .\SagaFlow.slnx --no-build --no-restore
 ```
 
-Review-fix file scope: the existing definition models, condition parser, validator, snapshot, loader/directory policy, discovery deadline, hosted loader/registration, sample configuration/YAML, and this guide were updated. Added regression suites cover trigger/initial step, branches, graph viability, deadlines, DI loading and separate-process retrieval. The Hosting test project references the sample only to build/copy its executable fixture. Existing model/discovery tests were updated for the now-required start fields. No runtime coordinator, broker, state store, compensation executor, dashboard, thesis or dataset was changed by these corrections.
+Regression suites cover first-step startup, branches, graph viability, deadlines, DI loading and separate-process retrieval. The Hosting test project references the sample only to build/copy its executable fixture.
 
 ## Changed-file inventory
 
@@ -248,7 +253,6 @@ src/SagaFlow.Hosting/Endpoints/SagaFlowDefinitionEndpoints.cs
 src/SagaFlow.Hosting/Protos/definitions_v1.proto
 tests/SagaFlow.Engine.Tests/ProcessDefinitionTests.cs
 tests/SagaFlow.Hosting.Tests/DefinitionDiscoveryIntegrationTests.cs
-src/SagaFlow.Core/Definitions/SagaTriggerDefinition.cs
 tests/SagaFlow.Engine.Tests/TriggerInitialStepTests.cs
 tests/SagaFlow.Engine.Tests/ConditionalTransitionTests.cs
 tests/SagaFlow.Engine.Tests/DefinitionGraphValidationTests.cs

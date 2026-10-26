@@ -106,7 +106,7 @@ public sealed class ConditionalTransitionTests
     private static void Validate(SagaTransitionDefinition[] transitions) => new ProcessDefinitionValidator().Validate(Definition(transitions));
     private static SagaDefinition Definition(SagaTransitionDefinition[] transitions) => new()
     {
-        Name = "order", Domain = "order", Version = "1.0", Trigger = new() { Event = "Created" }, InitialStep = "work",
+        Name = "order", Domain = "order", Version = "1.0",
         Steps = [new() { Name = "work", Command = "Work", Transitions = transitions }]
     };
 }

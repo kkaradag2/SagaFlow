@@ -9,12 +9,11 @@ public sealed class ProcessDefinitionTests
         name: order-process
         version: "1.0"
         domain: order
-        trigger:
-          event: OrderCreated
-        initialStep: payment
         steps:
           - name: payment
             command: AuthorizePayment
+            timeoutLimit: 10s
+            maxAttempts: 3
             compensation:
               command: RefundPayment
             transitions:
@@ -25,6 +24,8 @@ public sealed class ProcessDefinitionTests
                 when: "result.available == false"
                 nextStep: compensation
               - event: failure
+                nextStep: compensation
+              - event: timeout
                 nextStep: compensation
           - name: shipment
             command: CreateShipment
@@ -46,10 +47,14 @@ public sealed class ProcessDefinitionTests
         Assert.Equal("order", definition.Domain);
         Assert.Equal("1.0", definition.Version);
         Assert.Equal(2, definition.Steps.Count);
+        Assert.Equal("10s", definition.Steps[0].TimeoutLimit);
+        Assert.Equal(3, definition.Steps[0].MaxAttempts);
+        Assert.Null(definition.Steps[1].TimeoutLimit);
+        Assert.Equal(1, definition.Steps[1].MaxAttempts);
         Assert.Equal("RefundPayment", definition.Steps[0].Compensation!.Command);
         Assert.Null(definition.Steps[1].Compensation);
         Assert.Equal(new BooleanCondition("result.available", true, true), ConditionParser.Parse(definition.Steps[0].Transitions[0].When!));
-        Assert.Equal(new[] { "success", "success", "failure" }, definition.Steps[0].Transitions.Select(t => t.Event));
+        Assert.Equal(new[] { "success", "success", "failure", "timeout" }, definition.Steps[0].Transitions.Select(t => t.Event));
         Assert.Equal("https://payment-service:7001", definition.BigPicture.Single().Endpoint);
         var codec = new DefinitionYamlCodec();
         var serialized = codec.Serialize(definition);
@@ -66,6 +71,11 @@ public sealed class ProcessDefinitionTests
     [InlineData("name: shipment", "name: payment", "duplicate step")]
     [InlineData("command: AuthorizePayment", "command: ''", "command")]
     [InlineData("event: failure", "event: PaymentFailed", "event")]
+    [InlineData("timeoutLimit: 10s", "timeoutLimit: 0s", "timeoutLimit")]
+    [InlineData("timeoutLimit: 10s", "timeoutLimit: 1.5s", "timeoutLimit")]
+    [InlineData("timeoutLimit: 10s", "timeoutLimit: soon", "timeoutLimit")]
+    [InlineData("maxAttempts: 3", "maxAttempts: 0", "maxAttempts")]
+    [InlineData("maxAttempts: 3", "maxAttempts: -1", "maxAttempts")]
     [InlineData("nextStep: shipment", "nextStep: missing", "unknown nextStep")]
     [InlineData("command: RefundPayment", "command: ''", "compensation.command")]
     [InlineData("result.available == true", "result.available() == true", "Supported condition")]
@@ -78,6 +88,17 @@ public sealed class ProcessDefinitionTests
     {
         var ex = Assert.Throws<DefinitionValidationException>(() => new DefinitionYamlCodec().Parse(Valid.Replace(oldText, newText)));
         Assert.Contains(expected, ex.Message);
+    }
+
+    [Theory]
+    [InlineData("1ms")]
+    [InlineData("30s")]
+    [InlineData("2m")]
+    [InlineData("1h")]
+    public void AcceptsSupportedPositiveTimeoutDurations(string timeoutLimit)
+    {
+        var definition = new DefinitionYamlCodec().Parse(Valid.Replace("timeoutLimit: 10s", $"timeoutLimit: {timeoutLimit}"));
+        Assert.Equal(timeoutLimit, definition.Steps[0].TimeoutLimit);
     }
 
     [Theory]
@@ -137,7 +158,7 @@ public sealed class ProcessDefinitionTests
     {
         var parsed = new DefinitionYamlCodec().Parse(Valid);
         var steps = parsed.Steps.ToList();
-        var definition = new SagaDefinition { Name = parsed.Name, Domain = parsed.Domain, Version = parsed.Version, Trigger = parsed.Trigger, InitialStep = parsed.InitialStep, Steps = steps };
+        var definition = new SagaDefinition { Name = parsed.Name, Domain = parsed.Domain, Version = parsed.Version, Steps = steps };
         var registry = new ProcessDefinitionRegistry();
         registry.RegisterLocalBatch([definition]);
         steps.Clear();
@@ -170,7 +191,7 @@ public sealed class ProcessDefinitionTests
         Assert.Throws<DefinitionValidationException>(() => codec.Parse(Valid.Replace("name: shipment", "name: completed")));
         Assert.Throws<DefinitionValidationException>(() => codec.Parse(Valid.Replace("when: \"result.available == false\"", "when: \"result.available != false\"")));
         Assert.Throws<DefinitionValidationException>(() => new ProcessDefinitionValidator().Validate(new SagaDefinition
-            { Name = "process", Domain = "domain", Version = "1.0", Trigger = new() { Event = "Created" }, InitialStep = "work", Steps = [new() { Name = "work", Command = "Work", Transitions = [null!] }] }));
+            { Name = "process", Domain = "domain", Version = "1.0", Steps = [new() { Name = "work", Command = "Work", Transitions = [null!] }] }));
     }
 
     private sealed class DefinitionDirectory : IDisposable

@@ -8,10 +8,9 @@ internal static class DefinitionSnapshot
     public static SagaDefinition Copy(SagaDefinition d, bool includeBigPicture = true) => new()
     {
         Name = d.Name, Domain = d.Domain, Version = d.Version,
-        Trigger = new() { Event = d.Trigger.Event }, InitialStep = d.InitialStep,
         Steps = Array.AsReadOnly(d.Steps.Select(s => new SagaStepDefinition
         {
-            Name = s.Name, Command = s.Command,
+            Name = s.Name, Command = s.Command, TimeoutLimit = s.TimeoutLimit, MaxAttempts = s.MaxAttempts,
             Compensation = s.Compensation is null ? null : new() { Command = s.Compensation.Command },
             Transitions = Array.AsReadOnly(s.Transitions.Select(t => new SagaTransitionDefinition
                 { Event = t.Event, When = t.When, Else = t.Else, NextStep = t.NextStep }).ToArray())
