@@ -13,11 +13,13 @@
     <Project Path="src/SagaFlow.Core/SagaFlow.Core.csproj" />
     <Project Path="src/SagaFlow.Dashboard/SagaFlow.Dashboard.csproj" />
     <Project Path="src/SagaFlow.Engine/SagaFlow.Engine.csproj" />
+    <Project Path="src/SagaFlow.Messaging.RabbitMQ/SagaFlow.Messaging.RabbitMQ.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/SagaFlow.Hosting.Tests/SagaFlow.Hosting.Tests.csproj" />
     <Project Path="tests/SagaFlow.Core.Tests/SagaFlow.Core.Tests.csproj" />
     <Project Path="tests/SagaFlow.Engine.Tests/SagaFlow.Engine.Tests.csproj" />
     <Project Path="tests/SagaFlow.Samples.Tests/SagaFlow.Samples.Tests.csproj" />
+    <Project Path="tests/SagaFlow.Messaging.RabbitMQ.Tests/SagaFlow.Messaging.RabbitMQ.Tests.csproj" />
   </Folder>
 </Solution>
