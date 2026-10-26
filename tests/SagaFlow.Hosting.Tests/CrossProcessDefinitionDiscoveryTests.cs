@@ -18,7 +18,7 @@ public sealed class CrossProcessDefinitionDiscoveryTests
         {
             var published = new SagaDefinition
             {
-                Domain = "order", Name = "purchase-process", Version = "1.0",
+                Domain = "order", Name = "order-process", Version = "1.0",
                 Steps = [new() { Name = "payment", Command = "AuthorizePayment", Transitions = [new() { Event = "success", NextStep = "completed" }] }],
                 BigPicture = [new() { Domain = "fulfillment", Process = "fulfillment-process", Version = "1.0", Endpoint = catalog.Endpoint }]
             };
@@ -26,12 +26,12 @@ public sealed class CrossProcessDefinitionDiscoveryTests
             await using var publisher = await PublisherProcess.StartAsync(directory);
             Assert.NotEqual(Environment.ProcessId, publisher.Id);
 
-            var source = new BigPictureSourceDefinition { Domain = "order", Process = "purchase-process", Version = "1.0", Endpoint = publisher.Endpoint };
+            var source = new BigPictureSourceDefinition { Domain = "order", Process = "order-process", Version = "1.0", Endpoint = publisher.Endpoint };
             var transport = new GrpcRemoteDefinitionClient();
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             var envelope = await transport.GetAsync(new(publisher.Endpoint), source, TimeSpan.FromSeconds(5), deadline.Token);
             Assert.Equal(1, envelope.ProtocolVersion);
-            Assert.Equal(("order", "purchase-process", "1.0"), (envelope.Domain, envelope.Process, envelope.Version));
+            Assert.Equal(("order", "order-process", "1.0"), (envelope.Domain, envelope.Process, envelope.Version));
             var retrieved = new DefinitionYamlCodec().Parse(envelope.CanonicalYaml);
             Assert.Equal("payment", retrieved.Steps[0].Name);
             var relationship = Assert.Single(retrieved.BigPicture);
@@ -52,7 +52,7 @@ public sealed class CrossProcessDefinitionDiscoveryTests
             Assert.Empty(graph.Failures);
             Assert.Equal(3, graph.Nodes.Count);
             Assert.Equal(2, graph.Edges.Count);
-            Assert.Contains(graph.Nodes, n => n.Id == new ProcessDefinitionId("order", "purchase-process", "1.0") && n.Origin == DefinitionOrigin.Remote);
+            Assert.Contains(graph.Nodes, n => n.Id == new ProcessDefinitionId("order", "order-process", "1.0") && n.Origin == DefinitionOrigin.Remote);
             Assert.Contains(graph.Edges, edge => edge.Source == ProcessDefinitionId.From(published)
                 && edge.Target == new ProcessDefinitionId("fulfillment", "fulfillment-process", "1.0"));
             Assert.Single(registry.Snapshot());
@@ -75,7 +75,7 @@ public sealed class CrossProcessDefinitionDiscoveryTests
 
         private PublisherProcess(string directory)
         {
-            var host = Path.Combine(AppContext.BaseDirectory, "DiscoveryProcessFixture", "SagaFlow.SimpleShopping.dll");
+            var host = Path.Combine(AppContext.BaseDirectory, "DiscoveryProcessFixture", "SagaFlow.Order.dll");
             if (!File.Exists(host)) throw new FileNotFoundException("Build the hosting tests to copy the sample process fixture.", host);
             var start = new ProcessStartInfo(Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet")
             {

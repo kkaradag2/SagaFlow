@@ -172,7 +172,7 @@ The test writes B's payment YAML and C's fulfillment YAML to their own temporary
 dotnet test .\tests\SagaFlow.Hosting.Tests\SagaFlow.Hosting.Tests.csproj --no-restore --filter FullyQualifiedName~CrossProcessDefinitionDiscoveryTests
 ```
 
-The hosting test project builds and copies the existing `SagaFlow.SimpleShopping` application as a process fixture (no new production service). The test launches that application through the .NET host in a separate OS process with an OS-assigned loopback port and an explicit HTTP/2 listener. It reads its readiness address from redirected output with a 15-second startup deadline. The test runner is the client process; its PID differs from the publisher PID. It retrieves actual YAML through gRPC, validates the identity/version/domain and first step, and checks that the returned `bigPicture` entry points to another lightweight Domain Starter. It then discovers a three-node/two-edge graph through the child publisher while local ownership remains intact.
+The hosting test project builds and copies `SagaFlow.Order` as a process fixture. The test launches it through the .NET host in a separate OS process with an OS-assigned loopback port and an explicit HTTP/2 listener. It reads its readiness address from redirected output with a 15-second startup deadline. The test runner is the client process; its PID differs from the publisher PID. It retrieves actual YAML through gRPC, validates the identity/version/domain and first step, and checks that the returned `bigPicture` entry points to another lightweight Domain Starter. It then discovers a three-node/two-edge graph through the child publisher while local ownership remains intact.
 
 The fixture kills and waits for the child process tree in `DisposeAsync`, including startup failure and assertion-failure paths; process exit and output draining each have a five-second bound. Temporary files are removed after shutdown. The test uses plain loopback HTTP/2, not development TLS: it does not verify certificate trust, authentication, production networking, or production service discovery. It is definition-discovery evidence only, not runtime Saga evidence.
 
@@ -218,9 +218,8 @@ Modified:
 
 ```text
 README.md
-samples/SagaFlow.SimpleShopping/Program.cs
-samples/SagaFlow.SimpleShopping/README.md
-samples/SagaFlow.SimpleShopping/saga/purchase-process.yaml
+samples/OrderProcess/SagaFlow.Order/Program.cs
+samples/OrderProcess/SagaFlow.Order/saga/order-process.yaml
 src/SagaFlow.Core/Definitions/SagaDefinition.cs
 src/SagaFlow.Core/Definitions/SagaStepDefinition.cs
 src/SagaFlow.Core/Definitions/SagaTransitionDefinition.cs
