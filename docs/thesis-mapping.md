@@ -7,4 +7,4 @@
 - Consistency Management -> `SagaFlow.Engine.Consistency`
 - Observability and Visibility -> `SagaFlow.Dashboard`, `SagaFlow.Dashboard.Client`
 
-`SagaFlow.Hosting` provides the in-process ASP.NET Core integration layer for embedding SagaFlow into a domain starter microservice. `SagaFlow.SimpleShopping` remains the representative evaluation scenario.
+`SagaFlow.Hosting` provides the in-process ASP.NET Core integration layer for embedding SagaFlow into a domain starter microservice. The representative prototype consists of the `SagaFlow.Order` Domain Starter and the independent Payment, Inventory, Shipment, and Notification participant workers under `samples/`.

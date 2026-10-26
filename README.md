@@ -18,11 +18,16 @@ src/
   SagaFlow.Dashboard/
   SagaFlow.Dashboard.Client/
 samples/
-  SagaFlow.SimpleShopping/
+  OrderProcess/SagaFlow.Order/
+  Participants/SagaFlow.Payment/
+  Participants/SagaFlow.Inventory/
+  Participants/SagaFlow.Shipment/
+  Participants/SagaFlow.Notification/
 tests/
   SagaFlow.Core.Tests/
   SagaFlow.Engine.Tests/
   SagaFlow.Hosting.Tests/
+  SagaFlow.Samples.Tests/
 docs/
   thesis-mapping.md
 ```
@@ -34,7 +39,8 @@ docs/
 - `SagaFlow.Hosting`: in-process ASP.NET Core integration.
 - `SagaFlow.Dashboard`: embedded dashboard asset host.
 - `SagaFlow.Dashboard.Client`: React/Vite dashboard source.
-- `SagaFlow.SimpleShopping`: representative evaluation scenario.
+- `SagaFlow.Order`: OrderProcess Domain Starter and `POST /orders` API.
+- `SagaFlow.Payment`, `SagaFlow.Inventory`, `SagaFlow.Shipment`, `SagaFlow.Notification`: independent participant Worker Services prepared for the later messaging phase.
 
 ## Feature Model Alignment
 
@@ -52,7 +58,7 @@ The internal structure of SagaFlow intentionally follows the six feature groups 
 ```csharp
 builder.Services.AddSagaFlow(options =>
 {
-    options.LoadFromYaml("saga/purchase-process.yaml");
+    options.LoadFromYaml("saga/order-process.yaml");
 });
 
 app.UseSagaFlowDashboard(options =>

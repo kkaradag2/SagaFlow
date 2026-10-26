@@ -1,6 +1,7 @@
-name: purchase-process
+name: order-process
 version: "1.0"
 domain: order
+
 steps:
   - name: payment
     command: AuthorizePayment
@@ -15,28 +16,43 @@ steps:
         nextStep: compensation
       - event: timeout
         nextStep: compensation
+
   - name: inventory
     command: ReserveInventory
-    timeoutLimit: 20s
-    maxAttempts: 2
+    timeoutLimit: 10s
+    maxAttempts: 3
     compensation:
       command: ReleaseInventory
     transitions:
       - event: success
-        when: "result.available == true"
         nextStep: shipment
-      - event: success
-        else: true
-        nextStep: compensation
       - event: failure
         nextStep: compensation
       - event: timeout
         nextStep: compensation
+
   - name: shipment
     command: CreateShipment
+    timeoutLimit: 10s
+    maxAttempts: 3
+    compensation:
+      command: CancelShipment
+    transitions:
+      - event: success
+        nextStep: notification
+      - event: failure
+        nextStep: compensation
+      - event: timeout
+        nextStep: compensation
+
+  - name: notification
+    command: SendOrderNotification
+    timeoutLimit: 10s
+    maxAttempts: 3
     transitions:
       - event: success
         nextStep: completed
       - event: failure
         nextStep: compensation
-bigPicture: []
+      - event: timeout
+        nextStep: compensation
