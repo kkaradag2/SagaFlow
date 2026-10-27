@@ -10,6 +10,8 @@ public sealed class RabbitMqBrokerFixture : IAsyncLifetime
     public int Port { get; } = int.TryParse(Environment.GetEnvironmentVariable("SAGAFLOW_RABBITMQ_PORT"), out var port)
         ? port
         : AmqpTcpEndpoint.UseDefaultPort;
+    public string UserName { get; } = Environment.GetEnvironmentVariable("SAGAFLOW_RABBITMQ_USERNAME") ?? "guest";
+    public string Password { get; } = Environment.GetEnvironmentVariable("SAGAFLOW_RABBITMQ_PASSWORD") ?? "guest";
     public IConnection Connection => _connection
         ?? throw new InvalidOperationException("RabbitMQ integration tests are not enabled.");
 
@@ -35,8 +37,8 @@ public sealed class RabbitMqBrokerFixture : IAsyncLifetime
     {
         HostName = HostName,
         Port = Port,
-        UserName = "guest",
-        Password = "guest",
+        UserName = UserName,
+        Password = Password,
         VirtualHost = "/",
         ClientProvidedName = name,
         AutomaticRecoveryEnabled = true,

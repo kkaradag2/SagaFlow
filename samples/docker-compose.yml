@@ -1,0 +1,21 @@
+services:
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    container_name: sagaflow-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: sagaflow
+      RABBITMQ_DEFAULT_PASS: sagaflow-dev
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - sagaflow-rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  sagaflow-rabbitmq-data:

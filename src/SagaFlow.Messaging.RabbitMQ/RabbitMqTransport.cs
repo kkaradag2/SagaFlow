@@ -8,12 +8,14 @@ using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.Messages;
 using SagaFlow.Engine.Coordination;
 using SagaFlow.Engine.Messaging;
+using SagaFlow.Engine.ProcessDefinition;
 
 namespace SagaFlow.Messaging.RabbitMQ;
 
 internal sealed class RabbitMqTransport(
     RabbitMqConnectionProvider connections,
     RabbitMqOptions options,
+    ProcessDefinitionRegistry definitions,
     IServiceScopeFactory scopeFactory,
     ILogger<RabbitMqTransport> logger) : ISagaMessageBus, IHostedService, IAsyncDisposable
 {
@@ -21,6 +23,7 @@ internal sealed class RabbitMqTransport(
     private readonly CancellationTokenSource _consumerCancellation = new();
     private IChannel? _publisherChannel;
     private IChannel? _consumerChannel;
+    private string? _outcomeQueue;
     private string? _consumerTag;
     private bool _disposed;
 
@@ -29,6 +32,7 @@ internal sealed class RabbitMqTransport(
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        _outcomeQueue = ResolveOutcomeQueue();
         var connection = await connections.GetConnectionAsync(cancellationToken);
         _publisherChannel = await connection.CreateChannelAsync(
             new CreateChannelOptions(true, true), cancellationToken);
@@ -36,13 +40,13 @@ internal sealed class RabbitMqTransport(
             new CreateChannelOptions(false, false, consumerDispatchConcurrency: 1),
             cancellationToken);
 
-        await DeclareTopologyAsync(_consumerChannel, cancellationToken);
+        await DeclareTopologyAsync(_consumerChannel, _outcomeQueue, cancellationToken);
         await _consumerChannel.BasicQosAsync(0, options.PrefetchCount, false, cancellationToken);
 
         var consumer = new AsyncEventingBasicConsumer(_consumerChannel);
         consumer.ReceivedAsync += HandleOutcomeAsync;
         _consumerTag = await _consumerChannel.BasicConsumeAsync(
-            options.OutcomeQueue, autoAck: false, consumer, cancellationToken);
+            _outcomeQueue, autoAck: false, consumer, cancellationToken);
     }
 
     public async ValueTask PublishAsync(SagaCommand command, CancellationToken cancellationToken = default)
@@ -50,8 +54,11 @@ internal sealed class RabbitMqTransport(
         ArgumentNullException.ThrowIfNull(command);
         ArgumentException.ThrowIfNullOrWhiteSpace(command.Name);
         ArgumentNullException.ThrowIfNull(command.Headers);
+        ArgumentException.ThrowIfNullOrWhiteSpace(command.Headers.StepId);
         if (_publisherChannel is not { IsOpen: true } channel)
             throw new InvalidOperationException("RabbitMQ transport has not started or its publisher channel is closed.");
+        var outcomeQueue = _outcomeQueue
+            ?? throw new InvalidOperationException("RabbitMQ transport has no outcome queue for the local process definition.");
 
         var body = RabbitMqMessageSerializer.Serialize(command);
         var properties = new BasicProperties
@@ -61,7 +68,7 @@ internal sealed class RabbitMqTransport(
             Type = nameof(SagaCommand),
             MessageId = $"{command.Headers.SagaInstanceId}:{command.Headers.StepId}",
             CorrelationId = command.Headers.CorrelationId,
-            ReplyTo = options.OutcomeQueue
+            ReplyTo = outcomeQueue
         };
 
         await _publishGate.WaitAsync(cancellationToken);
@@ -69,7 +76,7 @@ internal sealed class RabbitMqTransport(
         {
             await channel.BasicPublishAsync(
                 options.CommandExchange,
-                command.Name,
+                command.Headers.StepId,
                 mandatory: true,
                 basicProperties: properties,
                 body,
@@ -94,6 +101,7 @@ internal sealed class RabbitMqTransport(
         await CloseChannelAsync(_publisherChannel);
         _consumerChannel = null;
         _publisherChannel = null;
+        _outcomeQueue = null;
         _consumerTag = null;
         await connections.DisposeAsync();
     }
@@ -107,7 +115,21 @@ internal sealed class RabbitMqTransport(
         _consumerCancellation.Dispose();
     }
 
-    private async Task DeclareTopologyAsync(IChannel channel, CancellationToken cancellationToken)
+    private string ResolveOutcomeQueue()
+    {
+        var localDefinitions = definitions.Snapshot()
+            .Where(definition => definition.Origin == DefinitionOrigin.Local)
+            .ToArray();
+        if (localDefinitions.Length != 1)
+            throw new InvalidOperationException(
+                $"RabbitMQ transport requires exactly one local process definition, but found {localDefinitions.Length}.");
+        return $"{localDefinitions[0].Definition.Domain}.outcomes";
+    }
+
+    private async Task DeclareTopologyAsync(
+        IChannel channel,
+        string outcomeQueue,
+        CancellationToken cancellationToken)
     {
         await channel.ExchangeDeclareAsync(
             options.CommandExchange,
@@ -116,23 +138,28 @@ internal sealed class RabbitMqTransport(
             autoDelete: false,
             cancellationToken: cancellationToken);
 
-        foreach (var route in options.CommandRoutes)
+        var yamlRoutes = definitions.Snapshot()
+            .Where(definition => definition.Origin == DefinitionOrigin.Local)
+            .SelectMany(definition => definition.Definition.Steps)
+            .Select(step => step.Name)
+            .Distinct(StringComparer.Ordinal);
+        foreach (var stepName in yamlRoutes)
         {
             await channel.QueueDeclareAsync(
-                route.Value,
+                stepName,
                 durable: true,
                 exclusive: false,
                 autoDelete: false,
                 cancellationToken: cancellationToken);
             await channel.QueueBindAsync(
-                route.Value,
+                stepName,
                 options.CommandExchange,
-                route.Key,
+                stepName,
                 cancellationToken: cancellationToken);
         }
 
         await channel.QueueDeclareAsync(
-            options.OutcomeQueue,
+            outcomeQueue,
             durable: true,
             exclusive: false,
             autoDelete: false,
@@ -186,7 +213,14 @@ internal sealed class RabbitMqTransport(
     private static async ValueTask CloseChannelAsync(IChannel? channel)
     {
         if (channel is null) return;
-        if (channel.IsOpen) await channel.CloseAsync(CancellationToken.None);
-        await channel.DisposeAsync();
+        try
+        {
+            if (channel.IsOpen) await channel.CloseAsync(CancellationToken.None);
+            await channel.DisposeAsync();
+        }
+        catch (ObjectDisposedException)
+        {
+            // A recovering connection can dispose its channel while host shutdown is already closing it.
+        }
     }
 }

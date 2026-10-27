@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using System.Net;
 using System.Net.Http.Json;
 using SagaFlow.Core.Abstractions;
@@ -114,11 +115,14 @@ public sealed class OrderSampleTests
     {
         var service = new RecordingOrderService();
         await using var factory = new WebApplicationFactory<global::Program>().WithWebHostBuilder(builder =>
+        {
             builder.ConfigureServices(services =>
             {
+                services.RemoveAll<IHostedService>();
                 services.RemoveAll<IOrderService>();
                 services.AddSingleton<IOrderService>(service);
-            }));
+            });
+        });
         using var client = factory.CreateClient();
 
         var response = await client.PostAsJsonAsync("/orders", new CreateOrderRequest("customer", []));
@@ -139,11 +143,14 @@ public sealed class OrderSampleTests
     {
         var result = new CreateOrderResult(Guid.NewGuid(), Guid.NewGuid());
         await using var factory = new WebApplicationFactory<global::Program>().WithWebHostBuilder(builder =>
+        {
             builder.ConfigureServices(services =>
             {
+                services.RemoveAll<IHostedService>();
                 services.RemoveAll<IOrderService>();
                 services.AddSingleton<IOrderService>(new StubOrderService(result));
-            }));
+            });
+        });
         using var client = factory.CreateClient();
 
         var response = await client.PostAsJsonAsync(
@@ -161,7 +168,10 @@ public sealed class OrderSampleTests
     public async Task SwaggerDocumentIsAvailableInDevelopment()
     {
         await using var factory = new WebApplicationFactory<global::Program>().WithWebHostBuilder(builder =>
-            builder.UseEnvironment("Development"));
+        {
+            builder.UseEnvironment("Development");
+            builder.ConfigureServices(services => services.RemoveAll<IHostedService>());
+        });
         using var client = factory.CreateClient();
 
         var response = await client.GetAsync("/swagger/v1/swagger.json");
