@@ -25,7 +25,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         {
             await channel.ExchangeDeclareAsync("sagaflow.commands", ExchangeType.Direct, durable: true);
             await channel.QueueDeclareAsync(queue, durable: true, exclusive: false, autoDelete: false);
-            await channel.QueueBindAsync(queue, "sagaflow.commands", "DoWork");
+            await channel.QueueBindAsync(queue, "sagaflow.commands", "work");
         }
 
         var definitionPath = await WriteDefinitionAsync();
@@ -53,6 +53,8 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
             File.Delete(definitionPath);
             await using var channel = await broker.Connection.CreateChannelAsync();
             await channel.QueueDeleteAsync(queue);
+            await channel.QueueDeleteAsync("work");
+            await channel.QueueDeleteAsync("test.outcomes");
         }
     }
 
@@ -73,19 +75,177 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
     }
 
     [RabbitMqFact]
-    public async Task CommandNameRoutesOnlyToConfiguredParticipantQueue()
+    public async Task OutcomeQueueAndReplyToAreDerivedFromYamlDomain()
     {
-        var topology = RabbitTopology.Create();
-        var otherQueue = $"sagaflow.tests.other.{Guid.NewGuid():N}";
-        await using var runtime = await StartExternalAsync(topology, options =>
-            options.RouteCommand("OtherWork", otherQueue));
+        foreach (var domain in new[] { "order", "returns" })
+        {
+            var suffix = Guid.NewGuid().ToString("N");
+            var topology = new RabbitTopology($"sagaflow.tests.commands.{suffix}", "work", domain);
+            var definition = $$"""
+                name: {{domain}}-process
+                version: "1.0"
+                domain: {{domain}}
+                steps:
+                  - name: work
+                    command: DoWork
+                    transitions:
+                      - event: success
+                        nextStep: completed
+                      - event: failure
+                        nextStep: compensation
+                """;
+            await using var runtime = await StartExternalAsync(topology, definitionYaml: definition);
 
-        await StartSagaAsync(runtime.Host, new { id = 1 });
+            await StartSagaAsync(runtime.Host, new { id = 1 });
+            var delivery = await GetMessageAsync(topology.CommandQueue);
 
-        Assert.NotNull(await GetMessageAsync(topology.CommandQueue));
+            Assert.Equal($"{domain}.outcomes", topology.OutcomeQueue);
+            Assert.Equal(topology.OutcomeQueue, delivery.BasicProperties.ReplyTo);
+            Assert.Equal(1u, await ConsumerCountAsync(topology.OutcomeQueue));
+        }
+    }
+
+    [RabbitMqFact]
+    public async Task SameCommandNameRoutesToQueueSelectedByStepId()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var topology = new RabbitTopology(
+            $"sagaflow.tests.commands.{suffix}",
+            "first-step",
+            "test");
+        const string secondQueue = "second-step";
+        const string definition = """
+            name: step-routing-test
+            version: "1.0"
+            domain: test
+            steps:
+              - name: first-step
+                command: SharedCommand
+                transitions:
+                  - event: success
+                    nextStep: second-step
+                  - event: failure
+                    nextStep: compensation
+              - name: second-step
+                command: SharedCommand
+                transitions:
+                  - event: success
+                    nextStep: completed
+                  - event: failure
+                    nextStep: compensation
+            """;
+        await using var runtime = await StartExternalAsync(topology, definitionYaml: definition);
+        var bus = runtime.Host.Services.GetRequiredService<ISagaMessageBus>();
+
+        await bus.PublishAsync(CreateCommand("SharedCommand", 1, topology.CommandQueue));
+        await bus.PublishAsync(CreateCommand("SharedCommand", 2, secondQueue));
+
+        Assert.Equal(topology.CommandQueue, RabbitMqMessageSerializer.DeserializeCommand(
+            (await GetMessageAsync(topology.CommandQueue)).Body.Span).Headers.StepId);
+        Assert.Equal(secondQueue, RabbitMqMessageSerializer.DeserializeCommand(
+            (await GetMessageAsync(secondQueue)).Body.Span).Headers.StepId);
         await using var channel = await broker.Connection.CreateChannelAsync();
-        Assert.Null(await channel.BasicGetAsync(otherQueue, autoAck: true));
-        await channel.QueueDeleteAsync(otherQueue);
+        await channel.QueueDeleteAsync(secondQueue);
+    }
+
+    [RabbitMqFact]
+    public async Task StepIdRoutesCommandOnlyToItsStepQueueWhenCommandNameMatchesAnotherStepName()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var topology = new RabbitTopology(
+            $"sagaflow.tests.commands.{suffix}",
+            "payment",
+            "collision");
+        const string collidingQueue = "SharedCommand";
+        const string definition = """
+            name: route-collision-test
+            version: "1.0"
+            domain: collision
+            steps:
+              - name: payment
+                command: SharedCommand
+                transitions:
+                  - event: success
+                    nextStep: SharedCommand
+                  - event: failure
+                    nextStep: compensation
+              - name: SharedCommand
+                command: OtherCommand
+                transitions:
+                  - event: success
+                    nextStep: completed
+                  - event: failure
+                    nextStep: compensation
+            """;
+        await using var runtime = await StartExternalAsync(topology, definitionYaml: definition);
+
+        try
+        {
+            await using (var channel = await broker.Connection.CreateChannelAsync())
+            {
+                await channel.QueuePurgeAsync(topology.CommandQueue);
+                await channel.QueuePurgeAsync(collidingQueue);
+            }
+
+            var bus = runtime.Host.Services.GetRequiredService<ISagaMessageBus>();
+            await bus.PublishAsync(CreateCommand("SharedCommand", 1, "payment"));
+
+            var delivery = await GetMessageAsync(topology.CommandQueue);
+            var command = RabbitMqMessageSerializer.DeserializeCommand(delivery.Body.Span);
+            Assert.Equal("SharedCommand", command.Name);
+            Assert.Equal("payment", command.Headers.StepId);
+            Assert.Equal("payment", delivery.RoutingKey);
+
+            await using var verificationChannel = await broker.Connection.CreateChannelAsync();
+            Assert.Null(await verificationChannel.BasicGetAsync(collidingQueue, autoAck: true));
+        }
+        finally
+        {
+            await using var channel = await broker.Connection.CreateChannelAsync();
+            await channel.QueueDeleteAsync(collidingQueue);
+        }
+    }
+
+    [RabbitMqFact]
+    public async Task ForwardAndCompensationCommandsRouteToTheSameYamlStepQueue()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var topology = new RabbitTopology(
+            $"sagaflow.tests.commands.{suffix}",
+            "payment",
+            "test");
+        const string definition = """
+            name: compensation-routing-test
+            version: "1.0"
+            domain: test
+            steps:
+              - name: payment
+                command: AuthorizePayment
+                compensation:
+                  command: RefundPayment
+                transitions:
+                  - event: success
+                    nextStep: completed
+                  - event: failure
+                    nextStep: compensation
+            """;
+        await using var runtime = await StartExternalAsync(topology, definitionYaml: definition);
+        var bus = runtime.Host.Services.GetRequiredService<ISagaMessageBus>();
+        await using (var channel = await broker.Connection.CreateChannelAsync())
+            await channel.QueuePurgeAsync("payment");
+
+        await bus.PublishAsync(CreateCommand("AuthorizePayment", 1, "payment"));
+        await bus.PublishAsync(CreateCommand("RefundPayment", 2, "payment"));
+
+        var commands = new[]
+        {
+            RabbitMqMessageSerializer.DeserializeCommand((await GetMessageAsync("payment")).Body.Span),
+            RabbitMqMessageSerializer.DeserializeCommand((await GetMessageAsync("payment")).Body.Span)
+        };
+        Assert.Equal(
+            new[] { "AuthorizePayment", "RefundPayment" },
+            commands.Select(command => command.Name).Order());
+        Assert.All(commands, command => Assert.Equal("payment", command.Headers.StepId));
     }
 
     [RabbitMqFact]
@@ -277,6 +437,8 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         var sagaId = await StartSagaAsync(runtime.Host, new { id = 1 });
         var firstCommand = RabbitMqMessageSerializer.DeserializeCommand(
             (await GetMessageAsync(runtime.Topology.CommandQueue)).Body.Span);
+        await using (var channel = await broker.Connection.CreateChannelAsync())
+            await channel.QueueDeleteAsync("unroutable");
 
         await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, SuccessfulOutcome(firstCommand.Headers));
         await WaitUntilAsync(async () => (await FindSagaAsync(runtime.Host, sagaId))?.Status == SagaStatus.Failed);
@@ -371,7 +533,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
     {
         await using var runtime = await StartExternalAsync();
         var bus = runtime.Host.Services.GetRequiredService<ISagaMessageBus>();
-        var command = CreateCommand("NoParticipantRoute", 1);
+        var command = CreateCommand("NoParticipantRoute", 1, "missing-step");
 
         var error = await Assert.ThrowsAnyAsync<PublishException>(
             () => bus.PublishAsync(command).AsTask());
@@ -442,6 +604,8 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         {
             options.HostName = broker.HostName;
             options.Port = broker.Port;
+            options.UserName = broker.UserName;
+            options.Password = broker.Password;
             options.ClientProvidedName = $"sagaflow-managed-test-{Guid.NewGuid():N}";
             ConfigureTopology(options, topology);
         });
@@ -453,8 +617,6 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
     private static void ConfigureTopology(RabbitMqOptions options, RabbitTopology topology)
     {
         options.CommandExchange = topology.CommandExchange;
-        options.OutcomeQueue = topology.OutcomeQueue;
-        options.RouteCommand("DoWork", topology.CommandQueue);
     }
 
     private static async Task<Guid> StartSagaAsync(IHost host, object payload)
@@ -489,7 +651,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         Result = JsonSerializer.SerializeToElement(new { accepted = true })
     };
 
-    private static SagaCommand CreateCommand(string name, int index) => new()
+    private static SagaCommand CreateCommand(string name, int index, string stepId = "work") => new()
     {
         Name = name,
         Payload = JsonSerializer.SerializeToElement(new { index }),
@@ -497,7 +659,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         {
             SagaInstanceId = Guid.NewGuid().ToString("N"),
             CorrelationId = Guid.NewGuid().ToString("N"),
-            StepId = "work"
+            StepId = stepId
         }
     };
 
@@ -564,12 +726,14 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         return path;
     }
 
-    private sealed record RabbitTopology(string CommandExchange, string CommandQueue, string OutcomeQueue)
+    private sealed record RabbitTopology(string CommandExchange, string CommandQueue, string Domain)
     {
+        public string OutcomeQueue => $"{Domain}.outcomes";
+
         public static RabbitTopology Create()
         {
             var suffix = Guid.NewGuid().ToString("N");
-            return new($"sagaflow.tests.commands.{suffix}", $"sagaflow.tests.worker.{suffix}", $"sagaflow.tests.outcomes.{suffix}");
+            return new($"sagaflow.tests.commands.{suffix}", "work", "test");
         }
     }
 

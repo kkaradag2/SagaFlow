@@ -4,6 +4,7 @@ using FluentValidation.AspNetCore;
 using Microsoft.AspNetCore.Mvc;
 using SagaFlow.Hosting.DependencyInjection;
 using SagaFlow.Hosting.Endpoints;
+using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
 using SagaFlow.Order.Contracts.Responses;
 using SagaFlow.Order.Domain;
 using SagaFlow.Order.Repositories;
@@ -53,6 +54,8 @@ builder.Services.AddSagaFlow(options =>
     options.Publication.IncludeBigPictureSources = builder.Configuration.GetValue<bool>("SagaFlow:PublishBigPictureSources");
     options.Publication.PublishedDefinitions.Add(new("order", publishedProcess, "1.0"));
 });
+if (builder.Configuration.GetValue("RabbitMq:Enabled", true))
+    builder.Services.AddSagaFlowRabbitMq(builder.Configuration.GetRequiredSection("RabbitMq"));
 
 var app = builder.Build();
 

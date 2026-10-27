@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
 using SagaFlow.Core.Abstractions;
 using SagaFlow.Engine.Messaging;
 
@@ -47,6 +48,14 @@ public static class RabbitMqServiceCollectionExtensions
             return new RabbitMqConnectionProvider(options);
         });
         return AddTransport(services);
+    }
+
+    public static IServiceCollection AddSagaFlowRabbitMq(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        return services.AddSagaFlowRabbitMq(options => configuration.Bind(options));
     }
 
     private static RabbitMqOptions CreateOptions(Action<RabbitMqOptions> configure, bool managedConnection)

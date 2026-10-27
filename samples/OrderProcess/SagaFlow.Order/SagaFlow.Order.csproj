@@ -13,5 +13,6 @@
     <ProjectReference Include="..\..\..\src\SagaFlow.Core\SagaFlow.Core.csproj" />
     <ProjectReference Include="..\..\..\src\SagaFlow.Engine\SagaFlow.Engine.csproj" />
     <ProjectReference Include="..\..\..\src\SagaFlow.Hosting\SagaFlow.Hosting.csproj" />
+    <ProjectReference Include="..\..\..\src\SagaFlow.Messaging.RabbitMQ\SagaFlow.Messaging.RabbitMQ.csproj" />
   </ItemGroup>
 </Project>
