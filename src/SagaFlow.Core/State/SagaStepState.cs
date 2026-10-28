@@ -12,8 +12,10 @@ public sealed class SagaStepState
     public JsonElement? Result { get; set; }
     public DateTimeOffset? StartedAt { get; set; }
     public DateTimeOffset? CompletedAt { get; set; }
+    public TimeSpan? TimeoutLimit { get; init; }
+    public DateTimeOffset? TimedOutAt { get; set; }
 
     public SagaStepStatus Status { get; set; } = SagaStepStatus.Pending;
 }
 
-public enum SagaStepStatus { Pending, Dispatched, Completed, Failed }
+public enum SagaStepStatus { Pending, Dispatched, Completed, Failed, TimedOut }

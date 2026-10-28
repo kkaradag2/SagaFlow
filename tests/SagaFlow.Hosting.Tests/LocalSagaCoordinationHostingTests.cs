@@ -14,6 +14,7 @@ using SagaFlow.Engine.Coordination;
 using SagaFlow.Engine.Messaging;
 using SagaFlow.Engine.Persistence.InMemory;
 using SagaFlow.Engine.ProcessDefinition;
+using SagaFlow.Engine.Timeouts;
 using SagaFlow.Hosting.DependencyInjection;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
@@ -60,6 +61,7 @@ public sealed class LocalSagaCoordinationHostingTests
         Assert.NotNull(first.ServiceProvider.GetRequiredService<ProcessStateManager>());
         Assert.NotNull(first.ServiceProvider.GetRequiredService<CommandDispatcher>());
         Assert.NotNull(first.ServiceProvider.GetRequiredService<OutcomeEventReceiver>());
+        Assert.NotNull(first.ServiceProvider.GetRequiredService<SagaTimeoutDetector>());
     }
 
     [Theory]
@@ -147,6 +149,36 @@ public sealed class LocalSagaCoordinationHostingTests
         Assert.Equal("Pending", detail.RootElement.GetProperty("steps")[1].GetProperty("status").GetString());
         Assert.Empty(detail.RootElement.GetProperty("compensations").EnumerateArray());
         Assert.Equal(before.Revision, (await store.FindAsync(id))!.Revision);
+    }
+
+    [Fact]
+    public async Task HostedDetectionMakesTimeoutVisibleThroughDashboardApi()
+    {
+        var timeoutYaml = Yaml.Replace("command: AuthorizePayment", "command: AuthorizePayment\n    timeoutLimit: 1ms");
+        await using var host = await RuntimeHost.Start(yaml: timeoutYaml);
+        await using var scope = host.App.Services.CreateAsyncScope();
+        var id = await scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { orderId = 84 });
+        var store = scope.ServiceProvider.GetRequiredService<ISagaStateStore>();
+
+        SagaInstance? state = null;
+        for (var attempt = 0; attempt < 40; attempt++)
+        {
+            state = await store.FindAsync(id);
+            if (state?.Status == SagaStatus.TimedOut) break;
+            await Task.Delay(50);
+        }
+        Assert.NotNull(state);
+        Assert.Equal(SagaStatus.TimedOut, state.Status);
+
+        var address = host.App.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+        using var client = new HttpClient { BaseAddress = new Uri(address) };
+        using var list = JsonDocument.Parse(await client.GetStringAsync("/sagaflow/api/instances"));
+        Assert.Equal("TimedOut", Assert.Single(list.RootElement.EnumerateArray()).GetProperty("status").GetString());
+        using var detail = JsonDocument.Parse(await client.GetStringAsync($"/sagaflow/api/instances/{id:N}"));
+        var step = detail.RootElement.GetProperty("steps")[0];
+        Assert.Equal("TimedOut", step.GetProperty("status").GetString());
+        Assert.Equal("00:00:00.0010000", step.GetProperty("timeoutLimit").GetString());
+        Assert.Equal(JsonValueKind.String, step.GetProperty("timedOutAt").ValueKind);
     }
 
     [Theory]
@@ -238,10 +270,10 @@ public sealed class LocalSagaCoordinationHostingTests
         public WebApplication App { get; } = app;
         public TestTransport Bus { get; } = bus;
         public ProcessDefinitionRegistry Registry => App.Services.GetRequiredService<ProcessDefinitionRegistry>();
-        public static async Task<RuntimeHost> Start(bool loadLocal = true, bool registerTransport = true)
+        public static async Task<RuntimeHost> Start(bool loadLocal = true, bool registerTransport = true, string? yaml = null)
         {
             var directory = Directory.CreateTempSubdirectory("sagaflow-runtime-").FullName;
-            if (loadLocal) await File.WriteAllTextAsync(Path.Combine(directory, "purchase.yaml"), Yaml);
+            if (loadLocal) await File.WriteAllTextAsync(Path.Combine(directory, "purchase.yaml"), yaml ?? Yaml);
             var builder = WebApplication.CreateBuilder();
             builder.Logging.ClearProviders();
             builder.Host.UseDefaultServiceProvider(options => { options.ValidateScopes = true; options.ValidateOnBuild = true; });

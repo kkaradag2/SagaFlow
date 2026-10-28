@@ -30,6 +30,8 @@ export type SagaStep = {
   executionOrder: number | null;
   startedAt: string | null;
   completedAt: string | null;
+  timeoutLimit: string | null;
+  timedOutAt: string | null;
   input: unknown;
   result: unknown;
 };
