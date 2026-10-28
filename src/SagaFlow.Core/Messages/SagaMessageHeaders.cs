@@ -6,4 +6,5 @@ public sealed class SagaMessageHeaders
 
     public string CorrelationId { get; init; } = string.Empty;
     public string StepId { get; init; } = string.Empty;
+    public bool IsCompensation { get; init; }
 }

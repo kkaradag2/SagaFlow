@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.Hosting;
 using SagaFlow.Engine.Timeouts;
 using SagaFlow.Hosting.Timeouts;
 using SagaFlow.Engine.Notifications;
+using SagaFlow.Engine.Consistency;
 
 namespace SagaFlow.Hosting.DependencyInjection;
 
@@ -45,6 +46,7 @@ public static class SagaFlowServiceCollectionExtensions
         services.AddSignalR();
         services.AddSingleton<TransitionResolver>();
         services.AddSingleton<ProcessStateManager>();
+        services.AddScoped<CompensationManager>();
         services.AddScoped<SagaInstanceManager>();
         services.AddScoped<CommandDispatcher>();
         services.AddScoped<SagaStepExecutor>();

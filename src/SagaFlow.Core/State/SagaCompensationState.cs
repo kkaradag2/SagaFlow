@@ -13,5 +13,4 @@ public sealed class SagaCompensationState
     public JsonElement? Result { get; set; }
 }
 
-// Planning only: this PoC does not publish or execute compensation commands.
-public enum SagaCompensationStatus { Pending, Planned }
+public enum SagaCompensationStatus { Pending, Planned, Dispatched, Completed, Failed }

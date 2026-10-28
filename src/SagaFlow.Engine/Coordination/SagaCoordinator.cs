@@ -4,11 +4,12 @@ using SagaFlow.Core.State;
 using SagaFlow.Engine.ContextState;
 using SagaFlow.Engine.ProcessDefinition;
 using SagaFlow.Engine.Notifications;
+using SagaFlow.Engine.Consistency;
 
 namespace SagaFlow.Engine.Coordination;
 
 public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISagaStateStore store, SagaInstanceManager instances,
-    SagaStepExecutor executor, TransitionResolver resolver, ProcessStateManager states, ISagaClock clock,
+    SagaStepExecutor executor, TransitionResolver resolver, ProcessStateManager states, CompensationManager compensations, ISagaClock clock,
     SagaStateChangePublisher? changes = null) : ISagaFlow
 {
     public string Name => nameof(SagaCoordinator);
@@ -61,6 +62,8 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
             {
                 if (outcome.Headers.CorrelationId != instance.CorrelationId)
                     throw new InvalidSagaOutcomeException("Outcome correlation does not match the Saga instance.");
+                if (outcome.Headers.IsCompensation)
+                    return (Command: compensations.ApplyOutcome(instance, outcome), Error: (string?)null);
                 var step = instance.Steps.SingleOrDefault(s => s.StepId == outcome.Headers.StepId)
                     ?? throw new InvalidSagaOutcomeException("Outcome refers to an unknown Saga step.");
                 if (instance.Status == SagaStatus.TimedOut && instance.CurrentStep == step.StepId && step.Status == SagaStepStatus.TimedOut)
@@ -75,7 +78,8 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
                 if (registered is null || registered.Origin != DefinitionOrigin.Local) throw new InvalidOperationException("The instance's owning local definition/version is unavailable.");
                 var target = resolver.Resolve(registered.Definition.Steps.Single(s => s.Name == step.StepId), outcome.IsSuccess, outcome.Result);
                 states.ApplyOutcome(instance, outcome, target, clock.UtcNow, registered.Definition);
-                if (target is "completed" or "compensation") return (Command: (SagaCommand?)null, Error: (string?)null);
+                if (target == "completed") return (Command: (SagaCommand?)null, Error: (string?)null);
+                if (target == "compensation") return (Command: outcome.IsSuccess ? null : compensations.Begin(instance), Error: (string?)null);
                 var next = instance.Steps.Single(s => s.StepId == target);
                 if (next.Status != SagaStepStatus.Pending)
                 {
@@ -95,6 +99,9 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
         }
 
         if (decision.Error is not null) throw new InvalidOperationException(decision.Error);
-        if (decision.Command is not null) await executor.PublishPreparedAsync(decision.Command, cancellationToken);
+        if (decision.Command is { Headers.IsCompensation: true } compensation)
+            await compensations.PublishPreparedAsync(compensation, cancellationToken);
+        else if (decision.Command is not null)
+            await executor.PublishPreparedAsync(decision.Command, cancellationToken);
     }
 }

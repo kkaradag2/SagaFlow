@@ -6,6 +6,7 @@ using SagaFlow.Engine.Coordination;
 using SagaFlow.Engine.Messaging;
 using SagaFlow.Engine.Notifications;
 using SagaFlow.Engine.ProcessDefinition;
+using SagaFlow.Engine.Consistency;
 
 namespace SagaFlow.Engine.Tests;
 
@@ -43,6 +44,30 @@ public sealed class SagaStateChangeNotificationTests
     }
 
     [Fact]
+    public async Task CompensationTransitionsPublishPersistedSnapshotsForLiveDashboardUpdates()
+    {
+        var listener = new SnapshotListener();
+        var changes = new SagaStateChangePublisher([listener]);
+        var fixture = new CoordinationTestFixture(CoordinationTestFixture.Linear(), changes);
+        listener.Store = fixture.Store;
+
+        var id = await fixture.Coordinator.StartAsync(new { orderId = 3 });
+        await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.ToArray()[0]));
+        await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.ToArray()[1], success: false));
+        var dispatched = listener.Snapshots.Last();
+        Assert.Equal(SagaStatus.Compensating, dispatched.Status);
+        Assert.Equal(SagaCompensationStatus.Dispatched, dispatched.Compensations.Single().Status);
+
+        await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.Last()));
+
+        var completed = listener.Snapshots.Last();
+        Assert.Equal(id.ToString("N"), completed.Id);
+        Assert.Equal(SagaStatus.Compensated, completed.Status);
+        Assert.Equal(SagaCompensationStatus.Completed, completed.Compensations.Single().Status);
+        Assert.Equal(5, listener.Snapshots.Count);
+    }
+
+    [Fact]
     public async Task FailedInitialSaveDoesNotPublishAFalseNotification()
     {
         var listener = new RecordingListener();
@@ -51,9 +76,10 @@ public sealed class SagaStateChangeNotificationTests
         var registry = new ProcessDefinitionRegistry();
         registry.RegisterLocalBatch([CoordinationTestFixture.Linear()]);
         var clock = new SystemSagaClock();
-        var executor = new SagaStepExecutor(store, new CommandDispatcher(new CoordinationTestFixture.RecordingMessageBus()), clock, changes);
+        var dispatcher = new CommandDispatcher(new CoordinationTestFixture.RecordingMessageBus());
+        var executor = new SagaStepExecutor(store, dispatcher, clock, changes);
         var coordinator = new SagaCoordinator(registry, store, new SagaInstanceManager(clock), executor,
-            new TransitionResolver(), new ProcessStateManager(), clock, changes);
+            new TransitionResolver(), new ProcessStateManager(), new CompensationManager(store, dispatcher, clock, changes), clock, changes);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => coordinator.StartAsync(new { orderId = 3 }));
         Assert.Empty(listener.InstanceIds);
