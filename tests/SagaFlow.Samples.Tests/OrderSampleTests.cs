@@ -71,11 +71,12 @@ public sealed class OrderSampleTests
         var saga = new RecordingSagaFlow(() => Assert.True(repository.Added));
         var service = new OrderService(repository, saga);
 
-        var result = await service.CreateAsync(new("customer-1", [new("product-1", 2, 12.50m)]));
+        var result = await service.CreateAsync(new("customer-1", [new("product-1", 2, 12.50m)], "inventory"));
 
         Assert.Equal(saga.InstanceId, result.SagaInstanceId);
         Assert.Equal(result.OrderId, repository.Order!.Id);
         Assert.Equal(25m, repository.Order.Total);
+        Assert.Equal("inventory", repository.Order.FailureAt);
         Assert.Same(repository.Order, saga.Payload);
     }
 
@@ -99,6 +100,7 @@ public sealed class OrderSampleTests
         yield return [new CreateOrderRequest("customer", [new("", 1, 1)])];
         yield return [new CreateOrderRequest("customer", [new("product", 0, 1)])];
         yield return [new CreateOrderRequest("customer", [new("product", 1, 0)])];
+        yield return [new CreateOrderRequest("customer", [new("product", 1, 1)], "billing")];
     }
 
     [Theory]
@@ -108,6 +110,20 @@ public sealed class OrderSampleTests
         var result = await new CreateOrderRequestValidator().ValidateAsync(request);
 
         Assert.False(result.IsValid);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("payment")]
+    [InlineData("inventory")]
+    [InlineData("shipment")]
+    [InlineData("notification")]
+    public async Task ValidatorAcceptsSupportedOptionalFailureTarget(string? failureAt)
+    {
+        var result = await new CreateOrderRequestValidator().ValidateAsync(
+            new CreateOrderRequest("customer", [new("product", 1, 1)], failureAt));
+
+        Assert.True(result.IsValid);
     }
 
     [Fact]
@@ -135,6 +151,30 @@ public sealed class OrderSampleTests
         Assert.Contains(error.Errors, detail =>
             detail.Field == "items" && detail.Message == "At least one order item is required.");
         Assert.False(string.IsNullOrWhiteSpace(error.TraceId));
+        Assert.Equal(0, service.Calls);
+    }
+
+    [Fact]
+    public async Task AutomaticValidationRejectsUnsupportedFailureTarget()
+    {
+        var service = new RecordingOrderService();
+        await using var factory = new WebApplicationFactory<global::Program>().WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IHostedService>();
+                services.RemoveAll<IOrderService>();
+                services.AddSingleton<IOrderService>(service);
+            });
+        });
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/orders",
+            new CreateOrderRequest("customer", [new("product", 1, 10m)], "billing"));
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains(error!.Errors, detail => detail.Field == "failureAt");
         Assert.Equal(0, service.Calls);
     }
 

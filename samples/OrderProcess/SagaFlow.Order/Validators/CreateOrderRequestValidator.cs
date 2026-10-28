@@ -5,6 +5,9 @@ namespace SagaFlow.Order.Validators;
 
 public sealed class CreateOrderRequestValidator : AbstractValidator<CreateOrderRequest>
 {
+    private static readonly HashSet<string> ValidFailureTargets =
+        ["payment", "inventory", "shipment", "notification"];
+
     public CreateOrderRequestValidator()
     {
         RuleFor(request => request.CustomerId)
@@ -14,6 +17,10 @@ public sealed class CreateOrderRequestValidator : AbstractValidator<CreateOrderR
         RuleFor(request => request.Items)
             .NotEmpty()
             .WithMessage("At least one order item is required.");
+
+        RuleFor(request => request.FailureAt)
+            .Must(value => value is null || ValidFailureTargets.Contains(value))
+            .WithMessage("FailureAt must be one of: payment, inventory, shipment, notification.");
 
         RuleForEach(request => request.Items)
             .NotNull()
