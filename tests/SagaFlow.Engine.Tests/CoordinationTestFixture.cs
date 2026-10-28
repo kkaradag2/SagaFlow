@@ -9,6 +9,7 @@ using SagaFlow.Engine.Coordination;
 using SagaFlow.Engine.Messaging;
 using SagaFlow.Engine.Persistence.InMemory;
 using SagaFlow.Engine.ProcessDefinition;
+using SagaFlow.Engine.Notifications;
 
 namespace SagaFlow.Engine.Tests;
 
@@ -24,12 +25,12 @@ internal sealed class CoordinationTestFixture
     public SagaCoordinator Coordinator { get; }
     public OutcomeEventReceiver Receiver { get; }
 
-    public CoordinationTestFixture(SagaDefinition? definition = null)
+    public CoordinationTestFixture(SagaDefinition? definition = null, SagaStateChangePublisher? changes = null)
     {
         if (definition is not null) Registry.RegisterLocalBatch([definition]);
         Instances = new(Clock);
-        Executor = new(Store, new CommandDispatcher(Bus), Clock);
-        Coordinator = new(Registry, Store, Instances, Executor, new(), States, Clock);
+        Executor = new(Store, new CommandDispatcher(Bus), Clock, changes);
+        Coordinator = new(Registry, Store, Instances, Executor, new(), States, Clock, changes);
         Receiver = new(Coordinator);
     }
 

@@ -3,11 +3,13 @@ using SagaFlow.Core.Messages;
 using SagaFlow.Core.State;
 using SagaFlow.Engine.ContextState;
 using SagaFlow.Engine.ProcessDefinition;
+using SagaFlow.Engine.Notifications;
 
 namespace SagaFlow.Engine.Coordination;
 
 public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISagaStateStore store, SagaInstanceManager instances,
-    SagaStepExecutor executor, TransitionResolver resolver, ProcessStateManager states, ISagaClock clock) : ISagaFlow
+    SagaStepExecutor executor, TransitionResolver resolver, ProcessStateManager states, ISagaClock clock,
+    SagaStateChangePublisher? changes = null) : ISagaFlow
 {
     public string Name => nameof(SagaCoordinator);
 
@@ -20,6 +22,7 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
         executor.EnsureTransport();
         var instance = instances.Create(local[0].Definition, payload);
         await store.SaveAsync(instance, cancellationToken);
+        if (changes is not null) await changes.PublishAsync(instance.Id);
         try { await executor.ExecuteAsync(instance.Id, cancellationToken); }
         catch (SagaDispatchException) { throw; }
         catch (Exception error)
@@ -36,6 +39,7 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
                 }
                 return true;
             }, CancellationToken.None);
+            if (changes is not null) await changes.PublishAsync(instance.Id);
             throw new SagaDispatchException(instance.Id, instance.CurrentStep!, error);
         }
         return Guid.Parse(instance.Id);
@@ -83,6 +87,7 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
                 }
                 return (Command: (SagaCommand?)executor.Prepare(instance), Error: (string?)null);
             }, cancellationToken);
+            if (changes is not null) await changes.PublishAsync(outcome.Headers.SagaInstanceId);
         }
         catch (KeyNotFoundException error)
         {
