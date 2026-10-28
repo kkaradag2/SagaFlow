@@ -59,13 +59,14 @@ The internal structure of SagaFlow intentionally follows the six feature groups 
 builder.Services.AddSagaFlow(options =>
 {
     options.LoadFromYaml("saga/order-process.yaml");
-});
-
-app.UseSagaFlowDashboard(options =>
-{
-    options.Path = "/sagaflow";
+    // Dashboard is enabled by default at /sagaflow.
+    // options.Dashboard.Path = "/dashboard";
 });
 ```
+
+`AddSagaFlow()` automatically hosts the read-only dashboard and its state API. Set
+`options.Dashboard.Enabled = false` to disable it. `UseSagaFlowDashboard()` remains
+available for applications that need to register the middleware explicitly.
 
 ## Build
 

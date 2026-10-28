@@ -9,6 +9,9 @@ public interface ISagaStateStore
 
     ValueTask<SagaInstance?> FindAsync(string instanceId, CancellationToken cancellationToken = default);
 
+    /// <summary>Return isolated snapshots of all Saga instances currently held by the store.</summary>
+    ValueTask<IReadOnlyList<SagaInstance>> ListAsync(CancellationToken cancellationToken = default);
+
     ValueTask<SagaInstance?> FindAsync(Guid instanceId, CancellationToken cancellationToken = default) =>
         FindAsync(instanceId.ToString("N"), cancellationToken);
 

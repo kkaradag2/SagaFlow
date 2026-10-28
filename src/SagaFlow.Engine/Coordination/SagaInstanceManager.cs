@@ -21,9 +21,7 @@ public sealed class SagaInstanceManager(ISagaClock clock)
             DefinitionName = definition.Name, DefinitionDomain = definition.Domain, DefinitionVersion = definition.Version,
             CorrelationId = Guid.NewGuid().ToString("N"), Status = SagaStatus.Running,
             CurrentStep = definition.Steps[0].Name, Context = context, CreatedAt = now, UpdatedAt = now,
-            Steps = Array.AsReadOnly(definition.Steps.Select(step => new SagaStepState { StepName = step.Name, Command = step.Command }).ToArray()),
-            Compensations = Array.AsReadOnly(definition.Steps.Where(step => step.Compensation is not null).Select(step => new SagaCompensationState
-                { StepId = step.Name, Command = step.Compensation!.Command }).ToArray())
+            Steps = Array.AsReadOnly(definition.Steps.Select(step => new SagaStepState { StepName = step.Name, Command = step.Command }).ToArray())
         };
     }
 }

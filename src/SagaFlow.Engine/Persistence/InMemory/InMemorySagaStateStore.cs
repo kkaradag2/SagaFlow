@@ -49,6 +49,21 @@ public sealed class InMemorySagaStateStore : ISagaStateStore
         lock (entry.Gate) return ValueTask.FromResult<SagaInstance?>(SagaStateSnapshot.Copy(entry.State));
     }
 
+    public ValueTask<IReadOnlyList<SagaInstance>> ListAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var snapshots = new List<SagaInstance>(_instances.Count);
+        foreach (var entry in _instances.Values)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (entry.Gate) snapshots.Add(SagaStateSnapshot.Copy(entry.State));
+        }
+        return ValueTask.FromResult<IReadOnlyList<SagaInstance>>(snapshots
+            .OrderByDescending(instance => instance.CreatedAt)
+            .ThenBy(instance => instance.Id, StringComparer.Ordinal)
+            .ToArray());
+    }
+
     public ValueTask<TResult> UpdateAsync<TResult>(string instanceId, Func<SagaInstance, TResult> update, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(update);

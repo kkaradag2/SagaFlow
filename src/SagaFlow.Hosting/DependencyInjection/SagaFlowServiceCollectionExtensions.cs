@@ -8,6 +8,8 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using SagaFlow.Engine.ContextState;
 using SagaFlow.Engine.Messaging;
 using SagaFlow.Engine.Persistence.InMemory;
+using SagaFlow.Hosting.Dashboard;
+using Microsoft.AspNetCore.Hosting;
 
 namespace SagaFlow.Hosting.DependencyInjection;
 
@@ -45,6 +47,7 @@ public static class SagaFlowServiceCollectionExtensions
         services.AddSingleton<DefinitionEndpointMapping>();
         services.AddSingleton<IRemoteDefinitionClient>(client);
         services.AddSingleton(discovery);
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IStartupFilter, SagaFlowDashboardStartupFilter>());
         services.AddHostedService<DefinitionLoadingService>();
         if (publication.Enabled) services.AddGrpc();
 
@@ -58,6 +61,7 @@ public sealed class SagaFlowOptions
     public string? DefinitionDirectory { get; private set; }
     public DefinitionPublicationOptions Publication { get; } = new();
     public DefinitionDiscoveryOptions Discovery { get; } = new();
+    public SagaFlowDashboardOptions Dashboard { get; } = new();
 
     public void LoadFromYaml(string path)
     {

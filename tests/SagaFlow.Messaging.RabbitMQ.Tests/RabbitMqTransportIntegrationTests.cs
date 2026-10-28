@@ -753,6 +753,9 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         public ValueTask<SagaInstance?> FindAsync(string instanceId, CancellationToken cancellationToken = default) =>
             _inner.FindAsync(instanceId, cancellationToken);
 
+        public ValueTask<IReadOnlyList<SagaInstance>> ListAsync(CancellationToken cancellationToken = default) =>
+            _inner.ListAsync(cancellationToken);
+
         public ValueTask<TResult> UpdateAsync<TResult>(
             string instanceId,
             Func<SagaInstance, TResult> update,
