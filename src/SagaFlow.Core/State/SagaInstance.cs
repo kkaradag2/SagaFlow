@@ -23,5 +23,5 @@ public sealed class SagaInstance
     public SagaStatus Status { get; set; } = SagaStatus.Pending;
 
     public IReadOnlyList<SagaStepState> Steps { get; init; } = [];
-    public IReadOnlyList<SagaCompensationState> Compensations { get; init; } = [];
+    public IReadOnlyList<SagaCompensationState> Compensations { get; set; } = [];
 }

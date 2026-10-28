@@ -108,6 +108,22 @@ public sealed class InMemorySagaStateStoreTests
     }
 
     [Fact]
+    public async Task ListReturnsOrderedIsolatedSnapshots()
+    {
+        ISagaStateStore store = new InMemorySagaStateStore();
+        var first = new SagaInstance { CreatedAt = DateTimeOffset.UnixEpoch, Steps = [new() { StepName = "first" }] };
+        var second = new SagaInstance { CreatedAt = DateTimeOffset.UnixEpoch.AddSeconds(1), Steps = [new() { StepName = "second" }] };
+        await store.SaveAsync(first);
+        await store.SaveAsync(second);
+
+        var listed = await store.ListAsync();
+
+        Assert.Equal([second.Id, first.Id], listed.Select(instance => instance.Id));
+        listed[0].Steps[0].Status = SagaStepStatus.Failed;
+        Assert.Equal(SagaStepStatus.Pending, (await store.FindAsync(second.Id))!.Steps[0].Status);
+    }
+
+    [Fact]
     public async Task ReentrantWritesCannotSilentlyOverwriteAnInnerUpdate()
     {
         ISagaStateStore store = new InMemorySagaStateStore();

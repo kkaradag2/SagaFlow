@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Http;
 using SagaFlow.Dashboard.Assets;
+using SagaFlow.Core.Abstractions;
+using SagaFlow.Hosting.Endpoints;
 
 namespace SagaFlow.Hosting.Dashboard;
 
@@ -14,10 +16,29 @@ public sealed class SagaFlowDashboardMiddleware
         _options = options;
     }
 
-    public async Task InvokeAsync(HttpContext context)
+    public async Task InvokeAsync(HttpContext context, ISagaStateStore store)
     {
         var requestPath = context.Request.Path.Value ?? string.Empty;
         var dashboardPath = NormalizeDashboardPath(_options.Path);
+
+        var apiPath = $"{dashboardPath}/api/instances";
+        if (string.Equals(requestPath, apiPath, StringComparison.OrdinalIgnoreCase))
+        {
+            var instances = await store.ListAsync(context.RequestAborted);
+            await Results.Ok(instances.Select(SagaFlowDashboardEndpoints.ToSummary)).ExecuteAsync(context);
+            return;
+        }
+
+        if (requestPath.StartsWith($"{apiPath}/", StringComparison.OrdinalIgnoreCase))
+        {
+            var instanceId = requestPath[(apiPath.Length + 1)..];
+            var instance = await store.FindAsync(instanceId, context.RequestAborted);
+            var result = instance is null
+                ? Results.NotFound()
+                : Results.Ok(SagaFlowDashboardEndpoints.ToDetail(instance));
+            await result.ExecuteAsync(context);
+            return;
+        }
 
         if (!IsDashboardRequest(requestPath, dashboardPath))
         {

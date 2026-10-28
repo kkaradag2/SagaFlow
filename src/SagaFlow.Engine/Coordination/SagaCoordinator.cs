@@ -68,7 +68,7 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
                 var registered = definitions.Find(new(instance.DefinitionDomain, instance.DefinitionName, instance.DefinitionVersion));
                 if (registered is null || registered.Origin != DefinitionOrigin.Local) throw new InvalidOperationException("The instance's owning local definition/version is unavailable.");
                 var target = resolver.Resolve(registered.Definition.Steps.Single(s => s.Name == step.StepId), outcome.IsSuccess, outcome.Result);
-                states.ApplyOutcome(instance, outcome, target, clock.UtcNow);
+                states.ApplyOutcome(instance, outcome, target, clock.UtcNow, registered.Definition);
                 if (target is "completed" or "compensation") return (Command: (SagaCommand?)null, Error: (string?)null);
                 var next = instance.Steps.Single(s => s.StepId == target);
                 if (next.Status != SagaStepStatus.Pending)

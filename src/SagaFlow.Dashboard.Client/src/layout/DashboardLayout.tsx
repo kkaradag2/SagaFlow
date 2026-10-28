@@ -44,7 +44,7 @@ const breadcrumbs: Record<Page, string[]> = {
 };
 
 export function DashboardLayout() {
-  const [activePage, setActivePage] = useState<Page>("Overview");
+  const [activePage, setActivePage] = useState<Page>("Instances");
   const [isSidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isMobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
@@ -199,7 +199,7 @@ export function DashboardLayout() {
           </div>
         </header>
 
-        <div className="min-h-0 flex-1 overflow-auto p-6 lg:p-10">
+        <div id="dashboard-content" className="min-h-0 flex-1 overflow-auto p-6 lg:p-10">
           {content}
         </div>
       </section>

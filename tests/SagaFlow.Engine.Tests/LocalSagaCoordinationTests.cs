@@ -42,7 +42,7 @@ public sealed class LocalSagaCoordinationTests
         var id = await fixture.Coordinator.StartAsync(new { orderId = 42, nested = new { total = 17 } });
         var state = await fixture.State(id);
         Assert.Equal(count, state.Steps.Count);
-        Assert.Equal(count, state.Compensations.Count);
+        Assert.Empty(state.Compensations);
         Assert.Equal(SagaStatus.Running, state.Status);
         Assert.Equal("step-0", state.CurrentStep);
         Assert.True(Guid.TryParse(state.CorrelationId, out _));
@@ -61,7 +61,6 @@ public sealed class LocalSagaCoordinationTests
         Assert.Equal(command.Payload.GetRawText(), dispatched.Input!.Value.GetRawText());
         Assert.NotNull(dispatched.StartedAt);
         Assert.All(state.Steps.Where(s => s.StepId != "step-0"), s => Assert.Equal(SagaStepStatus.Pending, s.Status));
-        Assert.All(state.Compensations, c => Assert.Equal(SagaCompensationStatus.Pending, c.Status));
     }
 
     [Theory]
@@ -400,6 +399,7 @@ public sealed class LocalSagaCoordinationTests
             AfterSave?.Invoke();
         }
         public ValueTask<SagaInstance?> FindAsync(string instanceId, CancellationToken cancellationToken = default) => inner.FindAsync(instanceId, cancellationToken);
+        public ValueTask<IReadOnlyList<SagaInstance>> ListAsync(CancellationToken cancellationToken = default) => inner.ListAsync(cancellationToken);
         public ValueTask<TResult> UpdateAsync<TResult>(string instanceId, Func<SagaInstance, TResult> update, CancellationToken cancellationToken = default) => inner.UpdateAsync(instanceId, update, cancellationToken);
     }
 }

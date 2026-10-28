@@ -15,7 +15,6 @@ using SagaFlow.Engine.Messaging;
 using SagaFlow.Engine.Persistence.InMemory;
 using SagaFlow.Engine.ProcessDefinition;
 using SagaFlow.Hosting.DependencyInjection;
-using SagaFlow.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 
@@ -125,6 +124,31 @@ public sealed class LocalSagaCoordinationHostingTests
         Assert.Contains("text/html", response.Content.Headers.ContentType!.ToString());
     }
 
+    [Fact]
+    public async Task DashboardApiReturnsRealListAndCompleteDetailWithoutMutatingState()
+    {
+        await using var host = await RuntimeHost.Start();
+        await using var scope = host.App.Services.CreateAsyncScope();
+        var id = await scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { orderId = 42 });
+        var store = scope.ServiceProvider.GetRequiredService<ISagaStateStore>();
+        var before = (await store.FindAsync(id))!;
+        var address = host.App.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+        using var client = new HttpClient { BaseAddress = new Uri(address) };
+
+        using var list = JsonDocument.Parse(await client.GetStringAsync("/sagaflow/api/instances"));
+        var summary = Assert.Single(list.RootElement.EnumerateArray());
+        Assert.Equal(id.ToString("N"), summary.GetProperty("id").GetString());
+        Assert.Equal("purchase", summary.GetProperty("processName").GetString());
+        Assert.Equal("Running", summary.GetProperty("status").GetString());
+
+        using var detail = JsonDocument.Parse(await client.GetStringAsync($"/sagaflow/api/instances/{id:N}"));
+        Assert.Equal(2, detail.RootElement.GetProperty("steps").GetArrayLength());
+        Assert.Equal("Dispatched", detail.RootElement.GetProperty("steps")[0].GetProperty("status").GetString());
+        Assert.Equal("Pending", detail.RootElement.GetProperty("steps")[1].GetProperty("status").GetString());
+        Assert.Empty(detail.RootElement.GetProperty("compensations").EnumerateArray());
+        Assert.Equal(before.Revision, (await store.FindAsync(id))!.Revision);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -204,6 +228,7 @@ public sealed class LocalSagaCoordinationHostingTests
         public ValueTask SaveAsync(SagaInstance instance, CancellationToken cancellationToken = default)
         { Saves++; return _inner.SaveAsync(instance, cancellationToken); }
         public ValueTask<SagaInstance?> FindAsync(string instanceId, CancellationToken cancellationToken = default) => _inner.FindAsync(instanceId, cancellationToken);
+        public ValueTask<IReadOnlyList<SagaInstance>> ListAsync(CancellationToken cancellationToken = default) => _inner.ListAsync(cancellationToken);
         public ValueTask<TResult> UpdateAsync<TResult>(string instanceId, Func<SagaInstance, TResult> update, CancellationToken cancellationToken = default)
         { Updates++; return _inner.UpdateAsync(instanceId, update, cancellationToken); }
     }
@@ -226,7 +251,6 @@ public sealed class LocalSagaCoordinationHostingTests
             builder.Services.AddSagaFlow(options => options.LoadFromDirectory(directory));
             builder.Services.AddScoped<StarterBusinessService>();
             var app = builder.Build();
-            app.UseSagaFlowDashboard();
             try { await app.StartAsync(); return new(app, bus, directory); }
             catch { await app.DisposeAsync(); Directory.Delete(directory, true); throw; }
         }
