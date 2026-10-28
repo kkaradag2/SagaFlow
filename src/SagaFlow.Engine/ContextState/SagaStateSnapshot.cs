@@ -13,7 +13,8 @@ internal static class SagaStateSnapshot
         Steps = Array.AsReadOnly(state.Steps.Select(step => new SagaStepState
         {
             StepName = step.StepName, Command = step.Command, Status = step.Status, ExecutionOrder = step.ExecutionOrder,
-            Input = step.Input?.Clone(), Result = step.Result?.Clone(), StartedAt = step.StartedAt, CompletedAt = step.CompletedAt
+            Input = step.Input?.Clone(), Result = step.Result?.Clone(), StartedAt = step.StartedAt, CompletedAt = step.CompletedAt,
+            TimeoutLimit = step.TimeoutLimit, TimedOutAt = step.TimedOutAt
         }).ToArray()),
         Compensations = Array.AsReadOnly(state.Compensations.Select(CopyCompensation).ToArray())
     };

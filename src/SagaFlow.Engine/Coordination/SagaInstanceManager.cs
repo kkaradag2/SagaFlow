@@ -2,6 +2,7 @@ using System.Text.Json;
 using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.Definitions;
 using SagaFlow.Core.State;
+using SagaFlow.Engine.ProcessDefinition;
 
 namespace SagaFlow.Engine.Coordination;
 
@@ -21,7 +22,14 @@ public sealed class SagaInstanceManager(ISagaClock clock)
             DefinitionName = definition.Name, DefinitionDomain = definition.Domain, DefinitionVersion = definition.Version,
             CorrelationId = Guid.NewGuid().ToString("N"), Status = SagaStatus.Running,
             CurrentStep = definition.Steps[0].Name, Context = context, CreatedAt = now, UpdatedAt = now,
-            Steps = Array.AsReadOnly(definition.Steps.Select(step => new SagaStepState { StepName = step.Name, Command = step.Command }).ToArray())
+            Steps = Array.AsReadOnly(definition.Steps.Select(step => new SagaStepState
+            {
+                StepName = step.Name,
+                Command = step.Command,
+                TimeoutLimit = step.TimeoutLimit is null ? null
+                    : ProcessDefinitionValidator.TryParseDuration(step.TimeoutLimit, out var timeout) ? timeout
+                    : throw new InvalidOperationException($"Step '{step.Name}' has an invalid validated timeout limit.")
+            }).ToArray())
         };
     }
 }

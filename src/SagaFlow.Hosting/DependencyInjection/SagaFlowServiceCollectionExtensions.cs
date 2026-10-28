@@ -10,6 +10,8 @@ using SagaFlow.Engine.Messaging;
 using SagaFlow.Engine.Persistence.InMemory;
 using SagaFlow.Hosting.Dashboard;
 using Microsoft.AspNetCore.Hosting;
+using SagaFlow.Engine.Timeouts;
+using SagaFlow.Hosting.Timeouts;
 
 namespace SagaFlow.Hosting.DependencyInjection;
 
@@ -33,7 +35,9 @@ public static class SagaFlowServiceCollectionExtensions
         services.AddSingleton(options);
         services.TryAddSingleton<ISagaDefinitionLoader, YamlSagaDefinitionLoader>();
         services.TryAddSingleton<ISagaStateStore, InMemorySagaStateStore>();
-        services.TryAddSingleton<ISagaClock, SystemSagaClock>();
+        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton<ISagaClock>(provider => new SystemSagaClock(provider.GetRequiredService<TimeProvider>()));
+        services.AddSingleton<SagaTimeoutDetector>();
         services.AddSingleton<TransitionResolver>();
         services.AddSingleton<ProcessStateManager>();
         services.AddScoped<SagaInstanceManager>();
@@ -49,6 +53,7 @@ public static class SagaFlowServiceCollectionExtensions
         services.AddSingleton(discovery);
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IStartupFilter, SagaFlowDashboardStartupFilter>());
         services.AddHostedService<DefinitionLoadingService>();
+        services.AddHostedService<SagaTimeoutDetectionService>();
         if (publication.Enabled) services.AddGrpc();
 
         return services;

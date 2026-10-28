@@ -54,6 +54,8 @@ public static class SagaFlowDashboardEndpoints
             step.ExecutionOrder,
             step.StartedAt,
             step.CompletedAt,
+            TimeoutLimit = step.TimeoutLimit?.ToString(),
+            step.TimedOutAt,
             step.Input,
             step.Result
         }),

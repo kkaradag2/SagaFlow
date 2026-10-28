@@ -21,7 +21,7 @@ public sealed class SagaStepExecutor(ISagaStateStore store, CommandDispatcher di
         instance.UpdatedAt = step.StartedAt.Value;
         return new()
         {
-            Name = step.Command, Payload = step.Input.Value.Clone(),
+            Name = step.Command, Payload = step.Input.Value.Clone(), TimeToLive = step.TimeoutLimit,
             Headers = new() { SagaInstanceId = instance.Id, CorrelationId = instance.CorrelationId, StepId = step.StepId }
         };
     }

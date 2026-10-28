@@ -72,6 +72,62 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         Assert.Equal("DoWork", command.Name);
         Assert.Equal(42, command.Payload.GetProperty("orderId").GetInt32());
         Assert.Equal(sagaId.ToString("N"), command.Headers.SagaInstanceId);
+        Assert.Null(command.TimeToLive);
+        Assert.Null(delivery.BasicProperties.Expiration);
+    }
+
+    [RabbitMqFact]
+    public async Task YamlTimeoutIsPublishedAsPerMessageTtl()
+    {
+        await using var runtime = await StartExternalAsync(definitionYaml: DefinitionWithTimeout("5s"));
+
+        await StartSagaAsync(runtime.Host, new { orderId = 5 });
+        var delivery = await GetMessageAsync(runtime.Topology.CommandQueue);
+        var command = RabbitMqMessageSerializer.DeserializeCommand(delivery.Body.Span);
+
+        Assert.Equal(TimeSpan.FromSeconds(5), command.TimeToLive);
+        Assert.Equal("5000", delivery.BasicProperties.Expiration);
+        Assert.Equal("work", delivery.RoutingKey);
+        Assert.Equal(command.Headers.CorrelationId, delivery.BasicProperties.CorrelationId);
+    }
+
+    [RabbitMqFact]
+    public async Task ExpiredReadyCommandIsNotDeliveredLater()
+    {
+        await using var runtime = await StartExternalAsync(definitionYaml: DefinitionWithTimeout("250ms"));
+        await StartSagaAsync(runtime.Host, new { id = 1 });
+        Assert.Equal(1u, await MessageCountAsync(runtime.Topology.CommandQueue));
+
+        await Task.Delay(750);
+
+        await using var channel = await broker.Connection.CreateChannelAsync();
+        Assert.Null(await channel.BasicGetAsync(runtime.Topology.CommandQueue, autoAck: true));
+    }
+
+    [RabbitMqFact]
+    public async Task CommandConsumedBeforeTtlCanCompleteNormally()
+    {
+        await using var runtime = await StartExternalAsync(definitionYaml: DefinitionWithTimeout("5s"));
+        var sagaId = await StartSagaAsync(runtime.Host, new { id = 2 });
+        var command = RabbitMqMessageSerializer.DeserializeCommand(
+            (await GetMessageAsync(runtime.Topology.CommandQueue)).Body.Span);
+
+        await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, SuccessfulOutcome(command.Headers));
+
+        await WaitUntilAsync(async () => (await FindSagaAsync(runtime.Host, sagaId))?.Status == SagaStatus.Completed);
+    }
+
+    [RabbitMqFact]
+    public async Task CommandWithoutTtlRemainsReadyWithoutAConsumer()
+    {
+        await using var runtime = await StartExternalAsync();
+        await StartSagaAsync(runtime.Host, new { id = 3 });
+
+        await Task.Delay(750);
+
+        Assert.Equal(1u, await MessageCountAsync(runtime.Topology.CommandQueue));
+        var delivery = await GetMessageAsync(runtime.Topology.CommandQueue);
+        Assert.Null(delivery.BasicProperties.Expiration);
     }
 
     [RabbitMqFact]
@@ -725,6 +781,23 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
             """);
         return path;
     }
+
+    private static string DefinitionWithTimeout(string timeoutLimit) => $$"""
+        name: rabbit-timeout-test
+        version: "1.0"
+        domain: test
+        steps:
+          - name: work
+            command: DoWork
+            timeoutLimit: {{timeoutLimit}}
+            transitions:
+              - event: success
+                nextStep: completed
+              - event: failure
+                nextStep: compensation
+              - event: timeout
+                nextStep: compensation
+        """;
 
     private sealed record RabbitTopology(string CommandExchange, string CommandQueue, string Domain)
     {

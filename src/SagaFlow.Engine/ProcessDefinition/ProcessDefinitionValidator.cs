@@ -28,7 +28,7 @@ public sealed partial class ProcessDefinitionValidator
             if (step is null) continue;
             var prefix = $"step '{step.Name}'";
             Check(IsIdentifier(step.Command), $"{prefix}: command must be a nonempty identifier.");
-            Check(step.TimeoutLimit is null || IsPositiveDuration(step.TimeoutLimit), $"{prefix}: timeoutLimit must be a positive duration such as '10s', '30s', or '2m'.");
+            Check(step.TimeoutLimit is null || TryParseDuration(step.TimeoutLimit, out _), $"{prefix}: timeoutLimit must be a positive duration such as '10s', '30s', or '2m'.");
             Check(step.MaxAttempts > 0, $"{prefix}: maxAttempts must be a positive integer.");
             if (step.Compensation is not null)
                 Check(IsIdentifier(step.Compensation.Command), $"{prefix}: compensation.command must be a nonempty identifier.");
@@ -153,14 +153,17 @@ public sealed partial class ProcessDefinitionValidator
 
     public static bool IsIdentifier(string? value) => value is { Length: <= 128 } && Identifier().IsMatch(value);
     public static bool IsVersion(string? value) => value is { Length: <= 64 } && VersionPattern().IsMatch(value);
-    public static bool IsPositiveDuration(string? value)
+    public static bool IsPositiveDuration(string? value) => TryParseDuration(value, out _);
+
+    public static bool TryParseDuration(string? value, out TimeSpan duration)
     {
+        duration = default;
         if (value is not { Length: <= 32 }) return false;
         var match = DurationPattern().Match(value);
         if (!match.Success || !long.TryParse(match.Groups[1].Value, out var amount) || amount <= 0) return false;
         try
         {
-            _ = match.Groups[2].Value switch
+            duration = match.Groups[2].Value switch
             {
                 "ms" => TimeSpan.FromMilliseconds(amount),
                 "s" => TimeSpan.FromSeconds(amount),

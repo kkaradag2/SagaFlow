@@ -9,6 +9,7 @@ using SagaFlow.Core.Messages;
 using SagaFlow.Engine.Coordination;
 using SagaFlow.Engine.Messaging;
 using SagaFlow.Engine.ProcessDefinition;
+using System.Globalization;
 
 namespace SagaFlow.Messaging.RabbitMQ;
 
@@ -68,7 +69,10 @@ internal sealed class RabbitMqTransport(
             Type = nameof(SagaCommand),
             MessageId = $"{command.Headers.SagaInstanceId}:{command.Headers.StepId}",
             CorrelationId = command.Headers.CorrelationId,
-            ReplyTo = outcomeQueue
+            ReplyTo = outcomeQueue,
+            Expiration = command.TimeToLive is { } timeToLive
+                ? ToExpirationMilliseconds(timeToLive)
+                : null
         };
 
         await _publishGate.WaitAsync(cancellationToken);
@@ -86,6 +90,13 @@ internal sealed class RabbitMqTransport(
         {
             _publishGate.Release();
         }
+    }
+
+    private static string ToExpirationMilliseconds(TimeSpan timeToLive)
+    {
+        if (timeToLive <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(timeToLive), "Command time-to-live must be positive.");
+        return (timeToLive.Ticks / TimeSpan.TicksPerMillisecond).ToString(CultureInfo.InvariantCulture);
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
@@ -188,6 +199,11 @@ internal sealed class RabbitMqTransport(
         {
             logger.LogInformation(error, "Acknowledging duplicate Saga outcome {MessageId}.", delivery.BasicProperties.MessageId);
             await channel.BasicAckAsync(delivery.DeliveryTag, multiple: false, CancellationToken.None);
+        }
+        catch (LateSagaOutcomeException error)
+        {
+            logger.LogWarning(error, "Saga outcome {MessageId} arrived after timeout and will remain queued for explicit resolution.", delivery.BasicProperties.MessageId);
+            await channel.BasicNackAsync(delivery.DeliveryTag, multiple: false, requeue: true, CancellationToken.None);
         }
         catch (InvalidSagaOutcomeException error)
         {

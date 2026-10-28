@@ -59,6 +59,8 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
                     throw new InvalidSagaOutcomeException("Outcome correlation does not match the Saga instance.");
                 var step = instance.Steps.SingleOrDefault(s => s.StepId == outcome.Headers.StepId)
                     ?? throw new InvalidSagaOutcomeException("Outcome refers to an unknown Saga step.");
+                if (instance.Status == SagaStatus.TimedOut && instance.CurrentStep == step.StepId && step.Status == SagaStepStatus.TimedOut)
+                    throw new LateSagaOutcomeException("Outcome arrived after the active Saga step timed out; it must remain available for explicit resolution.");
                 if (step.Result.HasValue && (step.Status is SagaStepStatus.Completed or SagaStepStatus.Failed))
                     throw new DuplicateSagaOutcomeException("Outcome was already processed; duplicate outcomes cannot advance the Saga again.");
                 if (instance.Status == SagaStatus.Failed && instance.CurrentStep is null && step.Status == SagaStepStatus.Failed)

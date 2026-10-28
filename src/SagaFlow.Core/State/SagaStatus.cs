@@ -8,5 +8,6 @@ public enum SagaStatus
     Failed,
     Compensating,
     Compensated,
-    CompensationRequested
+    CompensationRequested,
+    TimedOut
 }
