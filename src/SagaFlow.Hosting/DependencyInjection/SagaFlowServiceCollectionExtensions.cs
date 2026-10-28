@@ -12,6 +12,7 @@ using SagaFlow.Hosting.Dashboard;
 using Microsoft.AspNetCore.Hosting;
 using SagaFlow.Engine.Timeouts;
 using SagaFlow.Hosting.Timeouts;
+using SagaFlow.Engine.Notifications;
 
 namespace SagaFlow.Hosting.DependencyInjection;
 
@@ -38,6 +39,10 @@ public static class SagaFlowServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton<ISagaClock>(provider => new SystemSagaClock(provider.GetRequiredService<TimeProvider>()));
         services.AddSingleton<SagaTimeoutDetector>();
+        services.TryAddSingleton<SagaStateChangePublisher>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<ISagaStateChangeListener, SignalRSagaStateChangeListener>());
+        services.AddLogging();
+        services.AddSignalR();
         services.AddSingleton<TransitionResolver>();
         services.AddSingleton<ProcessStateManager>();
         services.AddScoped<SagaInstanceManager>();

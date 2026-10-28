@@ -19,7 +19,7 @@ public sealed class SagaFlowDashboardMiddleware
     public async Task InvokeAsync(HttpContext context, ISagaStateStore store)
     {
         var requestPath = context.Request.Path.Value ?? string.Empty;
-        var dashboardPath = NormalizeDashboardPath(_options.Path);
+        var dashboardPath = SagaFlowDashboardPath.Normalize(_options.Path);
 
         var apiPath = $"{dashboardPath}/api/instances";
         if (string.Equals(requestPath, apiPath, StringComparison.OrdinalIgnoreCase))
@@ -90,17 +90,6 @@ public sealed class SagaFlowDashboardMiddleware
     {
         return string.Equals(requestPath, dashboardPath, StringComparison.OrdinalIgnoreCase)
             || requestPath.StartsWith($"{dashboardPath}/", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string NormalizeDashboardPath(string path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return "/sagaflow";
-        }
-
-        var normalized = path.StartsWith('/') ? path : $"/{path}";
-        return normalized.TrimEnd('/');
     }
 
     private static async Task SendFileAsync(HttpContext context, string path)

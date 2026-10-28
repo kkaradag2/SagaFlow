@@ -12,6 +12,7 @@ import {
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { EmptyPanel } from "../layout/DashboardLayout";
+import { useSagaFlowLiveUpdates } from "../live/useSagaFlowLiveUpdates";
 import {
   getInstance,
   getInstances,
@@ -25,6 +26,7 @@ export function InstancesPage() {
   const [selected, setSelected] = useState<SagaInstanceDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const liveRequest = useRef(0);
   const selectedId = selected?.id;
 
   const loadInstances = useCallback(async () => {
@@ -57,6 +59,24 @@ export function InstancesPage() {
       setLoading(false);
     }
   }, [selectedId]);
+
+  const applyLiveChange = useCallback(async (instanceId: string | null) => {
+    const request = ++liveRequest.current;
+    try {
+      const [nextInstances, nextDetail] = await Promise.all([
+        getInstances(),
+        selectedId && (instanceId === null || selectedId === instanceId) ? getInstance(selectedId) : Promise.resolve(null),
+      ]);
+      if (request !== liveRequest.current) return;
+      setInstances(nextInstances);
+      if (nextDetail) setSelected(current => current?.id === nextDetail.id ? nextDetail : current);
+    } catch (requestError) {
+      if (request !== liveRequest.current) return;
+      setError(requestError instanceof Error ? requestError.message : "Unable to load live Saga state.");
+    }
+  }, [selectedId]);
+
+  useSagaFlowLiveUpdates(applyLiveChange);
 
   const scrollToTop = () => {
     requestAnimationFrame(() => document.getElementById("dashboard-content")?.scrollTo({ top: 0, behavior: "smooth" }));
@@ -204,8 +224,9 @@ function InstanceDetail({ instance, loading, onBack, onRefresh }: {
 function StepItem({ step, index, isLast, isCurrent, now }: { step: SagaStep; index: number; isLast: boolean; isCurrent: boolean; now: number }) {
   const hasInput = step.input != null;
   const hasResult = step.result != null;
-  const isPending = step.status === "Pending";
   const isTimedOut = step.status === "TimedOut";
+  const userChangedExpansion = useRef(false);
+  const [expanded, setExpanded] = useState(() => shouldOpenByDefault(step.status, isCurrent));
   const remaining = canShowCountdown(step) ? getRemaining(step, now) : null;
   const cardClass = isTimedOut
     ? "border-orange-400/70 shadow-sm shadow-orange-500/10 dark:border-orange-800"
@@ -213,21 +234,41 @@ function StepItem({ step, index, isLast, isCurrent, now }: { step: SagaStep; ind
       ? "border-emerald-400/70 shadow-sm shadow-emerald-500/10 dark:border-emerald-700"
       : "border-zinc-200 dark:border-zinc-800";
 
+  useEffect(() => {
+    if (!userChangedExpansion.current) setExpanded(shouldOpenByDefault(step.status, isCurrent));
+  }, [step.status, isCurrent]);
+
+  const toggleExpanded = () => {
+    userChangedExpansion.current = true;
+    setExpanded(value => !value);
+  };
+
   return <li className="relative grid grid-cols-[36px_minmax(0,1fr)] gap-3 sm:grid-cols-[44px_minmax(0,1fr)] sm:gap-4">
-    {!isLast ? <span className="absolute left-[17px] top-9 h-[calc(100%-20px)] w-px bg-zinc-200 dark:bg-zinc-800 sm:left-[21px]" aria-hidden="true" /> : null}
-    <span className={`relative z-10 mt-4 inline-flex size-9 items-center justify-center rounded-full border sm:size-11 ${stepMarkerClass(step.status)}`}>{stepIcon(step.status, index)}</span>
+    {!isLast ? <span className="absolute left-[17px] top-8 h-[calc(100%-12px)] w-px bg-zinc-200 dark:bg-zinc-800 sm:left-[21px]" aria-hidden="true" /> : null}
+    <span className={`relative z-10 mt-3 inline-flex size-9 items-center justify-center rounded-full border sm:size-11 ${stepMarkerClass(step.status)}`}>{stepIcon(step.status, index)}</span>
     <article className={`mb-3 rounded-2xl border bg-white transition dark:bg-zinc-950/40 ${cardClass}`}>
-      <div className={`flex flex-wrap items-center justify-between gap-3 ${isPending ? "px-4 py-4" : "border-b border-zinc-100 px-4 py-4 dark:border-zinc-900 sm:px-5"}`}>
-        <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h4 className="font-semibold">{step.stepName}</h4>{isCurrent ? <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">Current</span> : null}</div><div className="mt-1 truncate font-mono text-xs text-zinc-500">{step.command}</div></div>
-        <Status value={step.status} />
-      </div>
-      {!isPending ? <div className="px-4 py-4 sm:px-5">
+      <button type="button" onClick={toggleExpanded} aria-expanded={expanded}
+        className={`grid w-full gap-3 rounded-2xl px-4 py-3 text-left transition hover:bg-zinc-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-emerald-500 dark:hover:bg-zinc-900/50 sm:grid-cols-[minmax(170px,1fr)_minmax(210px,auto)_auto] sm:items-center sm:px-5 ${expanded ? "rounded-b-none border-b border-zinc-100 dark:border-zinc-900" : ""}`}>
+        <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h4 className="font-semibold">{step.stepName}</h4>{isCurrent ? <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">Current</span> : null}</div><div className="mt-0.5 truncate font-mono text-[11px] text-zinc-500">{step.command}</div></div>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-500 sm:justify-end">
+          <span className="font-medium text-zinc-700 dark:text-zinc-300">#{step.executionOrder ?? "—"}</span>
+          {step.startedAt ? <CompactTime label="Dispatched" value={step.startedAt} /> : null}
+          {step.completedAt ? <CompactTime label="Completed" value={step.completedAt} /> : null}
+          {step.timedOutAt ? <CompactTime label="Timed out" value={step.timedOutAt} tone="text-orange-600 dark:text-orange-300" /> : null}
+        </div>
+        <div className="flex items-center justify-between gap-3 sm:justify-end"><Status value={step.status} /><ChevronRight size={16} className={`shrink-0 text-zinc-400 transition-transform ${expanded ? "rotate-90" : ""}`} aria-hidden="true" /></div>
+      </button>
+      {expanded ? <div className="px-4 py-4 sm:px-5">
         <dl className={`grid gap-x-5 gap-y-4 sm:grid-cols-2 ${remaining !== null ? "xl:grid-cols-6" : "xl:grid-cols-5"}`}><Fact label="Execution order" value={step.executionOrder?.toString() ?? "—"} /><Fact label="Timeout limit" value={step.timeoutLimit ?? "—"} /><Fact label="Dispatched" value={formatDate(step.startedAt)} />{remaining !== null ? <CountdownFact milliseconds={remaining} /> : null}<Fact label="Completed" value={formatDate(step.completedAt)} /><Fact label="Timed out at" value={formatDate(step.timedOutAt)} /></dl>
         {isTimedOut ? <div className="mt-4 flex items-start gap-3 rounded-xl border border-orange-200 bg-orange-50 px-3.5 py-3 text-sm text-orange-800 dark:border-orange-900 dark:bg-orange-950/30 dark:text-orange-200"><TimerOff size={17} className="mt-0.5 shrink-0" aria-hidden="true" /><div><div className="font-semibold">Step timed out</div><div className="mt-0.5 text-xs text-orange-700/80 dark:text-orange-300/80">No valid outcome was received before {formatDate(step.timedOutAt)}.</div></div></div> : null}
         {hasInput || hasResult ? <div className="mt-4 grid gap-3 xl:grid-cols-2">{hasInput ? <PayloadPanel label="Input payload" value={step.input} /> : null}{hasResult ? <PayloadPanel label="Result" value={step.result} /> : null}</div> : null}
       </div> : null}
     </article>
   </li>;
+}
+
+function CompactTime({ label, value, tone = "" }: { label: string; value: string; tone?: string }) {
+  return <span className={tone}><span className="text-zinc-400">{label}</span> {formatShortTime(value)}</span>;
 }
 
 function PayloadPanel({ label, value }: { label: string; value: unknown }) {
@@ -283,6 +324,14 @@ function stepIcon(status: string, index: number): ReactNode {
 }
 
 function formatDate(value: string | null) { return value ? new Date(value).toLocaleString() : "—"; }
+
+function formatShortTime(value: string) {
+  return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function shouldOpenByDefault(status: string, isCurrent: boolean) {
+  return isCurrent || status === "TimedOut" || status === "Failed";
+}
 
 function canShowCountdown(step: SagaStep) {
   return step.status === "Dispatched" && step.startedAt !== null && step.timeoutLimit !== null;

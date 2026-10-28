@@ -2,10 +2,12 @@ using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.Messages;
 using SagaFlow.Core.State;
 using SagaFlow.Engine.Messaging;
+using SagaFlow.Engine.Notifications;
 
 namespace SagaFlow.Engine.Coordination;
 
-public sealed class SagaStepExecutor(ISagaStateStore store, CommandDispatcher dispatcher, ISagaClock clock)
+public sealed class SagaStepExecutor(ISagaStateStore store, CommandDispatcher dispatcher, ISagaClock clock,
+    SagaStateChangePublisher? changes = null)
 {
     public void EnsureTransport() => dispatcher.EnsureTransport();
 
@@ -30,6 +32,7 @@ public sealed class SagaStepExecutor(ISagaStateStore store, CommandDispatcher di
     {
         EnsureTransport();
         var command = await store.UpdateAsync(instanceId, Prepare, cancellationToken);
+        if (changes is not null) await changes.PublishAsync(instanceId);
         await PublishPreparedAsync(command, cancellationToken);
     }
 
@@ -53,6 +56,7 @@ public sealed class SagaStepExecutor(ISagaStateStore store, CommandDispatcher di
                 }
                 return true;
             }, CancellationToken.None);
+            if (changes is not null) await changes.PublishAsync(command.Headers.SagaInstanceId);
             throw new SagaDispatchException(command.Headers.SagaInstanceId, command.Headers.StepId, error);
         }
     }

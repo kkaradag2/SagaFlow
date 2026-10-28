@@ -18,6 +18,7 @@ using SagaFlow.Engine.Timeouts;
 using SagaFlow.Hosting.DependencyInjection;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.SignalR.Client;
 
 namespace SagaFlow.Hosting.Tests;
 
@@ -152,6 +153,25 @@ public sealed class LocalSagaCoordinationHostingTests
     }
 
     [Fact]
+    public async Task SignalRPublishesChangedInstanceIdAtConfiguredDashboardPath()
+    {
+        await using var host = await RuntimeHost.Start(dashboardPath: "/operations");
+        var address = host.App.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+        await using var connection = new HubConnectionBuilder()
+            .WithUrl($"{address}/operations/hub")
+            .WithAutomaticReconnect()
+            .Build();
+        var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.On<string>("SagaInstanceChanged", instanceId => received.TrySetResult(instanceId));
+        await connection.StartAsync();
+
+        await using var scope = host.App.Services.CreateAsyncScope();
+        var id = await scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { orderId = 73 });
+
+        Assert.Equal(id.ToString("N"), await received.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
     public async Task HostedDetectionMakesTimeoutVisibleThroughDashboardApi()
     {
         var timeoutYaml = Yaml.Replace("command: AuthorizePayment", "command: AuthorizePayment\n    timeoutLimit: 1ms");
@@ -270,7 +290,8 @@ public sealed class LocalSagaCoordinationHostingTests
         public WebApplication App { get; } = app;
         public TestTransport Bus { get; } = bus;
         public ProcessDefinitionRegistry Registry => App.Services.GetRequiredService<ProcessDefinitionRegistry>();
-        public static async Task<RuntimeHost> Start(bool loadLocal = true, bool registerTransport = true, string? yaml = null)
+        public static async Task<RuntimeHost> Start(bool loadLocal = true, bool registerTransport = true, string? yaml = null,
+            string dashboardPath = "/sagaflow")
         {
             var directory = Directory.CreateTempSubdirectory("sagaflow-runtime-").FullName;
             if (loadLocal) await File.WriteAllTextAsync(Path.Combine(directory, "purchase.yaml"), yaml ?? Yaml);
@@ -280,7 +301,11 @@ public sealed class LocalSagaCoordinationHostingTests
             builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0));
             var bus = new TestTransport();
             if (registerTransport) builder.Services.AddSingleton<ISagaMessageBus>(bus);
-            builder.Services.AddSagaFlow(options => options.LoadFromDirectory(directory));
+            builder.Services.AddSagaFlow(options =>
+            {
+                options.LoadFromDirectory(directory);
+                options.Dashboard.Path = dashboardPath;
+            });
             builder.Services.AddScoped<StarterBusinessService>();
             var app = builder.Build();
             try { await app.StartAsync(); return new(app, bus, directory); }

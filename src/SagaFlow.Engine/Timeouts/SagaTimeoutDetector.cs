@@ -1,9 +1,11 @@
 using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.State;
+using SagaFlow.Engine.Notifications;
 
 namespace SagaFlow.Engine.Timeouts;
 
-public sealed class SagaTimeoutDetector(ISagaStateStore store, TimeProvider timeProvider)
+public sealed class SagaTimeoutDetector(ISagaStateStore store, TimeProvider timeProvider,
+    SagaStateChangePublisher? changes = null)
 {
     public async Task<int> DetectAsync(CancellationToken cancellationToken = default)
     {
@@ -31,7 +33,11 @@ public sealed class SagaTimeoutDetector(ISagaStateStore store, TimeProvider time
                 instance.UpdatedAt = now;
                 return true;
             }, cancellationToken);
-            if (applied) detected++;
+            if (applied)
+            {
+                detected++;
+                if (changes is not null) await changes.PublishAsync(candidate.Id);
+            }
         }
         return detected;
     }
