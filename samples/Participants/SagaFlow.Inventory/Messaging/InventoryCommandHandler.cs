@@ -9,10 +9,13 @@ public sealed class InventoryCommandHandler(IInventoryService inventory) : IPart
 {
     public IReadOnlyCollection<string> CommandNames { get; } = ["ReserveInventory", "ReleaseInventory"];
 
-    public object Handle(SagaCommand command)
+    public ParticipantCommandResult Handle(SagaCommand command)
     {
+        if (SampleFailureInjection.IsRequested(command, "inventory", "ReserveInventory"))
+            return ParticipantCommandResult.Failure("inventory");
+
         var orderId = command.Payload.GetProperty("id").GetGuid().ToString("N");
-        return command.Name switch
+        return ParticipantCommandResult.Success(command.Name switch
         {
             "ReserveInventory" => inventory.ReserveInventory(orderId, command.Payload.GetProperty("items")
                 .EnumerateArray()
@@ -22,6 +25,6 @@ public sealed class InventoryCommandHandler(IInventoryService inventory) : IPart
                 .ToArray()),
             "ReleaseInventory" => inventory.ReleaseInventory(orderId),
             _ => throw new InvalidOperationException($"Unsupported inventory command '{command.Name}'.")
-        };
+        });
     }
 }

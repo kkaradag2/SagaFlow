@@ -25,7 +25,8 @@ public sealed class OrderService(
             request.CustomerId.Trim(),
             Array.AsReadOnly(items),
             items.Sum(item => item.LineTotal),
-            timeProvider.GetUtcNow());
+            timeProvider.GetUtcNow(),
+            request.FailureAt);
 
         await repository.AddAsync(order, cancellationToken);
 

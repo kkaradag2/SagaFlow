@@ -48,17 +48,74 @@ public sealed class SampleRabbitMqEndToEndTests
         }
     }
 
+    [SampleRabbitMqFact]
+    public async Task RequestedParticipantPublishesFailureAndStopsForwardExecution()
+    {
+        await using var factory = new WebApplicationFactory<global::Program>();
+        using var client = factory.CreateClient();
+        await using var broker = await CreateConnectionAsync();
+        var workers = new List<Process>();
+
+        try
+        {
+            await RemoveLegacyCommandBindingsAsync(broker);
+            workers = StartWorkers();
+            await WaitForConsumersAsync(broker);
+
+            var targets = new[] { "payment", "inventory", "shipment", "notification" };
+            for (var failedIndex = 0; failedIndex < targets.Length; failedIndex++)
+            {
+                var result = await CreateOrderAsync(client, $"failure-{targets[failedIndex]}",
+                    $"product-{failedIndex}", targets[failedIndex]);
+                await WaitForFailureAsync(factory.Services, result.SagaInstanceId, failedIndex);
+            }
+        }
+        finally
+        {
+            await StopWorkersAsync(workers);
+        }
+    }
+
     private static async Task<CreateOrderResult> CreateOrderAsync(
         HttpClient client,
         string customerId,
-        string productId)
+        string productId,
+        string? failureAt = null)
     {
         var response = await client.PostAsJsonAsync(
             "/orders",
-            new CreateOrderRequest(customerId, [new(productId, 2, 12.50m)]));
+            new CreateOrderRequest(customerId, [new(productId, 2, 12.50m)], failureAt));
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<SuccessResponse<CreateOrderResult>>();
         return body!.Data;
+    }
+
+    private static async Task WaitForFailureAsync(IServiceProvider services, Guid sagaId, int failedIndex)
+    {
+        var timeout = DateTime.UtcNow.AddSeconds(20);
+        while (DateTime.UtcNow < timeout)
+        {
+            var state = await services.GetRequiredService<ISagaStateStore>().FindAsync(sagaId);
+            if (state?.Status == SagaStatus.CompensationRequested)
+            {
+                Assert.False(string.IsNullOrWhiteSpace(state.CorrelationId));
+                Assert.Equal(sagaId.ToString("N"), state.Id);
+                for (var index = 0; index < state.Steps.Count; index++)
+                {
+                    var expected = index < failedIndex
+                        ? SagaStepStatus.Completed
+                        : index == failedIndex ? SagaStepStatus.Failed : SagaStepStatus.Pending;
+                    Assert.Equal(expected, state.Steps[index].Status);
+                }
+                Assert.NotNull(state.Steps[failedIndex].Result);
+                Assert.Equal(failedIndex, state.Compensations.Count);
+                return;
+            }
+
+            await Task.Delay(100);
+        }
+
+        Assert.Fail($"Saga '{sagaId:N}' did not reach controlled failure within 20 seconds.");
     }
 
     private static async Task WaitForCompletionAsync(IServiceProvider services, IEnumerable<Guid> sagaIds)
@@ -107,7 +164,8 @@ public sealed class SampleRabbitMqEndToEndTests
     {
         var root = FindRepositoryRoot();
         var projectDirectory = Path.Combine(root, "samples", "Participants", projectName);
-        var assembly = Path.Combine(projectDirectory, "bin", "Debug", "net10.0", $"{projectName}.dll");
+        var configuration = new DirectoryInfo(AppContext.BaseDirectory).Parent?.Name ?? "Debug";
+        var assembly = Path.Combine(projectDirectory, "bin", configuration, "net10.0", $"{projectName}.dll");
         var startInfo = new ProcessStartInfo("dotnet", assembly)
         {
             WorkingDirectory = projectDirectory,
@@ -134,11 +192,11 @@ public sealed class SampleRabbitMqEndToEndTests
     {
         var factory = new ConnectionFactory
         {
-            HostName = "localhost",
-            Port = 5672,
-            UserName = "sagaflow",
-            Password = "sagaflow-dev",
-            VirtualHost = "/",
+            HostName = Environment.GetEnvironmentVariable("RabbitMq__HostName") ?? "localhost",
+            Port = int.TryParse(Environment.GetEnvironmentVariable("RabbitMq__Port"), out var port) ? port : 5672,
+            UserName = Environment.GetEnvironmentVariable("RabbitMq__UserName") ?? "sagaflow",
+            Password = Environment.GetEnvironmentVariable("RabbitMq__Password") ?? "sagaflow-dev",
+            VirtualHost = Environment.GetEnvironmentVariable("RabbitMq__VirtualHost") ?? "/",
             ClientProvidedName = "sagaflow-sample-tests"
         };
         return await factory.CreateConnectionAsync();

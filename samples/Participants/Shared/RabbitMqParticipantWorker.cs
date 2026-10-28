@@ -11,7 +11,33 @@ namespace SagaFlow.Participants.Messaging;
 public interface IParticipantCommandHandler
 {
     IReadOnlyCollection<string> CommandNames { get; }
-    object Handle(SagaCommand command);
+    ParticipantCommandResult Handle(SagaCommand command);
+}
+
+public sealed record ParticipantCommandResult(bool IsSuccess, object Value)
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public static ParticipantCommandResult Success(object value) => new(true, value);
+    public static ParticipantCommandResult Failure(string participant) =>
+        new(false, new { error = $"Sample failure requested at {participant}." });
+
+    public SagaOutcomeEvent ToOutcome(SagaCommand command) => new()
+    {
+        Name = $"{command.Name}{(IsSuccess ? "Completed" : "Failed")}",
+        IsSuccess = IsSuccess,
+        Headers = command.Headers,
+        Result = JsonSerializer.SerializeToElement(Value, JsonOptions)
+    };
+}
+
+public static class SampleFailureInjection
+{
+    public static bool IsRequested(SagaCommand command, string participant, string forwardCommand) =>
+        command.Name == forwardCommand
+        && command.Payload.TryGetProperty("failureAt", out var failureAt)
+        && failureAt.ValueKind == JsonValueKind.String
+        && string.Equals(failureAt.GetString(), participant, StringComparison.Ordinal);
 }
 
 public class RabbitMqParticipantWorker(
@@ -125,13 +151,7 @@ public class RabbitMqParticipantWorker(
     {
         try
         {
-            return new()
-            {
-                Name = $"{command.Name}Completed",
-                IsSuccess = true,
-                Headers = command.Headers,
-                Result = JsonSerializer.SerializeToElement(handler.Handle(command), JsonOptions)
-            };
+            return handler.Handle(command).ToOutcome(command);
         }
         catch (Exception error)
         {

@@ -8,13 +8,16 @@ public sealed class NotificationCommandHandler(INotificationService notification
 {
     public IReadOnlyCollection<string> CommandNames { get; } = ["SendOrderNotification"];
 
-    public object Handle(SagaCommand command)
+    public ParticipantCommandResult Handle(SagaCommand command)
     {
         if (command.Name != "SendOrderNotification")
             throw new InvalidOperationException($"Unsupported notification command '{command.Name}'.");
 
-        return notifications.SendOrderNotification(
+        if (SampleFailureInjection.IsRequested(command, "notification", "SendOrderNotification"))
+            return ParticipantCommandResult.Failure("notification");
+
+        return ParticipantCommandResult.Success(notifications.SendOrderNotification(
             command.Payload.GetProperty("id").GetGuid().ToString("N"),
-            command.Payload.GetProperty("customerId").GetString()!);
+            command.Payload.GetProperty("customerId").GetString()!));
     }
 }
