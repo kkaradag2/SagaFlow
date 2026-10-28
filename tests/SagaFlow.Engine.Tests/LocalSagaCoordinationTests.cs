@@ -5,6 +5,7 @@ using SagaFlow.Core.Messages;
 using SagaFlow.Core.State;
 using SagaFlow.Engine.Coordination;
 using SagaFlow.Engine.Messaging;
+using SagaFlow.Engine.Consistency;
 
 namespace SagaFlow.Engine.Tests;
 
@@ -95,20 +96,26 @@ public sealed class LocalSagaCoordinationTests
         await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.ToArray()[1]));
         await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.ToArray()[2], success: false));
         var state = await fixture.State(id);
-        Assert.Equal(SagaStatus.CompensationRequested, state.Status);
+        Assert.Equal(SagaStatus.Compensating, state.Status);
         Assert.Null(state.CurrentStep);
-        var plan = fixture.States.GetCompensationPlan(state);
-        Assert.Equal(new[] { "step-1", "step-0" }, plan.Select(c => c.StepId));
-        Assert.Equal(new[] { "Undo1", "Undo0" }, plan.Select(c => c.Command));
-        Assert.Equal(new int?[] { 1, 2 }, plan.Select(c => c.ExecutionOrder));
-        Assert.All(plan, c => { Assert.Null(c.StartedAt); Assert.Null(c.CompletedAt); });
+        Assert.Equal(new[] { "step-1", "step-0" }, state.Compensations.Select(c => c.StepId));
+        Assert.Equal(new[] { "Undo1", "Undo0" }, state.Compensations.Select(c => c.Command));
+        Assert.Equal(new int?[] { 1, 2 }, state.Compensations.Select(c => c.ExecutionOrder));
+        Assert.Equal(SagaCompensationStatus.Dispatched, state.Compensations[0].Status);
+        Assert.Equal(SagaCompensationStatus.Planned, state.Compensations[1].Status);
+        Assert.NotNull(state.Compensations[0].StartedAt);
+        Assert.Null(state.Compensations[1].StartedAt);
+        Assert.All(state.Compensations, c => Assert.Null(c.CompletedAt));
         Assert.Equal(SagaStepStatus.Completed, state.Steps.Single(s => s.StepId == "step-0").Status);
         Assert.Equal(SagaStepStatus.Failed, state.Steps.Single(s => s.StepId == "step-2").Status);
         Assert.Equal(SagaStepStatus.Pending, state.Steps.Single(s => s.StepId == "step-3").Status);
-        Assert.Equal(3, fixture.Bus.Commands.Count);
-        Assert.DoesNotContain(fixture.Bus.Commands, c => c.Name.StartsWith("Undo", StringComparison.Ordinal));
-        plan[0].Status = SagaCompensationStatus.Pending;
-        Assert.Equal(SagaCompensationStatus.Planned, (await fixture.State(id)).Compensations.Single(c => c.StepId == "step-1").Status);
+        Assert.Equal(4, fixture.Bus.Commands.Count);
+        var compensation = fixture.Bus.Commands.Last();
+        Assert.Equal("Undo1", compensation.Name);
+        Assert.True(compensation.Headers.IsCompensation);
+        Assert.Equal("step-1", compensation.Headers.StepId);
+        state.Compensations[0].Status = SagaCompensationStatus.Pending;
+        Assert.Equal(SagaCompensationStatus.Dispatched, (await fixture.State(id)).Compensations.Single(c => c.StepId == "step-1").Status);
     }
 
     [Fact]
@@ -121,7 +128,7 @@ public sealed class LocalSagaCoordinationTests
         var state = await fixture.State(id);
         Assert.Empty(state.Compensations);
         Assert.Empty(fixture.States.GetCompensationPlan(state));
-        Assert.Equal(SagaStatus.CompensationRequested, state.Status);
+        Assert.Equal(SagaStatus.Compensated, state.Status);
         Assert.Equal(2, fixture.Bus.Commands.Count);
     }
 
@@ -140,7 +147,9 @@ public sealed class LocalSagaCoordinationTests
         await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.ToArray()[1]));
         await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.ToArray()[2], success: false));
         var state = await fixture.State(id);
-        Assert.Equal("Undo0", Assert.Single(fixture.States.GetCompensationPlan(state)).Command);
+        var compensation = Assert.Single(state.Compensations);
+        Assert.Equal("Undo0", compensation.Command);
+        Assert.Equal(SagaCompensationStatus.Dispatched, compensation.Status);
         Assert.Equal(SagaStepStatus.Completed, state.Steps.Single(s => s.StepId == "step-1").Status);
         Assert.DoesNotContain(state.Compensations, c => c.StepId == "step-1");
     }
@@ -279,7 +288,8 @@ public sealed class LocalSagaCoordinationTests
     {
         var fixture = new CoordinationTestFixture(CoordinationTestFixture.Linear());
         var coordinator = new SagaCoordinator(fixture.Registry, fixture.Store, fixture.Instances,
-            new SagaStepExecutor(fixture.Store, new CommandDispatcher(), fixture.Clock), new(), fixture.States, fixture.Clock);
+            new SagaStepExecutor(fixture.Store, new CommandDispatcher(), fixture.Clock), new(), fixture.States,
+            new CompensationManager(fixture.Store, new CommandDispatcher(), fixture.Clock), fixture.Clock);
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => coordinator.StartAsync(new { id = 1 }));
         Assert.Contains("No ISagaMessageBus transport adapter", error.Message);
         Assert.Empty(fixture.Bus.Commands);
@@ -367,8 +377,10 @@ public sealed class LocalSagaCoordinationTests
     {
         var fixture = new CoordinationTestFixture(CoordinationTestFixture.Linear());
         var inspection = new InspectingStore(fixture.Store);
-        var executor = new SagaStepExecutor(inspection, new CommandDispatcher(fixture.Bus), fixture.Clock);
-        var coordinator = new SagaCoordinator(fixture.Registry, inspection, fixture.Instances, executor, new(), fixture.States, fixture.Clock);
+        var dispatcher = new CommandDispatcher(fixture.Bus);
+        var executor = new SagaStepExecutor(inspection, dispatcher, fixture.Clock);
+        var coordinator = new SagaCoordinator(fixture.Registry, inspection, fixture.Instances, executor, new(), fixture.States,
+            new CompensationManager(inspection, dispatcher, fixture.Clock), fixture.Clock);
         await coordinator.StartAsync("payload");
         Assert.True(inspection.SavedAllPending);
     }
@@ -379,8 +391,10 @@ public sealed class LocalSagaCoordinationTests
         var fixture = new CoordinationTestFixture(CoordinationTestFixture.Linear());
         using var cancellation = new CancellationTokenSource();
         var inspection = new InspectingStore(fixture.Store) { AfterSave = cancellation.Cancel };
-        var executor = new SagaStepExecutor(inspection, new CommandDispatcher(fixture.Bus), fixture.Clock);
-        var coordinator = new SagaCoordinator(fixture.Registry, inspection, fixture.Instances, executor, new(), fixture.States, fixture.Clock);
+        var dispatcher = new CommandDispatcher(fixture.Bus);
+        var executor = new SagaStepExecutor(inspection, dispatcher, fixture.Clock);
+        var coordinator = new SagaCoordinator(fixture.Registry, inspection, fixture.Instances, executor, new(), fixture.States,
+            new CompensationManager(inspection, dispatcher, fixture.Clock), fixture.Clock);
         var error = await Assert.ThrowsAsync<SagaDispatchException>(() => coordinator.StartAsync("payload", cancellation.Token));
         var state = (await fixture.Store.FindAsync(error.InstanceId))!;
         Assert.Equal(SagaStatus.Failed, state.Status);

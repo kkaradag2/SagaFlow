@@ -103,12 +103,12 @@ public sealed class RuntimeTransitionTests
     }
 
     [Fact]
-    public async Task FailureUsesItsOwnEventCategoryAndRequestsCompensationWithoutPublishingIt()
+    public async Task FailureUsesItsOwnEventCategoryAndCompletesAnEmptyCompensationPlan()
     {
         var fixture = new CoordinationTestFixture(Branch(true));
         var id = await fixture.Coordinator.StartAsync("payload");
         await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.Single(), success: false));
-        Assert.Equal(SagaStatus.CompensationRequested, (await fixture.State(id)).Status);
+        Assert.Equal(SagaStatus.Compensated, (await fixture.State(id)).Status);
         Assert.Single(fixture.Bus.Commands);
     }
 

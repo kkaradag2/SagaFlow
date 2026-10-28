@@ -16,6 +16,7 @@ import { useSagaFlowLiveUpdates } from "../live/useSagaFlowLiveUpdates";
 import {
   getInstance,
   getInstances,
+  type SagaCompensation,
   type SagaInstanceDetail,
   type SagaInstanceSummary,
   type SagaStep,
@@ -213,15 +214,26 @@ function InstanceDetail({ instance, loading, onBack, onRefresh }: {
     <section aria-labelledby="steps-heading">
       <div className="mb-4 flex items-end justify-between gap-4"><div><h3 id="steps-heading" className="text-base font-bold">Execution flow</h3><p className="mt-1 text-sm text-zinc-500">Steps are shown in YAML definition order.</p></div><span className="text-xs text-zinc-500">{instance.steps.length} steps</span></div>
       <ol className="space-y-0">
-        {instance.steps.map((step, index) => <StepItem key={step.stepName} step={step} index={index} isLast={index === instance.steps.length - 1} isCurrent={instance.currentStep === step.stepName} now={now} />)}
+        {instance.steps.map((step, index) => <StepItem key={`${instance.id}:${step.stepName}`} step={step} compensation={instance.compensations.find(item => item.stepId === step.stepName)} index={index} isLast={index === instance.steps.length - 1} isCurrent={instance.currentStep === step.stepName} now={now} />)}
       </ol>
     </section>
 
-    {instance.compensations.length > 0 ? <section aria-labelledby="compensation-heading"><h3 id="compensation-heading" className="mb-3 text-base font-bold">Compensation plan</h3><div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950/40"><div className="divide-y divide-zinc-100 dark:divide-zinc-900">{instance.compensations.map(item => <div key={item.stepId} className="grid gap-2 px-5 py-4 sm:grid-cols-[48px_1fr_auto] sm:items-center"><span className="text-sm font-semibold text-zinc-500">#{item.executionOrder ?? "—"}</span><div><div className="font-medium">{item.stepId}</div><div className="mt-0.5 font-mono text-xs text-zinc-500">{item.command}</div></div><Status value={item.status} /></div>)}</div></div></section> : null}
   </>;
 }
 
-function StepItem({ step, index, isLast, isCurrent, now }: { step: SagaStep; index: number; isLast: boolean; isCurrent: boolean; now: number }) {
+function CompensationItem({ item }: { item: SagaCompensation }) {
+  const [expanded, setExpanded] = useState(false);
+  return <div className="border-t border-zinc-200 dark:border-zinc-800">
+    <OperationHeader kind="Compensation" command={item.command} status={item.status} executionOrder={item.executionOrder}
+      startedAt={item.startedAt} endedAt={item.completedAt} expanded={expanded} onToggle={() => setExpanded(value => !value)} />
+    <div hidden={!expanded} className="border-t border-zinc-100 px-4 py-4 dark:border-zinc-900 sm:px-5">
+    <dl className="grid gap-4 sm:grid-cols-3"><Fact label="Compensation order" value={item.executionOrder == null ? "—" : `#${item.executionOrder}`} /><Fact label="Dispatched" value={formatDate(item.startedAt)} /><Fact label="Finished" value={formatDate(item.completedAt)} /></dl>
+    {item.result != null ? <div className="mt-4"><PayloadPanel label="Compensation result" value={item.result} /></div> : null}
+    </div>
+  </div>;
+}
+
+function StepItem({ step, compensation, index, isLast, isCurrent, now }: { step: SagaStep; compensation?: SagaCompensation; index: number; isLast: boolean; isCurrent: boolean; now: number }) {
   const hasInput = step.input != null;
   const hasResult = step.result != null;
   const isTimedOut = step.status === "TimedOut";
@@ -235,7 +247,7 @@ function StepItem({ step, index, isLast, isCurrent, now }: { step: SagaStep; ind
       : "border-zinc-200 dark:border-zinc-800";
 
   useEffect(() => {
-    if (!userChangedExpansion.current) setExpanded(shouldOpenByDefault(step.status, isCurrent));
+    if (!userChangedExpansion.current && shouldOpenByDefault(step.status, isCurrent)) setExpanded(true);
   }, [step.status, isCurrent]);
 
   const toggleExpanded = () => {
@@ -246,29 +258,43 @@ function StepItem({ step, index, isLast, isCurrent, now }: { step: SagaStep; ind
   return <li className="relative grid grid-cols-[36px_minmax(0,1fr)] gap-3 sm:grid-cols-[44px_minmax(0,1fr)] sm:gap-4">
     {!isLast ? <span className="absolute left-[17px] top-8 h-[calc(100%-12px)] w-px bg-zinc-200 dark:bg-zinc-800 sm:left-[21px]" aria-hidden="true" /> : null}
     <span className={`relative z-10 mt-3 inline-flex size-9 items-center justify-center rounded-full border sm:size-11 ${stepMarkerClass(step.status)}`}>{stepIcon(step.status, index)}</span>
-    <article className={`mb-3 rounded-2xl border bg-white transition dark:bg-zinc-950/40 ${cardClass}`}>
-      <button type="button" onClick={toggleExpanded} aria-expanded={expanded}
-        className={`grid w-full gap-3 rounded-2xl px-4 py-3 text-left transition hover:bg-zinc-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-emerald-500 dark:hover:bg-zinc-900/50 sm:grid-cols-[minmax(170px,1fr)_minmax(210px,auto)_auto] sm:items-center sm:px-5 ${expanded ? "rounded-b-none border-b border-zinc-100 dark:border-zinc-900" : ""}`}>
-        <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h4 className="font-semibold">{step.stepName}</h4>{isCurrent ? <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">Current</span> : null}</div><div className="mt-0.5 truncate font-mono text-[11px] text-zinc-500">{step.command}</div></div>
-        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-500 sm:justify-end">
-          <span className="font-medium text-zinc-700 dark:text-zinc-300">#{step.executionOrder ?? "—"}</span>
-          {step.startedAt ? <CompactTime label="Dispatched" value={step.startedAt} /> : null}
-          {step.completedAt ? <CompactTime label="Completed" value={step.completedAt} /> : null}
-          {step.timedOutAt ? <CompactTime label="Timed out" value={step.timedOutAt} tone="text-orange-600 dark:text-orange-300" /> : null}
-        </div>
-        <div className="flex items-center justify-between gap-3 sm:justify-end"><Status value={step.status} /><ChevronRight size={16} className={`shrink-0 text-zinc-400 transition-transform ${expanded ? "rotate-90" : ""}`} aria-hidden="true" /></div>
-      </button>
-      {expanded ? <div className="px-4 py-4 sm:px-5">
+    <article className={`mb-3 overflow-hidden rounded-2xl border bg-white transition dark:bg-zinc-950/40 ${cardClass}`}>
+      <div className="flex items-center gap-2 border-b border-zinc-100 px-4 py-2 dark:border-zinc-900 sm:px-5"><h4 className="text-sm font-semibold">{step.stepName}</h4>{isCurrent ? <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">Current</span> : null}</div>
+      <OperationHeader kind="Forward" command={step.command} status={step.status} executionOrder={step.executionOrder}
+        startedAt={step.startedAt} endedAt={step.timedOutAt ?? step.completedAt} expanded={expanded} onToggle={toggleExpanded} />
+      <div hidden={!expanded} className="border-t border-zinc-100 px-4 py-4 dark:border-zinc-900 sm:px-5">
         <dl className={`grid gap-x-5 gap-y-4 sm:grid-cols-2 ${remaining !== null ? "xl:grid-cols-6" : "xl:grid-cols-5"}`}><Fact label="Execution order" value={step.executionOrder?.toString() ?? "—"} /><Fact label="Timeout limit" value={step.timeoutLimit ?? "—"} /><Fact label="Dispatched" value={formatDate(step.startedAt)} />{remaining !== null ? <CountdownFact milliseconds={remaining} /> : null}<Fact label="Completed" value={formatDate(step.completedAt)} /><Fact label="Timed out at" value={formatDate(step.timedOutAt)} /></dl>
         {isTimedOut ? <div className="mt-4 flex items-start gap-3 rounded-xl border border-orange-200 bg-orange-50 px-3.5 py-3 text-sm text-orange-800 dark:border-orange-900 dark:bg-orange-950/30 dark:text-orange-200"><TimerOff size={17} className="mt-0.5 shrink-0" aria-hidden="true" /><div><div className="font-semibold">Step timed out</div><div className="mt-0.5 text-xs text-orange-700/80 dark:text-orange-300/80">No valid outcome was received before {formatDate(step.timedOutAt)}.</div></div></div> : null}
         {hasInput || hasResult ? <div className="mt-4 grid gap-3 xl:grid-cols-2">{hasInput ? <PayloadPanel label="Input payload" value={step.input} /> : null}{hasResult ? <PayloadPanel label="Result" value={step.result} /> : null}</div> : null}
-      </div> : null}
+      </div>
+      {compensation ? <CompensationItem key={compensation.stepId} item={compensation} /> : null}
     </article>
   </li>;
 }
 
-function CompactTime({ label, value, tone = "" }: { label: string; value: string; tone?: string }) {
-  return <span className={tone}><span className="text-zinc-400">{label}</span> {formatShortTime(value)}</span>;
+function OperationHeader({ kind, command, status, executionOrder, startedAt, endedAt, expanded, onToggle }: {
+  kind: "Forward" | "Compensation"; command: string; status: string; executionOrder: number | null;
+  startedAt: string | null; endedAt: string | null; expanded: boolean; onToggle: () => void;
+}) {
+  const timestamp = endedAt ?? startedAt;
+  const duration = formatDuration(startedAt, endedAt);
+  return <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto_32px] sm:px-5">
+    <div className="min-w-0"><div className="break-words font-mono text-xs font-medium">{command}</div><div className="mt-0.5 text-[10px] text-zinc-500">{kind} · #{executionOrder ?? "—"}</div></div>
+    <div><Status value={status} /></div>
+    <span className="text-xs tabular-nums text-zinc-500" title={timestamp ? `${endedAt ? "Finished" : "Dispatched"}: ${formatDate(timestamp)}` : "No timestamp"}>{timestamp ? formatShortTime(timestamp) : "—"}</span>
+    <span className="text-xs tabular-nums text-zinc-500" title="Duration">{duration ?? "—"}</span>
+    <button type="button" onClick={onToggle} aria-expanded={expanded} aria-label={`${expanded ? "Hide" : "Show"} ${kind.toLowerCase()} details: ${command}`}
+      className="inline-flex size-8 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-500 dark:hover:bg-zinc-800">
+      <ChevronRight size={16} className={`transition-transform ${expanded ? "rotate-90" : ""}`} aria-hidden="true" />
+    </button>
+  </div>;
+}
+
+function formatDuration(startedAt: string | null, endedAt: string | null) {
+  if (!startedAt || !endedAt) return null;
+  const milliseconds = Date.parse(endedAt) - Date.parse(startedAt);
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return null;
+  return milliseconds < 1000 ? `${milliseconds} ms` : `${(milliseconds / 1000).toFixed(2)} s`;
 }
 
 function PayloadPanel({ label, value }: { label: string; value: unknown }) {

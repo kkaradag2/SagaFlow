@@ -10,6 +10,7 @@ using SagaFlow.Engine.Messaging;
 using SagaFlow.Engine.Persistence.InMemory;
 using SagaFlow.Engine.ProcessDefinition;
 using SagaFlow.Engine.Notifications;
+using SagaFlow.Engine.Consistency;
 
 namespace SagaFlow.Engine.Tests;
 
@@ -22,6 +23,7 @@ internal sealed class CoordinationTestFixture
     public ProcessStateManager States { get; } = new();
     public SagaInstanceManager Instances { get; }
     public SagaStepExecutor Executor { get; }
+    public CompensationManager Compensations { get; }
     public SagaCoordinator Coordinator { get; }
     public OutcomeEventReceiver Receiver { get; }
 
@@ -29,8 +31,10 @@ internal sealed class CoordinationTestFixture
     {
         if (definition is not null) Registry.RegisterLocalBatch([definition]);
         Instances = new(Clock);
-        Executor = new(Store, new CommandDispatcher(Bus), Clock, changes);
-        Coordinator = new(Registry, Store, Instances, Executor, new(), States, Clock, changes);
+        var dispatcher = new CommandDispatcher(Bus);
+        Executor = new(Store, dispatcher, Clock, changes);
+        Compensations = new(Store, dispatcher, Clock, changes);
+        Coordinator = new(Registry, Store, Instances, Executor, new(), States, Compensations, Clock, changes);
         Receiver = new(Coordinator);
     }
 

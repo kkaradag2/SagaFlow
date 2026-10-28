@@ -49,7 +49,7 @@ public sealed class SampleRabbitMqEndToEndTests
     }
 
     [SampleRabbitMqFact]
-    public async Task RequestedParticipantPublishesFailureAndStopsForwardExecution()
+    public async Task RequestedParticipantFailureExecutesCompensationsInReverseOrder()
     {
         await using var factory = new WebApplicationFactory<global::Program>();
         using var client = factory.CreateClient();
@@ -67,7 +67,7 @@ public sealed class SampleRabbitMqEndToEndTests
             {
                 var result = await CreateOrderAsync(client, $"failure-{targets[failedIndex]}",
                     $"product-{failedIndex}", targets[failedIndex]);
-                await WaitForFailureAsync(factory.Services, result.SagaInstanceId, failedIndex);
+                await WaitForCompensationAsync(factory.Services, result.SagaInstanceId, failedIndex, targets);
             }
         }
         finally
@@ -90,13 +90,17 @@ public sealed class SampleRabbitMqEndToEndTests
         return body!.Data;
     }
 
-    private static async Task WaitForFailureAsync(IServiceProvider services, Guid sagaId, int failedIndex)
+    private static async Task WaitForCompensationAsync(
+        IServiceProvider services,
+        Guid sagaId,
+        int failedIndex,
+        IReadOnlyList<string> stepIds)
     {
         var timeout = DateTime.UtcNow.AddSeconds(20);
         while (DateTime.UtcNow < timeout)
         {
             var state = await services.GetRequiredService<ISagaStateStore>().FindAsync(sagaId);
-            if (state?.Status == SagaStatus.CompensationRequested)
+            if (state?.Status == SagaStatus.Compensated)
             {
                 Assert.False(string.IsNullOrWhiteSpace(state.CorrelationId));
                 Assert.Equal(sagaId.ToString("N"), state.Id);
@@ -109,13 +113,23 @@ public sealed class SampleRabbitMqEndToEndTests
                 }
                 Assert.NotNull(state.Steps[failedIndex].Result);
                 Assert.Equal(failedIndex, state.Compensations.Count);
+                Assert.Equal(stepIds.Take(failedIndex).Reverse(), state.Compensations.Select(item => item.StepId));
+                Assert.Equal(Enumerable.Range(1, failedIndex).Select(value => (int?)value),
+                    state.Compensations.Select(item => item.ExecutionOrder));
+                Assert.All(state.Compensations, item =>
+                {
+                    Assert.Equal(SagaCompensationStatus.Completed, item.Status);
+                    Assert.NotNull(item.StartedAt);
+                    Assert.NotNull(item.CompletedAt);
+                    Assert.NotNull(item.Result);
+                });
                 return;
             }
 
             await Task.Delay(100);
         }
 
-        Assert.Fail($"Saga '{sagaId:N}' did not reach controlled failure within 20 seconds.");
+        Assert.Fail($"Saga '{sagaId:N}' did not complete participant compensation within 20 seconds.");
     }
 
     private static async Task WaitForCompletionAsync(IServiceProvider services, IEnumerable<Guid> sagaIds)
