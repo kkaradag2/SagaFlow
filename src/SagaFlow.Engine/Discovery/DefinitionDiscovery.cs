@@ -1,6 +1,5 @@
 using SagaFlow.Core.Definitions;
 using SagaFlow.Engine.ProcessDefinition;
-using System.Diagnostics;
 
 namespace SagaFlow.Engine.Discovery;
 
@@ -41,12 +40,17 @@ public sealed class DefinitionDiscovery
     private readonly bool _allowHttp;
     private readonly TimeSpan _timeout;
     private readonly TimeSpan _overallTimeout;
+    private readonly TimeProvider _timeProvider;
     private readonly int _maximumDepth;
     private readonly int _maximumRequests;
 
     public DefinitionDiscovery(IRemoteDefinitionClient client, DefinitionDiscoveryOptions options)
+        : this(client, options, TimeProvider.System) { }
+
+    public DefinitionDiscovery(IRemoteDefinitionClient client, DefinitionDiscoveryOptions options, TimeProvider timeProvider)
     {
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(timeProvider);
         if (options.RequestTimeout <= TimeSpan.Zero || options.RequestTimeout > TimeSpan.FromMinutes(1)
             || options.OverallTimeout <= TimeSpan.Zero || options.OverallTimeout > TimeSpan.FromMinutes(5)
             || options.MaximumDepth is < 1 or > 16 || options.MaximumRequests is < 1 or > 256)
@@ -64,6 +68,7 @@ public sealed class DefinitionDiscovery
         _allowHttp = options.AllowInsecureHttp;
         _timeout = options.RequestTimeout;
         _overallTimeout = options.OverallTimeout;
+        _timeProvider = timeProvider;
         _maximumDepth = options.MaximumDepth;
         _maximumRequests = options.MaximumRequests;
     }
@@ -71,9 +76,9 @@ public sealed class DefinitionDiscovery
     public async Task<DefinitionGraph> DiscoverAsync(SagaDefinition local, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var elapsed = Stopwatch.StartNew();
-        using var overall = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        overall.CancelAfter(_overallTimeout);
+        var startedAt = _timeProvider.GetTimestamp();
+        using var overallDeadline = new CancellationTokenSource(_overallTimeout, _timeProvider);
+        using var overall = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, overallDeadline.Token);
         new ProcessDefinitionValidator().Validate(local);
         var root = DefinitionSnapshot.Copy(local);
         var rootId = ProcessDefinitionId.From(root);
@@ -84,7 +89,7 @@ public sealed class DefinitionDiscovery
         var responses = new Dictionary<(string Endpoint, string Domain, string Name, string? Version), SagaDefinition>();
         var requests = 0;
         var overallBudgetExceeded = false;
-        bool BudgetExpired() => overall.IsCancellationRequested || elapsed.Elapsed >= _overallTimeout;
+        bool BudgetExpired() => overall.IsCancellationRequested || _timeProvider.GetElapsedTime(startedAt) >= _overallTimeout;
 
         async Task Visit(SagaDefinition definition, int depth)
         {
@@ -117,8 +122,8 @@ public sealed class DefinitionDiscovery
                         if (requests >= _maximumRequests)
                             throw new RemoteDefinitionException(DiscoveryFailureKind.LimitExceeded, "Maximum discovery request count reached.");
                         requests++;
-                        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(overall.Token);
-                        timeout.CancelAfter(_timeout);
+                        using var requestDeadline = new CancellationTokenSource(_timeout, _timeProvider);
+                        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(overall.Token, requestDeadline.Token);
                         if (BudgetExpired()) throw new OperationCanceledException(overall.Token);
                         var response = await _client.GetAsync(uri, source, _timeout, timeout.Token).WaitAsync(timeout.Token);
                         if (BudgetExpired()) throw new OperationCanceledException(overall.Token);
