@@ -8,7 +8,7 @@ public sealed class PaymentCommandHandler(IPaymentService payments) : IParticipa
 {
     public IReadOnlyCollection<string> CommandNames { get; } = ["AuthorizePayment", "RefundPayment"];
 
-    public ParticipantCommandResult Handle(SagaCommand command)
+    public ParticipantCommandResult Handle(SagaCommand command, string? replyTo = null)
     {
         if (SampleFailureInjection.IsRequested(command, "payment", "AuthorizePayment"))
             return ParticipantCommandResult.Failure("payment");

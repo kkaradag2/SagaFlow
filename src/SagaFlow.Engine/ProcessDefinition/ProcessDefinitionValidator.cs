@@ -41,7 +41,13 @@ public sealed partial class ProcessDefinitionValidator
                 Check(transition.Event is "success" or "failure" or "timeout", $"{prefix}: transition event '{transition.Event}' must be success, failure, or timeout.");
                 Check(transition.NextStep is "completed" or "compensation" || (transition.NextStep is not null && names.Contains(transition.NextStep)), $"{prefix}: unknown nextStep '{transition.NextStep}'.");
                 Check(transition.Else is null or true, $"{prefix}, event '{transition.Event}': else must be true when supplied.");
-                Check(transition.Else is null || transition.When is null, $"{prefix}, event '{transition.Event}': else must not also contain when.");
+                Check(transition.Else is null || (transition.When is null && transition.Condition is null), $"{prefix}, event '{transition.Event}': else must not also contain when.");
+                Check(transition.When is null || transition.Condition is null, $"{prefix}, event '{transition.Event}': supply either a legacy when expression or a structured condition, not both.");
+                if (transition.Condition is not null)
+                {
+                    try { ConditionParser.Validate(transition.Condition, names); }
+                    catch (FormatException ex) { Check(false, $"{prefix}, event '{transition.Event}': invalid condition '{transition.Condition.Path}'; {ex.Message}"); }
+                }
                 BooleanCondition? condition = null;
                 if (transition.When is not null)
                 {
@@ -58,8 +64,11 @@ public sealed partial class ProcessDefinitionValidator
             foreach (var group in rules.GroupBy(r => r.Transition.Event, StringComparer.Ordinal))
             {
                 var eventContext = $"{prefix}, event '{group.Key}'";
-                var defaults = group.Count(r => r.Transition.When is null);
+                var defaults = group.Count(r => r.Transition.When is null && r.Transition.Condition is null);
                 Check(defaults <= 1, $"{eventContext}: multiple fallbacks/defaults; allow at most one else or unconditional transition.");
+                // Structured comparisons use ordered first-match semantics; overlap is intentional.
+                // Retain the legacy Boolean expression validation contract for existing definitions.
+                if (group.Any(r => r.Transition.Condition is not null)) continue;
                 var conditionalRules = group.Where(r => r.Condition is not null).ToArray();
                 var conditions = conditionalRules.Select(r => r.Condition!).ToArray();
                 for (var i = 0; i < conditions.Length; i++)
@@ -143,9 +152,9 @@ public sealed partial class ProcessDefinitionValidator
     {
         foreach (var group in step.Transitions.GroupBy(t => t.Event, StringComparer.Ordinal))
         {
-            var conditional = group.Where(t => t.When is not null).ToArray();
+            var conditional = group.Where(t => t.When is not null || t.Condition is not null).ToArray();
             // Two validated, exclusive Boolean conditions are exhaustive, so a fallback cannot contribute an exit.
-            IEnumerable<SagaTransitionDefinition> viable = conditional.Length == 2 ? conditional : group;
+            IEnumerable<SagaTransitionDefinition> viable = conditional.Length == 2 && conditional.All(t => t.When is not null) ? conditional : group;
             foreach (var transition in viable)
                 yield return transition;
         }

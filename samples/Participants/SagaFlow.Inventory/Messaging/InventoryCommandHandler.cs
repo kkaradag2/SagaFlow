@@ -9,7 +9,7 @@ public sealed class InventoryCommandHandler(IInventoryService inventory) : IPart
 {
     public IReadOnlyCollection<string> CommandNames { get; } = ["ReserveInventory", "ReleaseInventory"];
 
-    public ParticipantCommandResult Handle(SagaCommand command)
+    public ParticipantCommandResult Handle(SagaCommand command, string? replyTo = null)
     {
         if (SampleFailureInjection.IsRequested(command, "inventory", "ReserveInventory"))
             return ParticipantCommandResult.Failure("inventory");

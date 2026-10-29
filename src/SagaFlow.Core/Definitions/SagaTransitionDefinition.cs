@@ -6,6 +6,9 @@ public sealed class SagaTransitionDefinition
 
     public string? When { get; init; }
 
+    /// <summary>Structured YAML when mapping. When remains available for legacy Boolean expressions.</summary>
+    public SagaConditionDefinition? Condition { get; init; }
+
     public bool? Else { get; init; }
 
     public string? NextStep { get; init; }

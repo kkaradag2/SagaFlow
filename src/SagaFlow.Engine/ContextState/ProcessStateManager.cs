@@ -8,10 +8,21 @@ public sealed class ProcessStateManager
 {
     public void ApplyOutcome(SagaInstance instance, SagaOutcomeEvent outcome, string target, DateTimeOffset now, SagaDefinition definition)
     {
+        RecordOutcome(instance, outcome, now);
+        ApplyTransition(instance, target, now, definition);
+    }
+
+    public void RecordOutcome(SagaInstance instance, SagaOutcomeEvent outcome, DateTimeOffset now)
+    {
         var step = instance.Steps.Single(step => step.StepId == outcome.Headers.StepId);
         step.Status = outcome.IsSuccess ? SagaStepStatus.Completed : SagaStepStatus.Failed;
         step.Result = outcome.Result.Clone();
         step.CompletedAt = now;
+        instance.UpdatedAt = now;
+    }
+
+    public void ApplyTransition(SagaInstance instance, string target, DateTimeOffset now, SagaDefinition definition)
+    {
         instance.UpdatedAt = now;
         instance.CurrentStep = target is "completed" or "compensation" ? null : target;
         if (target == "completed") instance.Status = SagaStatus.Completed;

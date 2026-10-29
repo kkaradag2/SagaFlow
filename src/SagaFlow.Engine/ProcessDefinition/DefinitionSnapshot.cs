@@ -13,7 +13,11 @@ internal static class DefinitionSnapshot
             Name = s.Name, Command = s.Command, TimeoutLimit = s.TimeoutLimit, MaxAttempts = s.MaxAttempts,
             Compensation = s.Compensation is null ? null : new() { Command = s.Compensation.Command },
             Transitions = Array.AsReadOnly(s.Transitions.Select(t => new SagaTransitionDefinition
-                { Event = t.Event, When = t.When, Else = t.Else, NextStep = t.NextStep }).ToArray())
+                {
+                    Event = t.Event, When = t.When, Else = t.Else, NextStep = t.NextStep,
+                    Condition = t.Condition is null ? null : new()
+                    { Path = t.Condition.Path, Operator = t.Condition.Operator, Value = t.Condition.Value.Clone() }
+                }).ToArray())
         }).ToArray()),
         BigPicture = Array.AsReadOnly(includeBigPicture ? d.BigPicture.Select(s => new BigPictureSourceDefinition
             { Domain = s.Domain, Process = s.Process, Version = s.Version, Endpoint = s.Endpoint }).ToArray() : [])

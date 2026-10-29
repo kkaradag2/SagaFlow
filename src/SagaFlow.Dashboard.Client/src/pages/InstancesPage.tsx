@@ -157,6 +157,7 @@ function InstanceDetail({ instance, loading, onBack, onRefresh }: {
   onRefresh: () => Promise<void>;
 }) {
   const completedSteps = instance.steps.filter(step => step.status === "Completed").length;
+  const forwardEnded = ["Completed", "Failed", "Compensating", "Compensated", "CompensationRequested", "TimedOut"].includes(instance.status);
   const [now, setNow] = useState(() => Date.now());
   const refreshedDeadlines = useRef(new Set<string>());
   const countdownKey = instance.steps
@@ -215,7 +216,7 @@ function InstanceDetail({ instance, loading, onBack, onRefresh }: {
       <div className="mb-4 flex items-end justify-between gap-4"><div><h3 id="steps-heading" className="text-base font-bold">Execution flow</h3><p className="mt-1 text-sm text-zinc-500">Domain starter first, followed by participant steps.</p></div><span className="text-xs text-zinc-500">1 starter · {instance.steps.length} steps</span></div>
       <ol className="space-y-0">
         <DomainStarterItem key={`${instance.id}:starter`} instance={instance} />
-        {instance.steps.map((step, index) => <StepItem key={`${instance.id}:${step.stepName}`} step={step} compensation={instance.compensations.find(item => item.stepId === step.stepName)} index={index} isLast={index === instance.steps.length - 1} isCurrent={instance.currentStep === step.stepName} now={now} />)}
+        {instance.steps.map((step, index) => <StepItem key={`${instance.id}:${step.stepName}`} step={step} compensation={instance.compensations.find(item => item.stepId === step.stepName)} index={index} isLast={index === instance.steps.length - 1} isCurrent={instance.currentStep === step.stepName} notExecuted={forwardEnded && step.status === "Pending" && step.executionOrder === null} now={now} />)}
       </ol>
     </section>
 
@@ -267,10 +268,11 @@ function CompensationItem({ item }: { item: SagaCompensation }) {
   </div>;
 }
 
-function StepItem({ step, compensation, index, isLast, isCurrent, now }: { step: SagaStep; compensation?: SagaCompensation; index: number; isLast: boolean; isCurrent: boolean; now: number }) {
+function StepItem({ step, compensation, index, isLast, isCurrent, notExecuted, now }: { step: SagaStep; compensation?: SagaCompensation; index: number; isLast: boolean; isCurrent: boolean; notExecuted: boolean; now: number }) {
   const hasInput = step.input != null;
   const hasResult = step.result != null;
   const isTimedOut = step.status === "TimedOut";
+  const displayStatus = notExecuted ? "Not executed" : step.status;
   const userChangedExpansion = useRef(false);
   const [expanded, setExpanded] = useState(() => shouldOpenByDefault(step.status, isCurrent));
   const remaining = canShowCountdown(step) ? getRemaining(step, now) : null;
@@ -291,12 +293,14 @@ function StepItem({ step, compensation, index, isLast, isCurrent, now }: { step:
 
   return <li className="relative grid grid-cols-[36px_minmax(0,1fr)] gap-3 sm:grid-cols-[44px_minmax(0,1fr)] sm:gap-4">
     {!isLast ? <span className="absolute left-[17px] top-8 h-[calc(100%-12px)] w-px bg-zinc-200 dark:bg-zinc-800 sm:left-[21px]" aria-hidden="true" /> : null}
-    <span className={`relative z-10 mt-3 inline-flex size-9 items-center justify-center rounded-full border sm:size-11 ${stepMarkerClass(step.status)}`}>{stepIcon(step.status, index)}</span>
+    <span className={`relative z-10 mt-3 inline-flex size-9 items-center justify-center rounded-full border sm:size-11 ${stepMarkerClass(displayStatus)}`}>{stepIcon(displayStatus, index)}</span>
     <article className={`mb-3 overflow-hidden rounded-2xl border bg-white transition dark:bg-zinc-950/40 ${cardClass}`}>
       <div className="flex items-center gap-2 border-b border-zinc-100 px-4 py-2 dark:border-zinc-900 sm:px-5"><h4 className="text-sm font-semibold">{step.stepName}</h4>{isCurrent ? <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">Current</span> : null}</div>
-      <OperationHeader kind="Forward" command={step.command} status={step.status} executionOrder={step.executionOrder}
+      <OperationHeader kind="Forward" command={step.command} status={displayStatus} executionOrder={step.executionOrder}
         startedAt={step.startedAt} endedAt={step.timedOutAt ?? step.completedAt} expanded={expanded} onToggle={toggleExpanded} />
       <div hidden={!expanded} className="border-t border-zinc-100 px-4 py-4 dark:border-zinc-900 sm:px-5">
+        {notExecuted ? <p className="mb-4 text-xs text-zinc-500">No forward command was dispatched for this step.</p> : null}
+        {isCurrent && step.status === "Dispatched" ? <p className="mb-4 text-xs text-zinc-500">Waiting for an outcome.{step.timeoutLimit === null ? " No step timeout is configured." : ""}</p> : null}
         <dl className={`grid gap-x-5 gap-y-4 sm:grid-cols-2 ${remaining !== null ? "xl:grid-cols-6" : "xl:grid-cols-5"}`}><Fact label="Execution order" value={step.executionOrder?.toString() ?? "—"} /><Fact label="Timeout limit" value={step.timeoutLimit ?? "—"} /><Fact label="Dispatched" value={formatDate(step.startedAt)} />{remaining !== null ? <CountdownFact milliseconds={remaining} /> : null}<Fact label="Completed" value={formatDate(step.completedAt)} /><Fact label="Timed out at" value={formatDate(step.timedOutAt)} /></dl>
         {isTimedOut ? <div className="mt-4 flex items-start gap-3 rounded-xl border border-orange-200 bg-orange-50 px-3.5 py-3 text-sm text-orange-800 dark:border-orange-900 dark:bg-orange-950/30 dark:text-orange-200"><TimerOff size={17} className="mt-0.5 shrink-0" aria-hidden="true" /><div><div className="font-semibold">Step timed out</div><div className="mt-0.5 text-xs text-orange-700/80 dark:text-orange-300/80">No valid outcome was received before {formatDate(step.timedOutAt)}.</div></div></div> : null}
         {hasInput || hasResult ? <div className="mt-4 grid gap-3 xl:grid-cols-2">{hasInput ? <PayloadPanel label="Input payload" value={step.input} /> : null}{hasResult ? <PayloadPanel label="Result" value={step.result} /> : null}</div> : null}
@@ -377,6 +381,7 @@ function stepMarkerClass(status: string) {
 }
 
 function stepIcon(status: string, index: number): ReactNode {
+  if (status === "Not executed") return <Circle size={18} aria-label="Not executed" />;
   if (status === "Completed") return <CheckCircle2 size={19} aria-label="Completed" />;
   if (status === "Dispatched") return <Clock3 size={18} aria-label="Dispatched" />;
   if (status === "Failed") return <XCircle size={19} aria-label="Failed" />;

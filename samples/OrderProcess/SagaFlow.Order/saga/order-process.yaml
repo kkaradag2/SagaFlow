@@ -24,11 +24,43 @@ steps:
     compensation:
       command: ReleaseInventory
     transitions:
-      - event: success
+      - on: success
+        when:
+          path: context.totalQuantity
+          operator: greaterThan
+          value: 1000
+        nextStep: managerNotification
+      - on: success
         nextStep: shipment
       - event: failure
         nextStep: compensation
       - event: timeout
+        nextStep: compensation
+
+  - name: managerNotification
+    command: NotifyManager
+    timeoutLimit: 10s
+    transitions:
+      - on: success
+        nextStep: managerApproval
+      - on: failure
+        nextStep: compensation
+      - on: timeout
+        nextStep: compensation
+
+  # Human decision: no timeoutLimit means no command TTL and no Engine deadline.
+  - name: managerApproval
+    command: RequestManagerApproval
+    transitions:
+      - on: success
+        when:
+          path: steps.managerApproval.result.approved
+          operator: equals
+          value: true
+        nextStep: shipment
+      - on: success
+        nextStep: compensation
+      - on: failure
         nextStep: compensation
 
   - name: shipment

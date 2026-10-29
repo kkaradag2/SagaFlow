@@ -18,6 +18,8 @@ public sealed class DefinitionYamlCodec
             var deserializer = new DeserializerBuilder()
                 .WithNamingConvention(CamelCaseNamingConvention.Instance)
                 .WithDuplicateKeyChecking()
+                .WithTypeConverter(new TransitionYamlConverter())
+                .WithTypeConverter(new ConditionValueYamlConverter())
                 .WithTypeMapping<IReadOnlyList<SagaStepDefinition>, List<SagaStepDefinition>>()
                 .WithTypeMapping<IReadOnlyList<SagaTransitionDefinition>, List<SagaTransitionDefinition>>()
                 .WithTypeMapping<IReadOnlyList<BigPictureSourceDefinition>, List<BigPictureSourceDefinition>>()
@@ -41,6 +43,8 @@ public sealed class DefinitionYamlCodec
     {
         new ProcessDefinitionValidator().Validate(definition);
         return new SerializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance)
+            .WithTypeConverter(new TransitionYamlConverter())
+            .WithTypeConverter(new ConditionValueYamlConverter())
             .ConfigureDefaultValuesHandling(DefaultValuesHandling.OmitNull)
             .Build().Serialize(DefinitionSnapshot.Copy(definition, includeBigPicture));
     }

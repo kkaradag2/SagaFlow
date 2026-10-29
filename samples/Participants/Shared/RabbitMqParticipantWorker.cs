@@ -11,7 +11,8 @@ namespace SagaFlow.Participants.Messaging;
 public interface IParticipantCommandHandler
 {
     IReadOnlyCollection<string> CommandNames { get; }
-    ParticipantCommandResult Handle(SagaCommand command);
+    // Null means the command was accepted for a deferred outcome (for example a human decision).
+    ParticipantCommandResult? Handle(SagaCommand command, string? replyTo = null);
 }
 
 public sealed record ParticipantCommandResult(bool IsSuccess, object Value)
@@ -50,8 +51,11 @@ public class RabbitMqParticipantWorker(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var settings = configuration.GetRequiredSection("RabbitMq");
-        var queueName = settings["QueueName"]
-            ?? throw new InvalidOperationException("RabbitMq:QueueName is required.");
+        var queueNames = settings.GetSection("QueueNames").Get<string[]>()
+            ?? [settings["QueueName"] ?? throw new InvalidOperationException("RabbitMq:QueueName is required.")];
+        if (queueNames.Length == 0 || queueNames.Any(string.IsNullOrWhiteSpace))
+            throw new InvalidOperationException("RabbitMq queue names must not be empty.");
+        queueNames = queueNames.Distinct(StringComparer.Ordinal).ToArray();
         var exchange = settings["CommandExchange"] ?? "sagaflow.commands";
         var factory = new ConnectionFactory
         {
@@ -60,7 +64,7 @@ public class RabbitMqParticipantWorker(
             UserName = settings["UserName"] ?? ConnectionFactory.DefaultUser,
             Password = settings["Password"] ?? ConnectionFactory.DefaultPass,
             VirtualHost = settings["VirtualHost"] ?? ConnectionFactory.DefaultVHost,
-            ClientProvidedName = settings["ClientProvidedName"] ?? queueName,
+            ClientProvidedName = settings["ClientProvidedName"] ?? queueNames[0],
             AutomaticRecoveryEnabled = true,
             TopologyRecoveryEnabled = true
         };
@@ -68,14 +72,16 @@ public class RabbitMqParticipantWorker(
         await using var connection = await factory.CreateConnectionAsync(stoppingToken);
         await using var channel = await connection.CreateChannelAsync(
             new CreateChannelOptions(true, true, consumerDispatchConcurrency: 1), stoppingToken);
-        await DeclareTopologyAsync(channel, exchange, queueName, stoppingToken);
+        foreach (var queueName in queueNames)
+            await DeclareTopologyAsync(channel, exchange, queueName, stoppingToken);
         await channel.BasicQosAsync(0, 1, false, stoppingToken);
 
         var consumer = new AsyncEventingBasicConsumer(channel);
         consumer.ReceivedAsync += (_, delivery) => HandleDeliveryAsync(channel, delivery, stoppingToken);
-        await channel.BasicConsumeAsync(queueName, autoAck: false, consumer, stoppingToken);
+        foreach (var queueName in queueNames)
+            await channel.BasicConsumeAsync(queueName, autoAck: false, consumer, stoppingToken);
 
-        logger.LogInformation("Listening for {Commands} on {Queue}.", string.Join(", ", handler.CommandNames), queueName);
+        logger.LogInformation("Listening for {Commands} on {Queues}.", string.Join(", ", handler.CommandNames), string.Join(", ", queueNames));
         try { await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken); }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
     }
@@ -119,24 +125,11 @@ public class RabbitMqParticipantWorker(
             return;
         }
 
-        var outcome = CreateOutcome(command);
+        var outcome = CreateOutcome(command, delivery.BasicProperties.ReplyTo!);
         try
         {
-            var body = JsonSerializer.SerializeToUtf8Bytes(outcome, JsonOptions);
-            await channel.BasicPublishAsync(
-                exchange: string.Empty,
-                routingKey: delivery.BasicProperties.ReplyTo!,
-                mandatory: true,
-                basicProperties: new BasicProperties
-                {
-                    ContentType = "application/json",
-                    DeliveryMode = DeliveryModes.Persistent,
-                    Type = nameof(SagaOutcomeEvent),
-                    MessageId = $"{command.Headers.SagaInstanceId}:{command.Headers.StepId}:outcome",
-                    CorrelationId = command.Headers.CorrelationId
-                },
-                body,
-                cancellationToken);
+            if (outcome is not null)
+                await ParticipantOutcomePublisher.PublishAsync(channel, outcome, delivery.BasicProperties.ReplyTo!, cancellationToken);
             await channel.BasicAckAsync(delivery.DeliveryTag, multiple: false, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
@@ -147,11 +140,11 @@ public class RabbitMqParticipantWorker(
         }
     }
 
-    private SagaOutcomeEvent CreateOutcome(SagaCommand command)
+    private SagaOutcomeEvent? CreateOutcome(SagaCommand command, string replyTo)
     {
         try
         {
-            return handler.Handle(command).ToOutcome(command);
+            return handler.Handle(command, replyTo)?.ToOutcome(command);
         }
         catch (Exception error)
         {
@@ -165,4 +158,21 @@ public class RabbitMqParticipantWorker(
             };
         }
     }
+}
+
+public static class ParticipantOutcomePublisher
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public static ValueTask PublishAsync(IChannel channel, SagaOutcomeEvent outcome, string replyTo, CancellationToken cancellationToken) =>
+        channel.BasicPublishAsync(
+            exchange: string.Empty, routingKey: replyTo, mandatory: true,
+            basicProperties: new BasicProperties
+            {
+                ContentType = "application/json", DeliveryMode = DeliveryModes.Persistent,
+                Type = nameof(SagaOutcomeEvent),
+                MessageId = $"{outcome.Headers.SagaInstanceId}:{outcome.Headers.StepId}:outcome",
+                CorrelationId = outcome.Headers.CorrelationId
+            },
+            body: JsonSerializer.SerializeToUtf8Bytes(outcome, JsonOptions), cancellationToken: cancellationToken);
 }

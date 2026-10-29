@@ -76,10 +76,13 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
                     throw new InvalidSagaOutcomeException("Outcome does not refer to the active dispatched Saga step.");
                 var registered = definitions.Find(new(instance.DefinitionDomain, instance.DefinitionName, instance.DefinitionVersion));
                 if (registered is null || registered.Origin != DefinitionOrigin.Local) throw new InvalidOperationException("The instance's owning local definition/version is unavailable.");
-                var target = resolver.Resolve(registered.Definition.Steps.Single(s => s.Name == step.StepId), outcome.IsSuccess, outcome.Result);
-                states.ApplyOutcome(instance, outcome, target, clock.UtcNow, registered.Definition);
+                // Record and evaluate on the same atomic working snapshot; rejected outcomes still roll back the whole update.
+                var now = clock.UtcNow;
+                states.RecordOutcome(instance, outcome, now);
+                var target = resolver.Resolve(registered.Definition.Steps.Single(s => s.Name == step.StepId), outcome.IsSuccess, outcome.Result, instance);
+                states.ApplyTransition(instance, target, now, registered.Definition);
                 if (target == "completed") return (Command: (SagaCommand?)null, Error: (string?)null);
-                if (target == "compensation") return (Command: outcome.IsSuccess ? null : compensations.Begin(instance), Error: (string?)null);
+                if (target == "compensation") return (Command: compensations.Begin(instance), Error: (string?)null);
                 var next = instance.Steps.Single(s => s.StepId == target);
                 if (next.Status != SagaStepStatus.Pending)
                 {
