@@ -20,6 +20,7 @@ internal sealed class SagaFlowDashboardStartupFilter(SagaFlowOptions options) : 
             dashboard.Enabled = options.Dashboard.Enabled;
             dashboard.Path = options.Dashboard.Path;
             dashboard.AssetRoot = options.Dashboard.AssetRoot;
+            dashboard.DescribeDomainStarter = options.Dashboard.DescribeDomainStarter;
         });
         next(app);
     };

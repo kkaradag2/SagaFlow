@@ -18,6 +18,9 @@ public sealed record Order(
     IReadOnlyList<OrderItem> Items,
     decimal Total,
     DateTimeOffset CreatedAt,
-    string? FailureAt = null);
+    string? FailureAt = null,
+    OrderStatus Status = OrderStatus.Created);
+
+public enum OrderStatus { Created, Cancelled }
 
 public sealed record CreateOrderResult(Guid OrderId, Guid SagaInstanceId);

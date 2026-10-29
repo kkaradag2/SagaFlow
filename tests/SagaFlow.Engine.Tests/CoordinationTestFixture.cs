@@ -27,14 +27,14 @@ internal sealed class CoordinationTestFixture
     public SagaCoordinator Coordinator { get; }
     public OutcomeEventReceiver Receiver { get; }
 
-    public CoordinationTestFixture(SagaDefinition? definition = null, SagaStateChangePublisher? changes = null)
+    public CoordinationTestFixture(SagaDefinition? definition = null, SagaStateChangePublisher? changes = null, IServiceProvider? services = null)
     {
         if (definition is not null) Registry.RegisterLocalBatch([definition]);
         Instances = new(Clock);
         var dispatcher = new CommandDispatcher(Bus);
         Executor = new(Store, dispatcher, Clock, changes);
         Compensations = new(Store, dispatcher, Clock, changes);
-        Coordinator = new(Registry, Store, Instances, Executor, new(), States, Compensations, Clock, changes);
+        Coordinator = new(Registry, Store, Instances, Executor, new(), States, Compensations, Clock, changes, services);
         Receiver = new(Coordinator);
     }
 

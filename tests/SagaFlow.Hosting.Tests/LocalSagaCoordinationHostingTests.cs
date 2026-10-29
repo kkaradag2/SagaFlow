@@ -16,6 +16,7 @@ using SagaFlow.Engine.Persistence.InMemory;
 using SagaFlow.Engine.ProcessDefinition;
 using SagaFlow.Engine.Timeouts;
 using SagaFlow.Hosting.DependencyInjection;
+using SagaFlow.Hosting.Dashboard;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.SignalR.Client;
@@ -149,6 +150,43 @@ public sealed class LocalSagaCoordinationHostingTests
         Assert.Equal("Dispatched", detail.RootElement.GetProperty("steps")[0].GetProperty("status").GetString());
         Assert.Equal("Pending", detail.RootElement.GetProperty("steps")[1].GetProperty("status").GetString());
         Assert.Empty(detail.RootElement.GetProperty("compensations").EnumerateArray());
+        Assert.Equal("order", detail.RootElement.GetProperty("definitionDomain").GetString());
+        var starter = detail.RootElement.GetProperty("domainStarter");
+        Assert.Equal("Local operation", starter.GetProperty("operationName").GetString());
+        Assert.Equal("Local rollback", starter.GetProperty("rollbackOperationName").GetString());
+        foreach (var property in new[] { "status", "startedAt", "completedAt", "input", "result" })
+            Assert.Equal(JsonValueKind.Null, starter.GetProperty(property).ValueKind);
+        Assert.Equal(before.Revision, (await store.FindAsync(id))!.Revision);
+    }
+
+    [Theory]
+    [InlineData("order", "CreatePurchase", "CancelPurchase")]
+    [InlineData("returns", "RegisterReturn", "CancelReturn")]
+    public async Task DashboardUsesApplicationStarterPresentationWithoutAddingSagaSteps(string domain, string operation, string rollback)
+    {
+        await using var host = await RuntimeHost.Start(yaml: Yaml.Replace("domain: order", $"domain: {domain}"),
+            configureDashboard: options => options.DescribeDomainStarter = instance => new SagaDomainStarterDisplay
+            {
+                OperationName = operation, RollbackOperationName = rollback,
+                Status = "Completed", Result = instance.Context.Clone()
+            });
+        await using var scope = host.App.Services.CreateAsyncScope();
+        var id = await scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { reference = 42 });
+        var store = scope.ServiceProvider.GetRequiredService<ISagaStateStore>();
+        var before = (await store.FindAsync(id))!;
+        var address = host.App.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+        using var client = new HttpClient { BaseAddress = new Uri(address) };
+
+        using var detail = JsonDocument.Parse(await client.GetStringAsync($"/sagaflow/api/instances/{id:N}"));
+        Assert.Equal(domain, detail.RootElement.GetProperty("definitionDomain").GetString());
+        var starter = detail.RootElement.GetProperty("domainStarter");
+        Assert.Equal(operation, starter.GetProperty("operationName").GetString());
+        Assert.Equal(rollback, starter.GetProperty("rollbackOperationName").GetString());
+        Assert.Equal("Completed", starter.GetProperty("status").GetString());
+        Assert.Equal(42, starter.GetProperty("result").GetProperty("reference").GetInt32());
+        Assert.Equal(JsonValueKind.Null, starter.GetProperty("startedAt").ValueKind);
+        Assert.Equal(JsonValueKind.Null, starter.GetProperty("completedAt").ValueKind);
+        Assert.Equal(new[] { "pay", "ship" }, detail.RootElement.GetProperty("steps").EnumerateArray().Select(step => step.GetProperty("stepName").GetString()));
         Assert.Equal(before.Revision, (await store.FindAsync(id))!.Revision);
     }
 
@@ -291,7 +329,7 @@ public sealed class LocalSagaCoordinationHostingTests
         public TestTransport Bus { get; } = bus;
         public ProcessDefinitionRegistry Registry => App.Services.GetRequiredService<ProcessDefinitionRegistry>();
         public static async Task<RuntimeHost> Start(bool loadLocal = true, bool registerTransport = true, string? yaml = null,
-            string dashboardPath = "/sagaflow")
+            string dashboardPath = "/sagaflow", Action<SagaFlowDashboardOptions>? configureDashboard = null)
         {
             var directory = Directory.CreateTempSubdirectory("sagaflow-runtime-").FullName;
             if (loadLocal) await File.WriteAllTextAsync(Path.Combine(directory, "purchase.yaml"), yaml ?? Yaml);
@@ -305,6 +343,7 @@ public sealed class LocalSagaCoordinationHostingTests
             {
                 options.LoadFromDirectory(directory);
                 options.Dashboard.Path = dashboardPath;
+                configureDashboard?.Invoke(options.Dashboard);
             });
             builder.Services.AddScoped<StarterBusinessService>();
             var app = builder.Build();

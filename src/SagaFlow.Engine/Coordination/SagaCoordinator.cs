@@ -10,7 +10,7 @@ namespace SagaFlow.Engine.Coordination;
 
 public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISagaStateStore store, SagaInstanceManager instances,
     SagaStepExecutor executor, TransitionResolver resolver, ProcessStateManager states, CompensationManager compensations, ISagaClock clock,
-    SagaStateChangePublisher? changes = null) : ISagaFlow
+    SagaStateChangePublisher? changes = null, IServiceProvider? services = null) : ISagaFlow
 {
     public string Name => nameof(SagaCoordinator);
 
@@ -103,5 +103,14 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
             await compensations.PublishPreparedAsync(compensation, cancellationToken);
         else if (decision.Command is not null)
             await executor.PublishPreparedAsync(decision.Command, cancellationToken);
+        else
+            await new DomainRollbackManager(store, services ?? EmptyServiceProvider.Instance, clock, changes)
+                .ExecuteIfPlannedAsync(outcome.Headers.SagaInstanceId, cancellationToken);
+    }
+
+    private sealed class EmptyServiceProvider : IServiceProvider
+    {
+        public static EmptyServiceProvider Instance { get; } = new();
+        public object? GetService(Type serviceType) => null;
     }
 }

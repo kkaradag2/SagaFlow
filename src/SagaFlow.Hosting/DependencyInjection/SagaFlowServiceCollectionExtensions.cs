@@ -19,6 +19,13 @@ namespace SagaFlow.Hosting.DependencyInjection;
 
 public static class SagaFlowServiceCollectionExtensions
 {
+    public static IServiceCollection AddSagaRollbackHandler<TPayload, THandler>(this IServiceCollection services)
+        where THandler : SagaRollbackHandler<TPayload>
+    {
+        services.AddScoped<SagaRollbackHandler<TPayload>, THandler>();
+        return services;
+    }
+
     public static IServiceCollection AddSagaFlow(
         this IServiceCollection services,
         Action<SagaFlowOptions>? configure = null)

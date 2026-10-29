@@ -212,13 +212,47 @@ function InstanceDetail({ instance, loading, onBack, onRefresh }: {
     </section>
 
     <section aria-labelledby="steps-heading">
-      <div className="mb-4 flex items-end justify-between gap-4"><div><h3 id="steps-heading" className="text-base font-bold">Execution flow</h3><p className="mt-1 text-sm text-zinc-500">Steps are shown in YAML definition order.</p></div><span className="text-xs text-zinc-500">{instance.steps.length} steps</span></div>
+      <div className="mb-4 flex items-end justify-between gap-4"><div><h3 id="steps-heading" className="text-base font-bold">Execution flow</h3><p className="mt-1 text-sm text-zinc-500">Domain starter first, followed by participant steps.</p></div><span className="text-xs text-zinc-500">1 starter · {instance.steps.length} steps</span></div>
       <ol className="space-y-0">
+        <DomainStarterItem key={`${instance.id}:starter`} instance={instance} />
         {instance.steps.map((step, index) => <StepItem key={`${instance.id}:${step.stepName}`} step={step} compensation={instance.compensations.find(item => item.stepId === step.stepName)} index={index} isLast={index === instance.steps.length - 1} isCurrent={instance.currentStep === step.stepName} now={now} />)}
       </ol>
     </section>
 
   </>;
+}
+
+function DomainStarterItem({ instance }: { instance: SagaInstanceDetail }) {
+  const [expanded, setExpanded] = useState(false);
+  const [rollbackExpanded, setRollbackExpanded] = useState(false);
+  const starter = instance.domainStarter;
+  const rollback = instance.domainRollback;
+  const status = starter.status ?? "Not recorded";
+
+  return <li className="relative grid grid-cols-[36px_minmax(0,1fr)] gap-3 sm:grid-cols-[44px_minmax(0,1fr)] sm:gap-4">
+    {instance.steps.length > 0 ? <span className="absolute left-[17px] top-8 h-[calc(100%-12px)] w-px bg-zinc-200 dark:bg-zinc-800 sm:left-[21px]" aria-hidden="true" /> : null}
+    <span className={`relative z-10 mt-3 inline-flex size-9 items-center justify-center rounded-full border sm:size-11 ${stepMarkerClass(status)}`}>
+      {status === "Completed" ? <CheckCircle2 size={19} aria-label="Completed" /> : status === "Failed" ? <XCircle size={19} aria-label="Failed" /> : <Circle size={18} aria-label={status} />}
+    </span>
+    <article className="mb-3 overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950/40">
+      <div className="flex items-center gap-2 border-b border-zinc-100 px-4 py-2 dark:border-zinc-900 sm:px-5"><h4 className="text-sm font-semibold">{instance.definitionDomain || instance.processName}</h4><span className="text-[10px] text-zinc-500">Domain starter</span></div>
+      <OperationHeader kind="Local operation" command={starter.operationName} status={status} executionOrder={null}
+        startedAt={starter.startedAt} endedAt={starter.completedAt} expanded={expanded} onToggle={() => setExpanded(value => !value)} />
+      <div hidden={!expanded} className="border-t border-zinc-100 px-4 py-4 dark:border-zinc-900 sm:px-5">
+        {starter.startedAt || starter.completedAt ? <dl className="grid gap-4 sm:grid-cols-2"><Fact label="Started" value={formatDate(starter.startedAt)} /><Fact label="Finished" value={formatDate(starter.completedAt)} /></dl> : <p className="text-xs text-zinc-500">Local operation timing was not recorded.</p>}
+        {starter.input != null || starter.result != null ? <div className="mt-4 grid gap-3 xl:grid-cols-2">{starter.input != null ? <PayloadPanel label="Input payload" value={starter.input} /> : null}{starter.result != null ? <PayloadPanel label="Result" value={starter.result} /> : null}</div> : <p className="mt-2 text-xs text-zinc-500">Local operation input and result were not recorded.</p>}
+      </div>
+      {rollback ? <div className="border-t border-zinc-200 dark:border-zinc-800">
+        <OperationHeader kind="Local rollback" command={starter.rollbackOperationName} status={rollback.status} executionOrder={null}
+          startedAt={rollback.startedAt} endedAt={rollback.completedAt} expanded={rollbackExpanded} onToggle={() => setRollbackExpanded(value => !value)} />
+        <div hidden={!rollbackExpanded} className="border-t border-zinc-100 px-4 py-4 dark:border-zinc-900 sm:px-5">
+          <p className="mb-4 text-xs text-zinc-500">Runs after all participant compensations complete.</p>
+          <dl className="grid gap-4 sm:grid-cols-2"><Fact label="Started" value={formatDate(rollback.startedAt)} /><Fact label="Finished" value={formatDate(rollback.completedAt)} /></dl>
+          {rollback.error ? <div role="alert" className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">{rollback.error}</div> : null}
+        </div>
+      </div> : null}
+    </article>
+  </li>;
 }
 
 function CompensationItem({ item }: { item: SagaCompensation }) {
@@ -273,15 +307,16 @@ function StepItem({ step, compensation, index, isLast, isCurrent, now }: { step:
 }
 
 function OperationHeader({ kind, command, status, executionOrder, startedAt, endedAt, expanded, onToggle }: {
-  kind: "Forward" | "Compensation"; command: string; status: string; executionOrder: number | null;
+  kind: "Forward" | "Compensation" | "Local operation" | "Local rollback"; command: string; status: string; executionOrder: number | null;
   startedAt: string | null; endedAt: string | null; expanded: boolean; onToggle: () => void;
 }) {
   const timestamp = endedAt ?? startedAt;
   const duration = formatDuration(startedAt, endedAt);
+  const participant = kind === "Forward" || kind === "Compensation";
   return <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto_32px] sm:px-5">
-    <div className="min-w-0"><div className="break-words font-mono text-xs font-medium">{command}</div><div className="mt-0.5 text-[10px] text-zinc-500">{kind} · #{executionOrder ?? "—"}</div></div>
+    <div className="min-w-0"><div className="break-words font-mono text-xs font-medium">{command}</div><div className="mt-0.5 text-[10px] text-zinc-500">{participant ? `${kind} · #${executionOrder ?? "—"}` : kind}</div></div>
     <div><Status value={status} /></div>
-    <span className="text-xs tabular-nums text-zinc-500" title={timestamp ? `${endedAt ? "Finished" : "Dispatched"}: ${formatDate(timestamp)}` : "No timestamp"}>{timestamp ? formatShortTime(timestamp) : "—"}</span>
+    <span className="text-xs tabular-nums text-zinc-500" title={timestamp ? `${endedAt ? "Finished" : participant ? "Dispatched" : "Started"}: ${formatDate(timestamp)}` : "No timestamp"}>{timestamp ? formatShortTime(timestamp) : "—"}</span>
     <span className="text-xs tabular-nums text-zinc-500" title="Duration">{duration ?? "—"}</span>
     <button type="button" onClick={onToggle} aria-expanded={expanded} aria-label={`${expanded ? "Hide" : "Show"} ${kind.toLowerCase()} details: ${command}`}
       className="inline-flex size-8 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-500 dark:hover:bg-zinc-800">
@@ -322,7 +357,7 @@ function Status({ value }: { value: string }) {
 
 function statusClass(status: string) {
   switch (status) {
-    case "Running": case "Dispatched": return "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950/50 dark:text-blue-300";
+    case "Running": case "Dispatched": case "Executing": return "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950/50 dark:text-blue-300";
     case "Completed": case "Compensated": return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-300";
     case "Failed": return "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/50 dark:text-red-300";
     case "CompensationRequested": case "Compensating": case "Planned": return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-300";

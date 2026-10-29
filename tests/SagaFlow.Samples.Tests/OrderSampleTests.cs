@@ -6,7 +6,12 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using System.Net;
 using System.Net.Http.Json;
+using System.Collections.Concurrent;
+using System.Text.Json;
 using SagaFlow.Core.Abstractions;
+using SagaFlow.Core.Messages;
+using SagaFlow.Core.State;
+using SagaFlow.Engine.Messaging;
 using SagaFlow.Engine.ProcessDefinition;
 using SagaFlow.Order.Contracts.Responses;
 using SagaFlow.Order.Controllers;
@@ -78,6 +83,102 @@ public sealed class OrderSampleTests
         Assert.Equal(25m, repository.Order.Total);
         Assert.Equal("inventory", repository.Order.FailureAt);
         Assert.Same(repository.Order, saga.Payload);
+    }
+
+    [Fact]
+    public async Task OrderRollbackHandlerCancelsThePersistedOrderIdempotently()
+    {
+        var repository = new InMemoryOrderRepository();
+        var service = new OrderService(repository, new RecordingSagaFlow());
+        var result = await service.CreateAsync(new("customer-1", [new("product-1", 1, 10m)]));
+        var handler = new OrderRollbackHandler(service);
+        var order = await repository.FindAsync(result.OrderId);
+        Assert.NotNull(order);
+        Assert.Equal(OrderStatus.Created, order.Status);
+
+        await handler.RollbackAsync(order, CancellationToken.None);
+        await handler.RollbackAsync(order, CancellationToken.None);
+
+        Assert.Equal(OrderStatus.Cancelled, (await repository.FindAsync(result.OrderId))!.Status);
+    }
+
+    [Theory]
+    [InlineData(null, false, "Completed", 0)]
+    [InlineData("notification", false, "Compensated", 3)]
+    [InlineData("payment", false, "Compensated", 0)]
+    [InlineData("notification", true, "Failed", 3)]
+    public async Task DashboardShowsOrderStarterAndRealRollbackState(string? failureAt, bool rollbackFails, string expectedStatus, int compensationCount)
+    {
+        var bus = new DashboardTestBus();
+        await using var factory = new WebApplicationFactory<global::Program>().WithWebHostBuilder(builder =>
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IHostedService>();
+                services.RemoveAll<ISagaMessageBus>();
+                services.AddSingleton<ISagaMessageBus>(bus);
+                if (rollbackFails)
+                {
+                    services.RemoveAll<SagaRollbackHandler<DomainOrder>>();
+                    services.AddSingleton<SagaRollbackHandler<DomainOrder>>(new FailingOrderRollbackHandler());
+                }
+            }));
+        using var client = factory.CreateClient();
+        factory.Services.GetRequiredService<ProcessDefinitionRegistry>().RegisterLocalBatch([
+            new DefinitionYamlCodec().Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "order-process.yaml")))]);
+        var response = await client.PostAsJsonAsync("/orders", new CreateOrderRequest("customer", [new("product", 1, 10m)], failureAt));
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var result = (await response.Content.ReadFromJsonAsync<SuccessResponse<CreateOrderResult>>())!.Data;
+        await using var scope = factory.Services.CreateAsyncScope();
+        var receiver = scope.ServiceProvider.GetRequiredService<OutcomeEventReceiver>();
+        while (bus.Commands.TryDequeue(out var command))
+            await receiver.ReceiveAsync(new SagaOutcomeEvent
+            {
+                Headers = command.Headers,
+                IsSuccess = command.Headers.IsCompensation || command.Headers.StepId != failureAt,
+                Result = JsonSerializer.SerializeToElement(new { accepted = true })
+            });
+
+        var store = factory.Services.GetRequiredService<ISagaStateStore>();
+        var before = (await store.FindAsync(result.SagaInstanceId))!;
+        using var detail = JsonDocument.Parse(await client.GetStringAsync($"/sagaflow/api/instances/{result.SagaInstanceId:N}"));
+        var root = detail.RootElement;
+        Assert.Equal(expectedStatus, root.GetProperty("status").GetString());
+        Assert.Equal("order", root.GetProperty("definitionDomain").GetString());
+        var starter = root.GetProperty("domainStarter");
+        Assert.Equal("CreateOrder", starter.GetProperty("operationName").GetString());
+        Assert.Equal("CancelOrder", starter.GetProperty("rollbackOperationName").GetString());
+        Assert.Equal("Completed", starter.GetProperty("status").GetString());
+        Assert.Equal(result.OrderId, starter.GetProperty("result").GetProperty("id").GetGuid());
+        foreach (var property in new[] { "input", "startedAt", "completedAt" })
+            Assert.Equal(JsonValueKind.Null, starter.GetProperty(property).ValueKind);
+        Assert.Equal(new[] { "payment", "inventory", "shipment", "notification" },
+            root.GetProperty("steps").EnumerateArray().Select(step => step.GetProperty("stepName").GetString()));
+        Assert.Equal(compensationCount, root.GetProperty("compensations").GetArrayLength());
+        var rollback = root.GetProperty("domainRollback");
+        if (failureAt is null) Assert.Equal(JsonValueKind.Null, rollback.ValueKind);
+        else
+        {
+            Assert.Equal(rollbackFails ? "Failed" : "Completed", rollback.GetProperty("status").GetString());
+            Assert.Equal(before.DomainRollback!.StartedAt, rollback.GetProperty("startedAt").GetDateTimeOffset());
+            Assert.Equal(before.DomainRollback.CompletedAt, rollback.GetProperty("completedAt").GetDateTimeOffset());
+            if (rollbackFails) Assert.Equal("Order cancellation rejected", rollback.GetProperty("error").GetString());
+        }
+        var order = await factory.Services.GetRequiredService<IOrderRepository>().FindAsync(result.OrderId);
+        Assert.Equal(failureAt is not null && !rollbackFails ? OrderStatus.Cancelled : OrderStatus.Created, order!.Status);
+        Assert.Equal(before.Revision, (await store.FindAsync(result.SagaInstanceId))!.Revision);
+    }
+
+    private sealed class DashboardTestBus : ISagaMessageBus
+    {
+        public ConcurrentQueue<SagaCommand> Commands { get; } = new();
+        public ValueTask PublishAsync(SagaCommand command, CancellationToken cancellationToken = default)
+        { Commands.Enqueue(command); return ValueTask.CompletedTask; }
+    }
+
+    private sealed class FailingOrderRollbackHandler : SagaRollbackHandler<DomainOrder>
+    {
+        public override Task RollbackAsync(DomainOrder payload, CancellationToken cancellationToken) =>
+            Task.FromException(new InvalidOperationException("Order cancellation rejected"));
     }
 
     [Fact]
@@ -228,6 +329,8 @@ public sealed class OrderSampleTests
         public ValueTask AddAsync(DomainOrder order, CancellationToken cancellationToken = default)
         { Order = order; Added = true; return ValueTask.CompletedTask; }
         public ValueTask<DomainOrder?> FindAsync(Guid id, CancellationToken cancellationToken = default) => ValueTask.FromResult(Order);
+        public ValueTask CancelAsync(Guid id, CancellationToken cancellationToken = default)
+        { if (Order is null) throw new KeyNotFoundException(); Order = Order with { Status = OrderStatus.Cancelled }; return ValueTask.CompletedTask; }
     }
 
     private sealed class RecordingSagaFlow(Action? onStart = null) : ISagaFlow
@@ -249,6 +352,7 @@ public sealed class OrderSampleTests
     {
         public Task<CreateOrderResult> CreateAsync(CreateOrderRequest request, CancellationToken cancellationToken = default) =>
             error is null ? Task.FromResult(result!) : Task.FromException<CreateOrderResult>(error);
+        public Task CancelAsync(Guid orderId, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     private sealed class RecordingOrderService : IOrderService
@@ -260,5 +364,6 @@ public sealed class OrderSampleTests
             Calls++;
             return Task.FromResult(new CreateOrderResult(Guid.NewGuid(), Guid.NewGuid()));
         }
+        public Task CancelAsync(Guid orderId, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 }

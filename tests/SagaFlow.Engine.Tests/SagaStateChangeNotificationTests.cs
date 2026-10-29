@@ -64,7 +64,7 @@ public sealed class SagaStateChangeNotificationTests
         Assert.Equal(id.ToString("N"), completed.Id);
         Assert.Equal(SagaStatus.Compensated, completed.Status);
         Assert.Equal(SagaCompensationStatus.Completed, completed.Compensations.Single().Status);
-        Assert.Equal(5, listener.Snapshots.Count);
+        Assert.Equal(7, listener.Snapshots.Count);
     }
 
     [Fact]

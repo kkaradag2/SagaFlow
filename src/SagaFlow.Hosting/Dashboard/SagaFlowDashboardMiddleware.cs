@@ -35,7 +35,7 @@ public sealed class SagaFlowDashboardMiddleware
             var instance = await store.FindAsync(instanceId, context.RequestAborted);
             var result = instance is null
                 ? Results.NotFound()
-                : Results.Ok(SagaFlowDashboardEndpoints.ToDetail(instance));
+                : Results.Ok(SagaFlowDashboardEndpoints.ToDetail(instance, _options.DescribeDomainStarter));
             await result.ExecuteAsync(context);
             return;
         }
