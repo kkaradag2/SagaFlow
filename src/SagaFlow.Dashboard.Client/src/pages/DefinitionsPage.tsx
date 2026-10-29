@@ -7,7 +7,7 @@ export function DefinitionsPage() {
     <PageSection>
       <SummaryPanel
         icon={<GitBranch className="size-4" />}
-        title="Declarative Process Definitions"
+        title="Workflows"
         description="YAML-backed Saga definitions loaded by the embedded host will be listed here."
         metric="0 loaded"
       />
