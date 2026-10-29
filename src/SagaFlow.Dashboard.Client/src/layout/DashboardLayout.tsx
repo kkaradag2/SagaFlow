@@ -1,65 +1,44 @@
 import {
   Boxes,
-  Activity,
   GitBranch,
-  Inbox,
   PanelLeftOpen,
-  RotateCcw,
   type LucideIcon,
 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 
 import { SidebarItem } from "../components/Sidebar/SidebarItem";
 import { ThemeToggle } from "../components/ThemeToggle/ThemeToggle";
-import { CompensationPage } from "../pages/CompensationPage";
 import { DefinitionsPage } from "../pages/DefinitionsPage";
 import { InstancesPage } from "../pages/InstancesPage";
-import { MessagesPage } from "../pages/MessagesPage";
-import { OverviewPage } from "../pages/OverviewPage";
 
 const pages = [
-  "Overview",
-  "Definitions",
+  "Workflows",
   "Instances",
-  "Messages",
-  "Compensation",
 ] as const;
 
 type Page = (typeof pages)[number];
 
 const navigationIcons: Record<Page, LucideIcon> = {
-  Overview: Activity,
-  Definitions: GitBranch,
+  Workflows: GitBranch,
   Instances: Boxes,
-  Messages: Inbox,
-  Compensation: RotateCcw,
 };
 
 const breadcrumbs: Record<Page, string[]> = {
-  Overview: ["Dashboard", "Overview"],
-  Definitions: ["Dashboard", "Process Definitions"],
+  Workflows: ["Dashboard", "Workflows"],
   Instances: ["Dashboard", "Saga Instances"],
-  Messages: ["Dashboard", "Messages"],
-  Compensation: ["Dashboard", "Compensation"],
 };
 
 export function DashboardLayout() {
-  const [activePage, setActivePage] = useState<Page>("Instances");
+  const [activePage, setActivePage] = useState<Page>("Workflows");
   const [isSidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isMobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   const content = useMemo(() => {
     switch (activePage) {
-      case "Definitions":
+      case "Workflows":
         return <DefinitionsPage />;
       case "Instances":
         return <InstancesPage />;
-      case "Messages":
-        return <MessagesPage />;
-      case "Compensation":
-        return <CompensationPage />;
-      default:
-        return <OverviewPage />;
     }
   }, [activePage]);
 
@@ -98,7 +77,7 @@ export function DashboardLayout() {
           type="button"
           aria-label="Go to dashboard home"
           title="Dashboard home"
-          onClick={() => navigateTo("Overview")}
+          onClick={() => navigateTo("Workflows")}
           className={[
             "flex min-h-10 items-center gap-3 rounded-lg text-left transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-500",
             isSidebarCollapsed ? "justify-center" : "",
@@ -118,15 +97,6 @@ export function DashboardLayout() {
         </button>
 
         <div className={isSidebarCollapsed ? "mt-9 lg:mt-10" : "mt-9"}>
-          <div
-            className={[
-              "mb-3 px-1 text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500 dark:text-zinc-500",
-              isSidebarCollapsed ? "hidden" : "",
-            ].join(" ")}
-          >
-            <span>Saga Runtime</span>
-          </div>
-
           <nav className="flex flex-col gap-1">
             {pages.map((page) => (
               <SidebarItem
@@ -194,7 +164,6 @@ export function DashboardLayout() {
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
-            <StatusPill />
             <ThemeToggle />
           </div>
         </header>
@@ -233,15 +202,6 @@ function Breadcrumb({ items }: { items: string[] }) {
         );
       })}
     </nav>
-  );
-}
-
-function StatusPill() {
-  return (
-    <div className="hidden shrink-0 items-center gap-2 rounded-full border border-zinc-200 bg-zinc-50 px-4 py-2 text-sm font-medium text-zinc-700 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 sm:inline-flex">
-      <span className="size-1.5 rounded-full bg-emerald-500" />
-      Embedded
-    </div>
   );
 }
 
