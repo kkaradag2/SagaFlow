@@ -35,7 +35,7 @@ public sealed class RuntimeTransitionTests
         var fixture = new CoordinationTestFixture(codec.Parse(yaml));
         var id = await fixture.Coordinator.StartAsync("payload");
         await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.Single(), result: new { ready, nested = new { ready } }));
-        Assert.Equal(matches ? SagaStatus.Completed : SagaStatus.CompensationRequested, (await fixture.State(id)).Status);
+        Assert.Equal(matches ? SagaStatus.Completed : SagaStatus.Compensated, (await fixture.State(id)).Status);
         Assert.Single(fixture.Bus.Commands);
     }
 
@@ -135,10 +135,14 @@ public sealed class RuntimeTransitionTests
         var id = await fixture.Coordinator.StartAsync("payload");
         await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.Single(), result: new { accepted = false }));
         var state = await fixture.State(id);
-        Assert.Equal(SagaStatus.CompensationRequested, state.Status);
+        Assert.Equal(SagaStatus.Compensating, state.Status);
         Assert.Equal(SagaStepStatus.Completed, state.Steps.Single().Status);
-        Assert.Equal("UndoChoose", Assert.Single(fixture.States.GetCompensationPlan(state)).Command);
-        Assert.Single(fixture.Bus.Commands);
+        var compensation = Assert.Single(state.Compensations);
+        Assert.Equal("UndoChoose", compensation.Command);
+        Assert.Equal(SagaCompensationStatus.Dispatched, compensation.Status);
+        Assert.Equal(2, fixture.Bus.Commands.Count);
+        await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.Last()));
+        Assert.Equal(SagaStatus.Compensated, (await fixture.State(id)).Status);
     }
 
     [Fact]

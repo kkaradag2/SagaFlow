@@ -4,6 +4,10 @@ SagaFlow now reads and validates declarative definitions and discovers a static 
 
 ## Model and YAML contract
 
+Structured `when` comparisons, `on` aliases, context/step-result paths, and the Order
+shipping/pickup example are described in [conditional transitions](conditional-transitions.md).
+The Boolean expression rules below describe the preserved legacy scalar format.
+
 `SagaDefinition` has `Name`, `Version`, `Domain`, `Steps`, and `BigPicture`. Steps have `Name`, `Command`, optional `TimeoutLimit`, `MaxAttempts` (default `1`), `Transitions`, and optional `Compensation`. Transitions have `Event`, optional `When`, optional `Else`, and `NextStep`. `BigPictureSourceDefinition` contains `Domain`, `Process`, `Endpoint`, and an optional `Version` pin.
 
 ```yaml

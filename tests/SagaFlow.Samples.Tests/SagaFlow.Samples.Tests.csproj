@@ -24,6 +24,7 @@
     <ProjectReference Include="..\..\samples\Participants\SagaFlow.Inventory\SagaFlow.Inventory.csproj" />
     <ProjectReference Include="..\..\samples\Participants\SagaFlow.Shipment\SagaFlow.Shipment.csproj" />
     <ProjectReference Include="..\..\samples\Participants\SagaFlow.Notification\SagaFlow.Notification.csproj" />
+    <ProjectReference Include="..\..\samples\Participants\SagaFlow.ManagerApproval\SagaFlow.ManagerApproval.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\samples\OrderProcess\SagaFlow.Order\saga\order-process.yaml" Link="order-process.yaml" CopyToOutputDirectory="PreserveNewest" />

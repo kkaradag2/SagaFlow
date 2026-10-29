@@ -8,7 +8,7 @@ public sealed class ShipmentCommandHandler(IShipmentService shipments) : IPartic
 {
     public IReadOnlyCollection<string> CommandNames { get; } = ["CreateShipment", "CancelShipment"];
 
-    public ParticipantCommandResult Handle(SagaCommand command)
+    public ParticipantCommandResult Handle(SagaCommand command, string? replyTo = null)
     {
         if (SampleFailureInjection.IsRequested(command, "shipment", "CreateShipment"))
             return ParticipantCommandResult.Failure("shipment");

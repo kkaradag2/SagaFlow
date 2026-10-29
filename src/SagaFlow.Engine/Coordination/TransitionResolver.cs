@@ -1,18 +1,23 @@
 using System.Text.Json;
 using SagaFlow.Core.Definitions;
 using SagaFlow.Engine.ProcessDefinition;
+using SagaFlow.Core.State;
 
 namespace SagaFlow.Engine.Coordination;
 
 public sealed class TransitionResolver
 {
-    public string Resolve(SagaStepDefinition step, bool success, JsonElement result)
+    public string Resolve(SagaStepDefinition step, bool success, JsonElement result, SagaInstance? instance = null)
     {
         var category = success ? "success" : "failure";
         var candidates = step.Transitions.Where(rule => rule.Event == category).ToArray();
-        SagaTransitionDefinition? match = null;
-        foreach (var rule in candidates.Where(rule => rule.When is not null))
+        foreach (var rule in candidates.Where(rule => rule.When is not null || rule.Condition is not null))
         {
+            if (rule.Condition is not null)
+            {
+                if (ConditionEvaluator.Matches(rule.Condition, result, instance)) return rule.NextStep!;
+                continue;
+            }
             var condition = ConditionParser.Parse(rule.When!);
             var path = condition.PropertyPath.Split('.');
             if (path[0] != "result") throw new InvalidOperationException($"Step '{step.Name}': runtime conditions support result.* paths only, not '{condition.PropertyPath}'.");
@@ -25,12 +30,9 @@ public sealed class TransitionResolver
             if (value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
                 throw new InvalidOperationException($"Step '{step.Name}': '{condition.PropertyPath}' must be a Boolean.");
             if (value.GetBoolean() == condition.RequiredValue)
-            {
-                if (match is not null) throw new InvalidOperationException($"Step '{step.Name}': multiple '{category}' transitions match.");
-                match = rule;
-            }
+                return rule.NextStep!;
         }
-        match ??= candidates.SingleOrDefault(rule => rule.When is null);
+        var match = candidates.SingleOrDefault(rule => rule.When is null && rule.Condition is null);
         return match?.NextStep ?? throw new InvalidOperationException($"Step '{step.Name}': no matching '{category}' transition or fallback.");
     }
 }

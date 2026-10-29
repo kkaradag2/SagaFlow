@@ -19,7 +19,10 @@ public sealed record Order(
     decimal Total,
     DateTimeOffset CreatedAt,
     string? FailureAt = null,
-    OrderStatus Status = OrderStatus.Created);
+    OrderStatus Status = OrderStatus.Created)
+{
+    public long TotalQuantity => Items.Sum(item => (long)item.Quantity);
+}
 
 public enum OrderStatus { Created, Cancelled }
 
