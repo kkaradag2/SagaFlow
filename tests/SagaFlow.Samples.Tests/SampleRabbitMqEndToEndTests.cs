@@ -9,6 +9,7 @@ using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.State;
 using SagaFlow.Order.Contracts.Responses;
 using SagaFlow.Order.Domain;
+using SagaFlow.Order.Repositories;
 
 namespace SagaFlow.Samples.Tests;
 
@@ -68,6 +69,9 @@ public sealed class SampleRabbitMqEndToEndTests
                 var result = await CreateOrderAsync(client, $"failure-{targets[failedIndex]}",
                     $"product-{failedIndex}", targets[failedIndex]);
                 await WaitForCompensationAsync(factory.Services, result.SagaInstanceId, failedIndex, targets);
+                var order = await factory.Services.GetRequiredService<IOrderRepository>().FindAsync(result.OrderId);
+                Assert.NotNull(order);
+                Assert.Equal(OrderStatus.Cancelled, order.Status);
             }
         }
         finally
@@ -102,6 +106,8 @@ public sealed class SampleRabbitMqEndToEndTests
             var state = await services.GetRequiredService<ISagaStateStore>().FindAsync(sagaId);
             if (state?.Status == SagaStatus.Compensated)
             {
+                Assert.NotNull(state.DomainRollback);
+                Assert.Equal(SagaDomainRollbackStatus.Completed, state.DomainRollback.Status);
                 Assert.False(string.IsNullOrWhiteSpace(state.CorrelationId));
                 Assert.Equal(sagaId.ToString("N"), state.Id);
                 for (var index = 0; index < state.Steps.Count; index++)

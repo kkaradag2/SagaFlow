@@ -34,4 +34,7 @@ public sealed class OrderService(
 
         return new(order.Id, sagaInstanceId);
     }
+
+    public async Task CancelAsync(Guid orderId, CancellationToken cancellationToken = default) =>
+        await repository.CancelAsync(orderId, cancellationToken);
 }

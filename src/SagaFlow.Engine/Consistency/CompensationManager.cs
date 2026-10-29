@@ -79,7 +79,8 @@ public sealed class CompensationManager(
             .FirstOrDefault();
         if (next is null)
         {
-            instance.Status = SagaStatus.Compensated;
+            instance.DomainRollback ??= new SagaDomainRollbackState();
+            instance.Status = SagaStatus.Compensating;
             instance.UpdatedAt = clock.UtcNow;
             return null;
         }

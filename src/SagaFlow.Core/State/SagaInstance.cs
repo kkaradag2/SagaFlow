@@ -13,6 +13,7 @@ public sealed class SagaInstance
     public string CorrelationId { get; init; } = string.Empty;
     public string? CurrentStep { get; set; }
     public JsonElement Context { get; set; } = JsonSerializer.SerializeToElement<object?>(null);
+    public string? PayloadType { get; set; }
     public DateTimeOffset CreatedAt { get; init; }
     public DateTimeOffset UpdatedAt { get; set; }
     public string? FailureReason { get; set; }
@@ -24,4 +25,5 @@ public sealed class SagaInstance
 
     public IReadOnlyList<SagaStepState> Steps { get; init; } = [];
     public IReadOnlyList<SagaCompensationState> Compensations { get; set; } = [];
+    public SagaDomainRollbackState? DomainRollback { get; set; }
 }

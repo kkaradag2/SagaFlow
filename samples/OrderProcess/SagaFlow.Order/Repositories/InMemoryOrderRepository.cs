@@ -20,4 +20,15 @@ public sealed class InMemoryOrderRepository : IOrderRepository
         cancellationToken.ThrowIfCancellationRequested();
         return ValueTask.FromResult(_orders.GetValueOrDefault(id));
     }
+
+    public ValueTask CancelAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        while (true)
+        {
+            if (!_orders.TryGetValue(id, out var order)) throw new KeyNotFoundException($"Order '{id}' was not found.");
+            if (order.Status == OrderStatus.Cancelled) return ValueTask.CompletedTask;
+            if (_orders.TryUpdate(id, order with { Status = OrderStatus.Cancelled }, order)) return ValueTask.CompletedTask;
+        }
+    }
 }

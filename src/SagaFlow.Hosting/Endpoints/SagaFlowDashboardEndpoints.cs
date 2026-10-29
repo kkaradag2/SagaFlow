@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.State;
+using SagaFlow.Hosting.Dashboard;
+using SagaFlow.Hosting.DependencyInjection;
 
 namespace SagaFlow.Hosting.Endpoints;
 
@@ -15,10 +17,10 @@ public static class SagaFlowDashboardEndpoints
             var instances = await store.ListAsync(cancellationToken);
             return Results.Ok(instances.Select(ToSummary));
         });
-        endpoints.MapGet("/sagaflow/api/instances/{instanceId}", async (string instanceId, ISagaStateStore store, CancellationToken cancellationToken) =>
+        endpoints.MapGet("/sagaflow/api/instances/{instanceId}", async (string instanceId, ISagaStateStore store, SagaFlowOptions options, CancellationToken cancellationToken) =>
         {
             var instance = await store.FindAsync(instanceId, cancellationToken);
-            return instance is null ? Results.NotFound() : Results.Ok(ToDetail(instance));
+            return instance is null ? Results.NotFound() : Results.Ok(ToDetail(instance, options.Dashboard.DescribeDomainStarter));
         });
         return endpoints;
     }
@@ -34,7 +36,7 @@ public static class SagaFlowDashboardEndpoints
         instance.UpdatedAt
     };
 
-    internal static object ToDetail(SagaInstance instance) => new
+    internal static object ToDetail(SagaInstance instance, Func<SagaInstance, SagaDomainStarterDisplay?>? describeDomainStarter = null) => new
     {
         instance.Id,
         ProcessName = instance.DefinitionName,
@@ -46,6 +48,7 @@ public static class SagaFlowDashboardEndpoints
         instance.CreatedAt,
         instance.UpdatedAt,
         instance.FailureReason,
+        DomainStarter = describeDomainStarter?.Invoke(instance) ?? new SagaDomainStarterDisplay(),
         Steps = instance.Steps.Select(step => new
         {
             step.StepName,
@@ -68,6 +71,13 @@ public static class SagaFlowDashboardEndpoints
             compensation.StartedAt,
             compensation.CompletedAt,
             compensation.Result
-        })
+        }),
+        DomainRollback = instance.DomainRollback is null ? null : new
+        {
+            Status = instance.DomainRollback.Status.ToString(),
+            instance.DomainRollback.StartedAt,
+            instance.DomainRollback.CompletedAt,
+            instance.DomainRollback.Error
+        }
     };
 }

@@ -3,6 +3,7 @@ using FluentValidation;
 using FluentValidation.AspNetCore;
 using Microsoft.AspNetCore.Mvc;
 using SagaFlow.Hosting.DependencyInjection;
+using SagaFlow.Hosting.Dashboard;
 using SagaFlow.Hosting.Endpoints;
 using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
 using SagaFlow.Order.Contracts.Responses;
@@ -47,12 +48,28 @@ builder.Services.AddSingleton<IOrderRepository, InMemoryOrderRepository>();
 builder.Services.AddSingleton<IValidator<CreateOrderRequest>, CreateOrderRequestValidator>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IOrderService, OrderService>();
+builder.Services.AddSagaRollbackHandler<Order, OrderRollbackHandler>();
 builder.Services.AddSagaFlow(options =>
 {
     options.LoadFromDirectory(definitionDirectory);
     options.Publication.Enabled = publishDefinitions;
     options.Publication.IncludeBigPictureSources = builder.Configuration.GetValue<bool>("SagaFlow:PublishBigPictureSources");
     options.Publication.PublishedDefinitions.Add(new("order", publishedProcess, "1.0"));
+    // CreateAsync persists this Order before StartAsync. The Saga payload is its creation result;
+    // local operation timing and the original CreateOrderRequest are not recorded.
+    options.Dashboard.DescribeDomainStarter = instance =>
+        instance.DefinitionDomain == "order" && instance.PayloadType == typeof(Order).AssemblyQualifiedName
+            ? new SagaDomainStarterDisplay
+            {
+                OperationName = "CreateOrder",
+                RollbackOperationName = "CancelOrder",
+                Status = instance.Context.TryGetProperty("status", out var orderStatus)
+                    && orderStatus.ValueKind == JsonValueKind.Number
+                    && orderStatus.TryGetInt32(out var value) && value == (int)OrderStatus.Created
+                        ? "Completed" : null,
+                Result = instance.Context.Clone()
+            }
+            : null;
 });
 if (builder.Configuration.GetValue("RabbitMq:Enabled", true))
     builder.Services.AddSagaFlowRabbitMq(builder.Configuration.GetRequiredSection("RabbitMq"));

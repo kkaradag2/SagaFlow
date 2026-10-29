@@ -46,12 +46,31 @@ export type SagaCompensation = {
   result: unknown;
 };
 
+export type SagaDomainRollback = {
+  status: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  error: string | null;
+};
+
+export type SagaDomainStarter = {
+  operationName: string;
+  rollbackOperationName: string;
+  status: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  input: unknown;
+  result: unknown;
+};
+
 export type SagaInstanceDetail = SagaInstanceSummary & {
   definitionDomain: string;
   definitionVersion: string;
   failureReason: string | null;
   steps: SagaStep[];
   compensations: SagaCompensation[];
+  domainRollback: SagaDomainRollback | null;
+  domainStarter: SagaDomainStarter;
 };
 
 async function getJson<T>(path: string): Promise<T> {
