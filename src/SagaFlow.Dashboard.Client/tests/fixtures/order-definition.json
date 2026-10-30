@@ -1,0 +1,213 @@
+[
+  {
+    "name": "order-process",
+    "domain": "order",
+    "version": "1.0",
+    "steps": [
+      {
+        "name": "payment",
+        "command": "AuthorizePayment",
+        "timeoutLimit": "10s",
+        "maxAttempts": 3,
+        "compensation": {
+          "command": "RefundPayment"
+        },
+        "transitions": [
+          {
+            "event": "success",
+            "when": null,
+            "else": null,
+            "nextStep": "inventory",
+            "condition": null
+          },
+          {
+            "event": "failure",
+            "when": null,
+            "else": null,
+            "nextStep": "compensation",
+            "condition": null
+          },
+          {
+            "event": "timeout",
+            "when": null,
+            "else": null,
+            "nextStep": "compensation",
+            "condition": null
+          }
+        ]
+      },
+      {
+        "name": "inventory",
+        "command": "ReserveInventory",
+        "timeoutLimit": "10s",
+        "maxAttempts": 3,
+        "compensation": {
+          "command": "ReleaseInventory"
+        },
+        "transitions": [
+          {
+            "event": "success",
+            "when": null,
+            "else": null,
+            "nextStep": "managerNotification",
+            "condition": {
+              "path": "context.totalQuantity",
+              "operator": "greaterThan",
+              "value": 1000,
+              "valueJson": "1000"
+            }
+          },
+          {
+            "event": "success",
+            "when": null,
+            "else": null,
+            "nextStep": "shipment",
+            "condition": null
+          },
+          {
+            "event": "failure",
+            "when": null,
+            "else": null,
+            "nextStep": "compensation",
+            "condition": null
+          },
+          {
+            "event": "timeout",
+            "when": null,
+            "else": null,
+            "nextStep": "compensation",
+            "condition": null
+          }
+        ]
+      },
+      {
+        "name": "managerNotification",
+        "command": "NotifyManager",
+        "timeoutLimit": "10s",
+        "maxAttempts": 1,
+        "compensation": null,
+        "transitions": [
+          {
+            "event": "success",
+            "when": null,
+            "else": null,
+            "nextStep": "managerApproval",
+            "condition": null
+          },
+          {
+            "event": "failure",
+            "when": null,
+            "else": null,
+            "nextStep": "compensation",
+            "condition": null
+          },
+          {
+            "event": "timeout",
+            "when": null,
+            "else": null,
+            "nextStep": "compensation",
+            "condition": null
+          }
+        ]
+      },
+      {
+        "name": "managerApproval",
+        "command": "RequestManagerApproval",
+        "timeoutLimit": null,
+        "maxAttempts": 1,
+        "compensation": null,
+        "transitions": [
+          {
+            "event": "success",
+            "when": null,
+            "else": null,
+            "nextStep": "shipment",
+            "condition": {
+              "path": "steps.managerApproval.result.approved",
+              "operator": "equals",
+              "value": true,
+              "valueJson": "true"
+            }
+          },
+          {
+            "event": "success",
+            "when": null,
+            "else": null,
+            "nextStep": "compensation",
+            "condition": null
+          },
+          {
+            "event": "failure",
+            "when": null,
+            "else": null,
+            "nextStep": "compensation",
+            "condition": null
+          }
+        ]
+      },
+      {
+        "name": "shipment",
+        "command": "CreateShipment",
+        "timeoutLimit": "10s",
+        "maxAttempts": 3,
+        "compensation": {
+          "command": "CancelShipment"
+        },
+        "transitions": [
+          {
+            "event": "success",
+            "when": null,
+            "else": null,
+            "nextStep": "notification",
+            "condition": null
+          },
+          {
+            "event": "failure",
+            "when": null,
+            "else": null,
+            "nextStep": "compensation",
+            "condition": null
+          },
+          {
+            "event": "timeout",
+            "when": null,
+            "else": null,
+            "nextStep": "compensation",
+            "condition": null
+          }
+        ]
+      },
+      {
+        "name": "notification",
+        "command": "SendOrderNotification",
+        "timeoutLimit": "10s",
+        "maxAttempts": 3,
+        "compensation": null,
+        "transitions": [
+          {
+            "event": "success",
+            "when": null,
+            "else": null,
+            "nextStep": "completed",
+            "condition": null
+          },
+          {
+            "event": "failure",
+            "when": null,
+            "else": null,
+            "nextStep": "compensation",
+            "condition": null
+          },
+          {
+            "event": "timeout",
+            "when": null,
+            "else": null,
+            "nextStep": "compensation",
+            "condition": null
+          }
+        ]
+      }
+    ],
+    "bigPicture": []
+  }
+]

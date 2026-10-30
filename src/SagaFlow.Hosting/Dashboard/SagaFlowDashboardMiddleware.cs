@@ -2,6 +2,8 @@ using Microsoft.AspNetCore.Http;
 using SagaFlow.Dashboard.Assets;
 using SagaFlow.Core.Abstractions;
 using SagaFlow.Hosting.Endpoints;
+using SagaFlow.Engine.ProcessDefinition;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace SagaFlow.Hosting.Dashboard;
 
@@ -20,6 +22,19 @@ public sealed class SagaFlowDashboardMiddleware
     {
         var requestPath = context.Request.Path.Value ?? string.Empty;
         var dashboardPath = SagaFlowDashboardPath.Normalize(_options.Path);
+
+        if (string.Equals(requestPath, $"{dashboardPath}/api/definitions", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!HttpMethods.IsGet(context.Request.Method))
+            {
+                context.Response.StatusCode = StatusCodes.Status405MethodNotAllowed;
+                context.Response.Headers.Allow = "GET";
+                return;
+            }
+            var registry = context.RequestServices.GetRequiredService<ProcessDefinitionRegistry>();
+            await Results.Ok(SagaFlowDashboardEndpoints.ToDefinitions(registry)).ExecuteAsync(context);
+            return;
+        }
 
         var apiPath = $"{dashboardPath}/api/instances";
         if (string.Equals(requestPath, apiPath, StringComparison.OrdinalIgnoreCase))
