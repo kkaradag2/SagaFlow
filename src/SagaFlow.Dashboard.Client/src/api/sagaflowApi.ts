@@ -73,8 +73,8 @@ export type SagaInstanceDetail = SagaInstanceSummary & {
   domainStarter: SagaDomainStarter;
 };
 
-async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(path, { headers: { Accept: "application/json" } });
+async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(path, { headers: { Accept: "application/json" }, signal });
   if (!response.ok) throw new Error(`SagaFlow request failed (${response.status}).`);
   return response.json() as Promise<T>;
 }
@@ -85,4 +85,41 @@ export function getInstances(): Promise<SagaInstanceSummary[]> {
 
 export function getInstance(instanceId: string): Promise<SagaInstanceDetail> {
   return getJson(`api/instances/${encodeURIComponent(instanceId)}`);
+}
+
+// Read-only Dashboard projection of the existing parsed SagaDefinition model.
+export type SagaConditionDefinition = {
+  path: string;
+  operator: string;
+  value: string | number | boolean | null;
+  valueJson?: string;
+};
+
+export type SagaTransitionDefinition = {
+  event: string;
+  when: string | null;
+  condition: SagaConditionDefinition | null;
+  else: boolean | null;
+  nextStep: string;
+};
+
+export type SagaStepDefinition = {
+  name: string;
+  command: string;
+  timeoutLimit: string | null;
+  maxAttempts: number;
+  compensation: { command: string } | null;
+  transitions: SagaTransitionDefinition[];
+};
+
+export type SagaDefinition = {
+  name: string;
+  domain: string;
+  version: string;
+  steps: SagaStepDefinition[];
+  bigPicture: { domain: string; process: string; version: string | null; endpoint: string }[];
+};
+
+export function getDefinitions(signal?: AbortSignal): Promise<SagaDefinition[]> {
+  return getJson("api/definitions", signal);
 }

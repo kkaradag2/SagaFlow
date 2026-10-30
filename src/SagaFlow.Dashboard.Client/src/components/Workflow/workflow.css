@@ -1,0 +1,26 @@
+.workflow-canvas .react-flow { background: #fafafa; }
+.dark .workflow-canvas .react-flow { background: #09090b; }
+.workflow-canvas .react-flow__edge-text { fill: #27272a; }
+.dark .workflow-canvas .react-flow__edge-text { fill: #e4e4e7; }
+.workflow-canvas .react-flow__edge-textbg { fill: #fff; fill-opacity: 0.96; }
+.dark .workflow-canvas .react-flow__edge-textbg { fill: #18181b; }
+.workflow-canvas .react-flow__handle { width: 5px; height: 5px; border: 0; background: #71717a; }
+.workflow-canvas .react-flow__node { cursor: pointer; }
+.workflow-canvas .react-flow__controls { box-shadow: none; border: 1px solid #d4d4d8; border-radius: 8px; overflow: hidden; }
+.dark .workflow-canvas .react-flow__controls { border-color: #3f3f46; }
+
+.workflow-condition-outline,
+.workflow-condition-surface { position: absolute; clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
+.workflow-condition-outline { inset: 0; background: #8b5cf6; }
+.workflow-condition-surface { inset: 2px; background: linear-gradient(145deg, #faf5ff, #ede9fe); }
+.dark .workflow-condition-surface { background: linear-gradient(145deg, #2a1b42, #15101f); }
+.workflow-condition[data-selected="true"] .workflow-condition-outline { background: #34d399; }
+
+.workflow-details-drawer { animation: workflow-drawer-enter 180ms ease-out; }
+@keyframes workflow-drawer-enter {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .workflow-details-drawer { animation: none; }
+}

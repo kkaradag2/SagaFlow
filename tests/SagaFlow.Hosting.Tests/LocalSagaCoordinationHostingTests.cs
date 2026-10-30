@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -157,6 +158,103 @@ public sealed class LocalSagaCoordinationHostingTests
         foreach (var property in new[] { "status", "startedAt", "completedAt", "input", "result" })
             Assert.Equal(JsonValueKind.Null, starter.GetProperty(property).ValueKind);
         Assert.Equal(before.Revision, (await store.FindAsync(id))!.Revision);
+    }
+
+    [Theory]
+    [InlineData("/sagaflow")]
+    [InlineData("/operations")]
+    public async Task DashboardDefinitionsMatchActualOrderYamlAndFrontendFixtureWithoutDiscovery(string dashboardPath)
+    {
+        var yaml = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "workflow-order-process.yaml"));
+        await using var host = await RuntimeHost.Start(registerTransport: false, yaml: yaml, dashboardPath: dashboardPath);
+        host.Registry.RegisterRemote(new DefinitionYamlCodec().Parse(Yaml), "https://remote");
+        var before = host.Registry.Snapshot();
+        var address = host.App.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+        using var client = new HttpClient { BaseAddress = new Uri(address) };
+        using var definitions = JsonDocument.Parse(await client.GetStringAsync($"{dashboardPath}/api/definitions"));
+        var definition = Assert.Single(definitions.RootElement.EnumerateArray());
+        Assert.Equal("order-process", definition.GetProperty("name").GetString());
+        Assert.Equal("order", definition.GetProperty("domain").GetString());
+        Assert.Equal("1.0", definition.GetProperty("version").GetString());
+        var steps = definition.GetProperty("steps");
+        Assert.Equal(new[] { "payment", "inventory", "managerNotification", "managerApproval", "shipment", "notification" },
+            steps.EnumerateArray().Select(step => step.GetProperty("name").GetString()));
+        Assert.Equal("RefundPayment", steps[0].GetProperty("compensation").GetProperty("command").GetString());
+        var condition = steps[1].GetProperty("transitions")[0].GetProperty("condition");
+        Assert.Equal("context.totalQuantity", condition.GetProperty("path").GetString());
+        Assert.Equal("greaterThan", condition.GetProperty("operator").GetString());
+        Assert.Equal("1000", condition.GetProperty("valueJson").GetString());
+        using var fixture = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "workflow-order-definition.json")));
+        // The frontend graph tests use this API snapshot, not a second YAML parser or a hand-written process.
+        Assert.True(JsonElement.DeepEquals(fixture.RootElement, definitions.RootElement), "Regenerate the frontend fixture from the Dashboard definitions API if Order YAML changes.");
+        Assert.Equal(before, host.Registry.Snapshot());
+        Assert.Empty(await host.App.Services.GetRequiredService<ISagaStateStore>().ListAsync());
+        using var post = await client.PostAsync($"{dashboardPath}/api/definitions", null);
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, post.StatusCode);
+    }
+
+    [Fact]
+    public async Task DashboardDefinitionsPreserveExactComparisonLiteralsAndDeclaredReferences()
+    {
+        const string yaml = """
+            name: return-flow
+            domain: returns
+            version: "2.0"
+            steps:
+              - name: inspect
+                command: InspectReturn
+                transitions:
+                  - event: success
+                    when:
+                      path: context.quantity
+                      operator: greaterThan
+                      value: 9007199254740993
+                    nextStep: completed
+                  - event: success
+                    nextStep: compensation
+                  - event: failure
+                    nextStep: compensation
+            bigPicture:
+              - domain: accounts
+                process: reconciliation
+                endpoint: https://accounts.example
+            """;
+        await using var host = await RuntimeHost.Start(registerTransport: false, yaml: yaml);
+        var address = host.App.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+        using var client = new HttpClient { BaseAddress = new Uri(address) };
+        using var definitions = JsonDocument.Parse(await client.GetStringAsync("/sagaflow/api/definitions"));
+        var definition = Assert.Single(definitions.RootElement.EnumerateArray());
+        var step = definition.GetProperty("steps")[0];
+        Assert.Equal("9007199254740993", step.GetProperty("transitions")[0].GetProperty("condition").GetProperty("valueJson").GetString());
+        Assert.Equal("9007199254740993", step.GetProperty("transitions")[0].GetProperty("condition").GetProperty("value").GetRawText());
+        Assert.Equal(JsonValueKind.Null, step.GetProperty("timeoutLimit").ValueKind);
+        Assert.Equal(1, step.GetProperty("maxAttempts").GetInt32());
+        Assert.Equal("reconciliation", Assert.Single(definition.GetProperty("bigPicture").EnumerateArray()).GetProperty("process").GetString());
+    }
+
+    [Fact]
+    public async Task DisabledDashboardDoesNotExposeDefinitions()
+    {
+        await using var host = await RuntimeHost.Start(registerTransport: false, configureDashboard: options => options.Enabled = false);
+        var address = host.App.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+        using var client = new HttpClient { BaseAddress = new Uri(address) };
+        using var response = await client.GetAsync("/sagaflow/api/definitions");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ExistingDashboardInstanceApiDoesNotRequireADefinitionRegistry()
+    {
+        using var services = new ServiceCollection().AddLogging().AddOptions().BuildServiceProvider();
+        var context = new DefaultHttpContext { RequestServices = services };
+        context.Request.Path = "/sagaflow/api/instances";
+        context.Response.Body = new MemoryStream();
+        var middleware = new SagaFlowDashboardMiddleware(_ => Task.CompletedTask, new SagaFlowDashboardOptions());
+        await middleware.InvokeAsync(context, new InMemorySagaStateStore());
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+        context.Response.Body.Position = 0;
+        using var instances = await JsonDocument.ParseAsync(context.Response.Body);
+        Assert.Empty(instances.RootElement.EnumerateArray());
     }
 
     [Theory]

@@ -4,7 +4,7 @@ import {
   PanelLeftOpen,
   type LucideIcon,
 } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 
 import { SidebarItem } from "../components/Sidebar/SidebarItem";
 import { ThemeToggle } from "../components/ThemeToggle/ThemeToggle";
@@ -33,14 +33,19 @@ export function DashboardLayout() {
   const [isSidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isMobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
+  const handleWorkflowOpen = useCallback(() => {
+    setSidebarCollapsed(!window.matchMedia("(max-width: 1023px)").matches);
+    setMobileSidebarOpen(false);
+  }, []);
+
   const content = useMemo(() => {
     switch (activePage) {
       case "Workflows":
-        return <DefinitionsPage />;
+        return <DefinitionsPage onWorkflowOpen={handleWorkflowOpen} />;
       case "Instances":
         return <InstancesPage />;
     }
-  }, [activePage]);
+  }, [activePage, handleWorkflowOpen]);
 
   const closeMobileSidebar = () => {
     setMobileSidebarOpen(false);

@@ -32,4 +32,9 @@
     </ItemGroup>
     <Copy SourceFiles="@(DiscoveryProcessFixture)" DestinationFiles="@(DiscoveryProcessFixture->'$(OutDir)DiscoveryProcessFixture\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>
+
+  <ItemGroup>
+    <None Include="..\..\samples\OrderProcess\SagaFlow.Order\saga\order-process.yaml" Link="workflow-order-process.yaml" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\src\SagaFlow.Dashboard.Client\tests\fixtures\order-definition.json" Link="workflow-order-definition.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
