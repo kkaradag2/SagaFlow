@@ -6,13 +6,13 @@ public sealed record InspectionDecisionRequest(string? Decision);
 
 [ApiController]
 [Route("inspections")]
-public sealed class InspectionsController(WarehouseRepository repository, WarehouseDecisionService decisions) : ControllerBase
+public sealed class InspectionsController(WarehouseInspectionService inspections) : ControllerBase
 {
     [HttpGet("pending")]
-    public IActionResult Pending() => Ok(repository.Pending());
+    public IActionResult Pending() => Ok(inspections.Pending());
 
     [HttpGet("{returnId:guid}")]
-    public IActionResult Get(Guid returnId) => repository.Find(returnId) is { } record ? Ok(record) : NotFound();
+    public IActionResult Get(Guid returnId) => inspections.Find(returnId) is { } record ? Ok(record) : NotFound();
 
     [HttpPost("{returnId:guid}/decision")]
     public async Task<IActionResult> Decide(Guid returnId, InspectionDecisionRequest request, CancellationToken cancellationToken)
@@ -21,7 +21,7 @@ public sealed class InspectionsController(WarehouseRepository repository, Wareho
             return BadRequest(new { error = "Decision must be accept or reject." });
         try
         {
-            var result = await decisions.DecideAsync(returnId, request.Decision == "accept", cancellationToken);
+            var result = await inspections.DecideAsync(returnId, request.Decision == "accept", cancellationToken);
             return result.Published ? Ok(result.Inspection) : StatusCode(503, result.Inspection);
         }
         catch (KeyNotFoundException) { return NotFound(); }

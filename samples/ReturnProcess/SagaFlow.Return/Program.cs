@@ -13,6 +13,7 @@ public partial class ReturnProgram
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen();
         builder.Services.AddSingleton<ReturnRepository>();
+        builder.Services.AddScoped<ReturnService>();
         builder.Services.AddSagaFlow(options =>
         {
             options.LoadFromDirectory("saga");

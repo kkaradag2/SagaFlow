@@ -16,6 +16,7 @@ public partial class WarehouseProgram
         builder.Services.AddSingleton<IParticipantCommandHandler, WarehouseCommandHandler>();
         builder.Services.AddSingleton<IWarehouseOutcomePublisher, WarehouseOutcomePublisher>();
         builder.Services.AddScoped<WarehouseDecisionService>();
+        builder.Services.AddScoped<WarehouseInspectionService>();
         builder.Services.AddHostedService<RabbitMqParticipantWorker>();
         var app = builder.Build();
         if (app.Environment.IsDevelopment()) { app.UseSwagger(); app.UseSwaggerUI(); }

@@ -8,6 +8,10 @@ public sealed record CreateReturnRequest(Guid OrderId, string CustomerId, decima
 public sealed record ReturnCase(Guid ReturnId, Guid OrderId, string CustomerId, decimal Amount,
     IReadOnlyList<ReturnItem> Items, string? FailureAt, DateTimeOffset CreatedAt, Guid SagaInstanceId);
 public sealed record ReturnCreated(Guid ReturnId, Guid OrderId, Guid SagaInstanceId);
+public sealed record ReturnView(Guid ReturnId, Guid OrderId, Guid SagaInstanceId, string CustomerId,
+    string BusinessStatus, string? SagaStatus, string? SagaCorrelationId);
+public sealed record ReturnPayload(Guid ReturnId, Guid OrderId, string CustomerId, decimal Amount,
+    IReadOnlyList<ReturnItem> Items, string? FailureAt);
 
 public sealed class ReturnRepository
 {
