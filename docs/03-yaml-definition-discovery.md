@@ -1,11 +1,13 @@
 # YAML definitions and Big-Picture discovery
 
+> Bu belgenin sonundaki kapsam ve test sayıları tanım keşfi geliştirme aşamasının tarihsel kaydıdır. Güncel uygulama ve doğrulama durumu: [01-PROJECT_STATUS.md](01-PROJECT_STATUS.md).
+
 SagaFlow now reads and validates declarative definitions and discovers a static cross-domain definition graph. Each Domain Starter owns its local definitions. Discovery reads published snapshots; it never starts a Saga or invokes the coordinator. gRPC carries definitions only; future command/outcome messaging remains separate.
 
 ## Model and YAML contract
 
 Structured `when` comparisons, `on` aliases, context/step-result paths, and the Order
-shipping/pickup example are described in [conditional transitions](conditional-transitions.md).
+shipping/pickup example are described in [conditional transitions](05-conditional-transitions.md).
 The Boolean expression rules below describe the preserved legacy scalar format.
 
 `SagaDefinition` has `Name`, `Version`, `Domain`, `Steps`, and `BigPicture`. Steps have `Name`, `Command`, optional `TimeoutLimit`, `MaxAttempts` (default `1`), `Transitions`, and optional `Compensation`. Transitions have `Event`, optional `When`, optional `Else`, and `NextStep`. `BigPictureSourceDefinition` contains `Domain`, `Process`, `Endpoint`, and an optional `Version` pin.
@@ -240,7 +242,7 @@ tests/SagaFlow.Hosting.Tests/SagaFlow.Hosting.Tests.csproj
 Added:
 
 ```text
-docs/yaml-definition-discovery.md
+docs/03-yaml-definition-discovery.md
 src/SagaFlow.Core/Definitions/BigPictureSourceDefinition.cs
 src/SagaFlow.Engine/Discovery/DefinitionDiscovery.cs
 src/SagaFlow.Engine/ProcessDefinition/ConditionParser.cs
@@ -268,4 +270,4 @@ tests/SagaFlow.Hosting.Tests/CrossProcessDefinitionDiscoveryTests.cs
 
 This implements the structural Declarative Process Definition foundation and a static Big-Picture discovery capability. Domain ownership and in-process placement follow the Domain Starter component responsibilities. gRPC discovery is an optional embedded capability, not a new architectural container. Extending references with an optional version pin is an explicit deterministic lookup policy, not an execution dependency.
 
-This document describes the definition/discovery feature, which never executes a process. A subsequent [local coordination PoC](local-saga-coordination.md) adds explicit `StartAsync`, forward command/outcome handling, Boolean condition evaluation, volatile instance state, and compensation planning through separate runtime classes. Broker delivery, durable state, compensation execution, restart recovery, durable idempotency, runtime traces, a dashboard graph, authentication provisioning, watchers/hot reload, and the five-service representative prototype remain outside the implementation. Static discovery remains distinct from runtime execution observability.
+This document describes the definition/discovery feature, which never executes a process. A subsequent [local coordination PoC](04-local-saga-coordination.md) adds explicit `StartAsync`, forward command/outcome handling, Boolean condition evaluation, volatile instance state, and compensation planning through separate runtime classes. Broker delivery, durable state, compensation execution, restart recovery, durable idempotency, runtime traces, a dashboard graph, authentication provisioning, watchers/hot reload, and the five-service representative prototype remain outside the implementation. Static discovery remains distinct from runtime execution observability.

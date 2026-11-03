@@ -4,7 +4,7 @@ SagaFlow.Net is a lightweight .NET library and embedded dashboard for defining, 
 
 SagaFlow.Net is developed as the software artifact of the thesis titled "A Local-Orchestration-Based Reference Architecture for Hybrid Saga Coordination in Microservice Architectures."
 
-Current status: YAML process definitions, optional gRPC Big-Picture discovery, and the first local Saga coordination PoC are implemented. `ISagaFlow.StartAsync(payload)` creates volatile InMemory state and dispatches YAML commands through the application-provided `ISagaMessageBus` port. No default message transport, durable state, or compensation execution is provided. See [local coordination and state semantics](docs/local-saga-coordination.md) and [definition/discovery documentation](docs/yaml-definition-discovery.md).
+Current status: YAML process definitions, optional gRPC Big-Picture discovery, and the first local Saga coordination PoC are implemented. `ISagaFlow.StartAsync(payload)` creates volatile InMemory state and dispatches YAML commands through the application-provided `ISagaMessageBus` port. No default message transport, durable state, or compensation execution is provided. See [local coordination and state semantics](docs/04-local-saga-coordination.md) and [definition/discovery documentation](docs/03-yaml-definition-discovery.md).
 
 SagaFlow does not require a separately deployed orchestration server. The engine is embedded into the domain starter microservice through the hosting integration.
 
@@ -29,7 +29,7 @@ tests/
   SagaFlow.Hosting.Tests/
   SagaFlow.Samples.Tests/
 docs/
-  thesis-mapping.md
+  02-thesis-mapping.md
 ```
 
 ## Project Mapping

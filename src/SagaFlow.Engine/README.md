@@ -1,8 +1,8 @@
 # SagaFlow.Engine
 
-The process-definition foundation now parses and validates YAML, maintains immutable registry snapshots, and builds bounded Big-Picture definition graphs through an abstract remote client. See [definition documentation](../../docs/yaml-definition-discovery.md).
+The process-definition foundation now parses and validates YAML, maintains immutable registry snapshots, and builds bounded Big-Picture definition graphs through an abstract remote client. See [definition documentation](../../docs/03-yaml-definition-discovery.md).
 
-Local coordination now creates InMemory instances, dispatches forward commands through `ISagaMessageBus`, handles outcomes/Boolean transitions, and plans compensation in reverse execution order. See [local coordination](../../docs/local-saga-coordination.md). There is no default transport, persistent state, or compensation execution.
+Local coordination now creates InMemory instances, dispatches forward commands through `ISagaMessageBus`, handles outcomes/Boolean transitions, and plans compensation in reverse execution order. See [local coordination](../../docs/04-local-saga-coordination.md). There is no default transport, persistent state, or compensation execution.
 
 The engine is organized around these thesis feature groups:
 

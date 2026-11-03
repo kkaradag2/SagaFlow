@@ -76,6 +76,16 @@ the outcome, leaving the dispatched step and Saga revision unchanged. It does no
 silently select another outcome category or dispatch a command. Structured rules may
 omit a fallback, but applications should normally define one.
 
+RR-01 (2026-11-03): legacy `result.*` property missing or non-Boolean values are
+invalid outcome data. `TransitionResolver` raises `InvalidSagaOutcomeException`
+before the atomic Saga state update commits. The RabbitMQ consumer rejects this
+outcome without requeue; a later valid outcome can still advance the same dispatched
+step. [Engine tests](../tests/SagaFlow.Engine.Tests/RuntimeTransitionTests.cs) cover
+the data variants and [broker tests](../tests/SagaFlow.Messaging.RabbitMQ.Tests/RabbitMqTransportIntegrationTests.cs)
+cover reject/no-requeue with the same consumer. Transient store errors retain their
+requeue behavior; duplicate and command-publication errors retain their separate
+handling. This does not add persistent recovery.
+
 Legacy scalar expressions such as `when: "result.available == true"` retain their
 original Boolean-only grammar, result root, static exclusivity/coverage validation, and
 strict missing/non-Boolean result errors. Use the structured format for the new path
@@ -88,7 +98,7 @@ context. It is not an API request field. Orders with quantity <= 1000 follow pay
 inventory → shipment → notification. Larger orders follow payment → inventory → manager
 notification → manager approval and wait for an API decision. Approval continues to
 shipment and notification; rejection is a successful business outcome that selects
-compensation in YAML. See the [Manager Approval sample](manager-approval-sample.md).
+compensation in YAML. See the [Manager Approval sample](06-manager-approval-sample.md).
 
 Any accepted outcome selecting `nextStep: compensation` starts the compensation plan,
 including a successful outcome such as `{ "approved": false }`. The originating step

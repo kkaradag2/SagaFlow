@@ -5,6 +5,19 @@ namespace SagaFlow.Payment.Services;
 
 public sealed class PaymentService(IPaymentRepository repository) : IPaymentService
 {
+    public ReturnRefund RefundReturnPayment(string returnId, string orderId, decimal amount)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(returnId);
+        Validate(orderId, amount);
+        return repository.UpsertReturnRefund(returnId, current => current switch
+        {
+            null => new ReturnRefund(returnId, orderId, amount),
+            { OrderId: var existingOrder, Amount: var existingAmount }
+                when existingOrder != orderId || existingAmount != amount =>
+                    throw new InvalidOperationException("A different refund already exists for this return."),
+            _ => current
+        });
+    }
     public PaymentAuthorization AuthorizePayment(string orderId, decimal amount)
     {
         Validate(orderId, amount);

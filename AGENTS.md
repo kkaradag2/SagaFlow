@@ -1,0 +1,3 @@
+# Proje agent talimatları
+
+Her geliştirme görevinin sonunda değişikliğin etkilediği `docs/01-PROJECT_STATUS.md` satırlarını ve yalnızca ilgili mevcut `docs/` bölümlerini kaynak kod ve gerçekten çalıştırılan test sonuçlarına göre güncelle. Etkilenmeyen bölümleri yeniden yazma. Özellik durumlarını `Implemented`, `Partial`, `Planned`, `Blocked` olarak belirt; test edilmiş olmayı ayrı yaz. Her önemli iddiayı kaynak, test veya uygun REA kanıtına bağla. Atlanan ya da başarısız testleri açıkça kaydet; doğrulanmamış davranışı tamamlanmış sayma. Mevcut mimari kararları ve tarihsel kayıtları gerekçesiz silme; tekrar eden yeni belge açmak yerine mevcut belgeyi güncelle.

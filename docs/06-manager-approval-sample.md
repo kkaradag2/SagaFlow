@@ -26,7 +26,7 @@
 - Tests: new `ManagerApprovalTransitionTests.cs` and `ManagerApprovalTests.cs`; updated
   `RuntimeTransitionTests.cs`, `StructuredConditionalTransitionTests.cs`, `OrderSampleTests.cs`,
   `ParticipantFailureInjectionTests.cs`, `SampleRabbitMqEndToEndTests.cs`, both affected test
-  project files, and `SagaFlow.slnx`. This guide and `docs/conditional-transitions.md`
+  project files, and `SagaFlow.slnx`. This guide and `docs/05-conditional-transitions.md`
   describe the final sample.
 
 The authoritative [Order YAML](../samples/OrderProcess/SagaFlow.Order/saga/order-process.yaml)

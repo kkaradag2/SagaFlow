@@ -1,5 +1,7 @@
 # Local Saga Coordination ve InMemory instance yönetimi
 
+> Tarihsel ilk PoC kapsamı: transport, compensation yürütümü ve dashboard hakkındaki aşağıdaki yokluk ifadeleri bu geliştirme aşamasını anlatır. Güncel uygulama ve test durumu için [01-PROJECT_STATUS.md](01-PROJECT_STATUS.md) esas alınır.
+
 Bu geliştirme, Domain Starter içine gömülü ilk çalışan ileri Saga yürütümünü sağlar. YAML yükleme/validation, Registry ve gRPC tanım keşfi korunur. Mesaj göndermek için yalnızca `ISagaMessageBus` portu kullanılır; kütüphanede varsayılan transport veya InMemory Message Bus yoktur.
 
 ## Public API ve kullanım
@@ -95,6 +97,8 @@ YAML `SagaCompensationDefinition` tanımsal modeldir. Ayrı `SagaCompensationSta
 Compensation istendiğinde yalnızca `Completed` forward step'lerin compensation kayıtları planlanır. Sıra, forward `ExecutionOrder` değerinin tersidir; planın kendi sırası 1'den başlar. Başarısız veya hiç çalışmamış adımlar ve compensation tanımı olmayan adımlar plana alınmaz. `ProcessStateManager.GetCompensationPlan` sıralı bağımsız snapshot döndürür. Forward `Completed` bilgisi korunur. Compensation command'ı publish edilmez; StartedAt/CompletedAt/Result yürütüm yapılmadığı için boş kalır.
 
 ## InMemory Store ve concurrency
+
+Güncel Return incelemesi (REV-02, 2026-11-03): outcome uygulandıktan sonra sıradaki command publish hatası [`SagaStepExecutor`](../src/SagaFlow.Engine/Coordination/SagaStepExecutor.cs) tarafından `Failed` durumuna yazılır. [`RabbitMqTransport`](../src/SagaFlow.Messaging.RabbitMQ/RabbitMqTransport.cs) bu `SagaDispatchException` sonrasında önceki outcome'u ACK eder. Duplicate teslim, uygulanmış outcome'u yeniden yürütmeye yetmez; ACK yerine basit NACK recovery değildir. Publish sonucunun belirsiz kaldığı pencere ve InMemory host restart kaybı için otomatik uzlaştırma yoktur. Bu güncel sınır, aşağıdaki tarihsel ilk PoC kayıtlarını değiştirmez; [Return inceleme ayrıntısı](07-return-workflow.md) ve [Engine publish hata testi](../tests/SagaFlow.Engine.Tests/LocalSagaCoordinationTests.cs) kapsamı gösterir.
 
 `InMemorySagaStateStore`, `ISagaStateStore` portunu uygular. State process içindeki dictionary'de saklanır; her instance ayrı kilit kullanır. `SaveAsync` yeni kaydı revision 0 ile kabul eder; var olan kaydı yalnızca güncel revision eşleşiyorsa değiştirir. Stale read/modify/write sessiz veri kaybı yerine hata üretir.
 

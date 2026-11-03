@@ -1,11 +1,67 @@
 using System.Text.Json;
 using SagaFlow.Core.State;
 using SagaFlow.Engine.ProcessDefinition;
+using SagaFlow.Engine.Coordination;
 
 namespace SagaFlow.Engine.Tests;
 
 public sealed class StructuredConditionalTransitionTests
 {
+    [Theory]
+    [InlineData("{\"accepted\":true}", "payment")]
+    [InlineData("{\"accepted\":false}", "rejectedNotification")]
+    [InlineData("{}", null)]
+    [InlineData("{\"accepted\":null}", null)]
+    [InlineData("{\"accepted\":\"false\"}", null)]
+    [InlineData("{\"accepted\":0}", null)]
+    public async Task ExplicitBooleanBranchesRejectMalformedSuccessfulOutcome(string resultJson, string? nextStep)
+    {
+        var definition = new DefinitionYamlCodec().Parse("""
+            name: explicit-decision
+            domain: return
+            version: '1.0'
+            steps:
+              - name: warehouse
+                command: Inspect
+                transitions:
+                  - on: success
+                    when: { path: steps.warehouse.result.accepted, operator: equals, value: true }
+                    nextStep: payment
+                  - on: success
+                    when: { path: steps.warehouse.result.accepted, operator: equals, value: false }
+                    nextStep: rejectedNotification
+              - name: payment
+                command: Refund
+                transitions:
+                  - on: success
+                    nextStep: completed
+              - name: rejectedNotification
+                command: Notify
+                transitions:
+                  - on: success
+                    nextStep: completed
+            """);
+        var fixture = new CoordinationTestFixture(definition);
+        var id = await fixture.Coordinator.StartAsync(new { returnId = Guid.NewGuid() });
+        var before = await fixture.State(id);
+        using var result = JsonDocument.Parse(resultJson);
+        var outcome = fixture.Outcome(fixture.Bus.Commands.Single(), result: result.RootElement);
+        if (nextStep is null)
+        {
+            await Assert.ThrowsAsync<InvalidSagaOutcomeException>(() => fixture.Receiver.ReceiveAsync(outcome));
+            var after = await fixture.State(id);
+            Assert.Equal(before.Revision, after.Revision);
+            Assert.Equal(SagaStatus.Running, after.Status);
+            Assert.Equal("warehouse", after.CurrentStep);
+            Assert.Single(fixture.Bus.Commands);
+        }
+        else
+        {
+            await fixture.Receiver.ReceiveAsync(outcome);
+            Assert.Equal(nextStep, (await fixture.State(id)).CurrentStep);
+        }
+    }
+
     [Theory]
     [InlineData("true", "equals", "true", true)]
     [InlineData("false", "equals", "true", false)]
@@ -214,7 +270,7 @@ public sealed class StructuredConditionalTransitionTests
         var fixture = new CoordinationTestFixture(new DefinitionYamlCodec().Parse(yaml));
         var id = await fixture.Coordinator.StartAsync("payload");
         var before = await fixture.State(id);
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Receiver.ReceiveAsync(
+        var error = await Assert.ThrowsAsync<InvalidSagaOutcomeException>(() => fixture.Receiver.ReceiveAsync(
             fixture.Outcome(fixture.Bus.Commands.Single(), result: new { available = false })));
         Assert.Contains("no matching 'success' transition or fallback", error.Message);
         var after = await fixture.State(id);

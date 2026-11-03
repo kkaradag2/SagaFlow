@@ -25,14 +25,14 @@ public sealed class TransitionResolver
             foreach (var segment in path.Skip(1))
             {
                 if (value.ValueKind != JsonValueKind.Object || !value.TryGetProperty(segment, out value))
-                    throw new InvalidOperationException($"Step '{step.Name}': missing result property '{condition.PropertyPath}'.");
+                    throw new InvalidSagaOutcomeException($"Step '{step.Name}': missing result property '{condition.PropertyPath}'.");
             }
             if (value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
-                throw new InvalidOperationException($"Step '{step.Name}': '{condition.PropertyPath}' must be a Boolean.");
+                throw new InvalidSagaOutcomeException($"Step '{step.Name}': '{condition.PropertyPath}' must be a Boolean.");
             if (value.GetBoolean() == condition.RequiredValue)
                 return rule.NextStep!;
         }
         var match = candidates.SingleOrDefault(rule => rule.When is null && rule.Condition is null);
-        return match?.NextStep ?? throw new InvalidOperationException($"Step '{step.Name}': no matching '{category}' transition or fallback.");
+        return match?.NextStep ?? throw new InvalidSagaOutcomeException($"Step '{step.Name}': no matching '{category}' transition or fallback.");
     }
 }

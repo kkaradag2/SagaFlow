@@ -8,4 +8,6 @@ public interface INotificationRepository
     OrderNotification AddOrGet(OrderNotification notification);
     ManagerNotification? FindManager(string orderId);
     ManagerNotification AddOrGet(ManagerNotification notification);
+    ReturnNotification? FindReturn(string returnId);
+    ReturnNotification AddOrGet(ReturnNotification notification);
 }
