@@ -5,6 +5,15 @@ namespace SagaFlow.Notification.Services;
 
 public sealed class NotificationService(INotificationRepository repository) : INotificationService
 {
+    public ReturnNotification NotifyReturn(string returnId, string orderId, string recipient, bool accepted)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(returnId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(orderId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(recipient);
+        var decision = accepted ? "Accepted" : "Rejected";
+        return repository.AddOrGet(new ReturnNotification(returnId, orderId, recipient.Trim(), decision,
+            $"Return {returnId} for order {orderId} was {decision.ToLowerInvariant()}."));
+    }
     public ManagerNotification NotifyManager(string orderId, long totalQuantity)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(orderId);

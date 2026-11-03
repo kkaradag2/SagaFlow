@@ -1,0 +1,49 @@
+name: return-process
+version: "1.0"
+domain: return
+steps:
+  - name: warehouse
+    command: InspectReturn
+    transitions:
+      - on: success
+        when:
+          path: steps.warehouse.result.accepted
+          operator: equals
+          value: true
+        nextStep: payment
+      - on: success
+        when:
+          path: steps.warehouse.result.accepted
+          operator: equals
+          value: false
+        nextStep: rejectedNotification
+      - on: failure
+        nextStep: compensation
+  - name: payment
+    command: RefundReturnPayment
+    transitions:
+      - on: success
+        nextStep: inventory
+      - on: failure
+        nextStep: compensation
+  - name: inventory
+    command: RestockReturn
+    transitions:
+      - on: success
+        nextStep: acceptedNotification
+      - on: failure
+        nextStep: compensation
+  - name: acceptedNotification
+    command: NotifyReturnAccepted
+    transitions:
+      - on: success
+        nextStep: completed
+      - on: failure
+        nextStep: compensation
+  - name: rejectedNotification
+    command: NotifyReturnRejected
+    transitions:
+      - on: success
+        nextStep: completed
+      - on: failure
+        nextStep: compensation

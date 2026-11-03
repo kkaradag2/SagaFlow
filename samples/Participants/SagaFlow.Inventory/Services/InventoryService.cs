@@ -5,6 +5,21 @@ namespace SagaFlow.Inventory.Services;
 
 public sealed class InventoryService(IInventoryRepository repository) : IInventoryService
 {
+    public ReturnRestock RestockReturn(string returnId, string orderId, IReadOnlyList<InventoryLine> lines)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(returnId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(orderId);
+        if (lines is not { Count: > 0 } || lines.Any(line => string.IsNullOrWhiteSpace(line.ProductId) || line.Quantity <= 0))
+            throw new ArgumentException("At least one valid return line is required.", nameof(lines));
+        var snapshot = Array.AsReadOnly(lines.Select(line => new InventoryLine(line.ProductId.Trim(), line.Quantity)).ToArray());
+        return repository.UpsertReturnRestock(returnId, current => current switch
+        {
+            null => new ReturnRestock(returnId, orderId, snapshot),
+            _ when current.OrderId != orderId || !current.Lines.SequenceEqual(snapshot) =>
+                throw new InvalidOperationException("A different restock already exists for this return."),
+            _ => current
+        });
+    }
     public InventoryReservation ReserveInventory(string orderId, IReadOnlyList<InventoryLine> lines)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(orderId);

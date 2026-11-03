@@ -1,6 +1,7 @@
 using SagaFlow.Core.Definitions;
 using SagaFlow.Core.State;
 using SagaFlow.Engine.ProcessDefinition;
+using SagaFlow.Engine.Coordination;
 
 namespace SagaFlow.Engine.Tests;
 
@@ -68,6 +69,8 @@ public sealed class RuntimeTransitionTests
     [InlineData("{\"flags\":{\"available\":0}}")]
     [InlineData("{\"flags\":{\"available\":null}}")]
     [InlineData("{\"flags\":[]}")]
+    [InlineData("{\"flags\":{\"available\":[]}}")]
+    [InlineData("{\"flags\":{\"available\":{}}}")]
     public async Task MissingOrNonBooleanResultIsRejectedWithoutSilentlyTakingElse(string result)
     {
         var fixture = new CoordinationTestFixture(Branch(false));
@@ -75,7 +78,7 @@ public sealed class RuntimeTransitionTests
         using var document = System.Text.Json.JsonDocument.Parse(result);
         var outcome = fixture.Outcome(fixture.Bus.Commands.Single(), result: document.RootElement);
         var before = await fixture.State(id);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Receiver.ReceiveAsync(outcome));
+        await Assert.ThrowsAsync<InvalidSagaOutcomeException>(() => fixture.Receiver.ReceiveAsync(outcome));
         var after = await fixture.State(id);
         Assert.Equal(before.Revision, after.Revision);
         Assert.Equal(SagaStepStatus.Dispatched, after.Steps.Single(s => s.StepId == "choose").Status);
@@ -155,7 +158,7 @@ public sealed class RuntimeTransitionTests
         };
         var fixture = new CoordinationTestFixture(definition);
         var id = await fixture.Coordinator.StartAsync("payload");
-        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.Single(), success: false)));
+        await Assert.ThrowsAsync<InvalidSagaOutcomeException>(() => fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.Single(), success: false)));
         Assert.Equal(SagaStepStatus.Dispatched, (await fixture.State(id)).Steps.Single().Status);
         Assert.Single(fixture.Bus.Commands);
     }

@@ -6,4 +6,5 @@ public interface IPaymentService
 {
     PaymentAuthorization AuthorizePayment(string orderId, decimal amount);
     PaymentAuthorization RefundPayment(string orderId);
+    ReturnRefund RefundReturnPayment(string returnId, string orderId, decimal amount);
 }

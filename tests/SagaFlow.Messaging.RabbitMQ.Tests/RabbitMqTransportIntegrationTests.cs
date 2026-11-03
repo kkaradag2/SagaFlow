@@ -407,6 +407,59 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
     }
 
     [RabbitMqFact]
+    public async Task MalformedLegacyBooleanOutcomeIsRejectedWithoutRequeueAndConsumerContinues()
+    {
+        const string definition = """
+            name: legacy-boolean-test
+            version: "1.0"
+            domain: test
+            steps:
+              - name: work
+                command: DoWork
+                transitions:
+                  - event: success
+                    when: 'result.flag == true'
+                    nextStep: completed
+                  - event: success
+                    else: true
+                    nextStep: compensation
+            """;
+        await using var runtime = await StartExternalAsync(definitionYaml: definition);
+        var sagaId = await StartSagaAsync(runtime.Host, new { id = 1 });
+        var command = RabbitMqMessageSerializer.DeserializeCommand(
+            (await GetMessageAsync(runtime.Topology.CommandQueue)).Body.Span);
+        var before = (await FindSagaAsync(runtime.Host, sagaId))!;
+
+        foreach (var malformed in new[] { "{}", "{\"flag\":null}", "{\"flag\":\"true\"}",
+            "{\"flag\":1}", "{\"flag\":[]}", "{\"flag\":{}}" })
+        {
+            using var result = JsonDocument.Parse(malformed);
+            await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, new SagaOutcomeEvent
+            {
+                Name = "WorkCompleted", IsSuccess = true, Headers = command.Headers,
+                Result = result.RootElement.Clone()
+            });
+            await WaitForConsumerAsync(runtime.Topology.OutcomeQueue);
+            Assert.Equal(1u, await ConsumerCountAsync(runtime.Topology.OutcomeQueue));
+            Assert.Equal(0u, await MessageCountAsync(runtime.Topology.OutcomeQueue));
+            Assert.Equal(0u, await MessageCountAsync(runtime.Topology.CommandQueue));
+            var unchanged = (await FindSagaAsync(runtime.Host, sagaId))!;
+            Assert.Equal(before.Revision, unchanged.Revision);
+            Assert.Equal(SagaStatus.Running, unchanged.Status);
+            Assert.Equal(SagaStepStatus.Dispatched, unchanged.Steps.Single().Status);
+        }
+
+        await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, new SagaOutcomeEvent
+        {
+            Name = "WorkCompleted", IsSuccess = true, Headers = command.Headers,
+            Result = JsonSerializer.SerializeToElement(new { flag = true })
+        });
+        await WaitUntilAsync(async () => (await FindSagaAsync(runtime.Host, sagaId))?.Status == SagaStatus.Completed);
+        Assert.Equal(1u, await ConsumerCountAsync(runtime.Topology.OutcomeQueue));
+        Assert.Equal(0u, await MessageCountAsync(runtime.Topology.OutcomeQueue));
+    }
+
+    [RabbitMqFact]
     public async Task ConsumerIsCancelledDuringHostShutdown()
     {
         await using var runtime = await StartExternalAsync();

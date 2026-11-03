@@ -15,6 +15,7 @@ using System.Text.Json;
 
 namespace SagaFlow.Samples.Tests;
 
+[Collection("sample-rabbitmq-e2e")]
 public sealed class SampleRabbitMqEndToEndTests
 {
     [SampleRabbitMqFact]
