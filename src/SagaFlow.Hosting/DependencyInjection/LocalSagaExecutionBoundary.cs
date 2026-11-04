@@ -1,5 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using SagaFlow.Core.Messages;
+using SagaFlow.Core.Abstractions;
+using SagaFlow.Engine.Messaging;
 using SagaFlow.Engine.Coordination;
 namespace SagaFlow.Hosting.DependencyInjection;
 
@@ -17,6 +19,9 @@ internal sealed class LocalSagaExecutionBoundary(IServiceScopeFactory scopes) : 
                 cancellationToken.ThrowIfCancellationRequested();
                 await handler.ExecuteAsync(command, cancellationToken);
             }
+            if (scope.ServiceProvider.GetService<IProcessInvocationBus>() is not null)
+                await scope.ServiceProvider.GetRequiredService<ProcessInvocationPublisher>()
+                    .PublishForStepAsync(command.Headers.SagaInstanceId, command.Headers.StepId, cancellationToken);
         }
         finally { context.Clear(); }
     }

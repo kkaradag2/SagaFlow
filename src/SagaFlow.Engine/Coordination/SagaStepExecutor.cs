@@ -43,11 +43,14 @@ public sealed class SagaStepExecutor(ISagaStateStore store, CommandDispatcher di
             if (execution is not null) await execution.ExecuteAsync(command, cancellationToken);
             await dispatcher.PublishAsync(command, cancellationToken);
         }
+        catch (ProcessInvocationPublishException) { throw; }
         catch (Exception error)
         {
             await store.UpdateAsync(command.Headers.SagaInstanceId, instance =>
             {
                 var step = instance.Steps.Single(step => step.StepId == command.Headers.StepId);
+                if (step.Invocation is not null && step.Publication is not null)
+                    step.Reconciliation ??= new("Local forward publication failed after invocation request was attempted; remote activity requires manual reconciliation.", clock.UtcNow);
                 // A transport may synchronously deliver an outcome before returning. Never erase accepted forward history.
                 if (step.Status == SagaStepStatus.Dispatched)
                 {

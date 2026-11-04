@@ -25,7 +25,7 @@ public static class RabbitMqServiceCollectionExtensions
         services.AddSingleton(options);
         services.AddSingleton(provider => new RabbitMqConnectionProvider(
             provider.GetRequiredService<global::RabbitMQ.Client.IConnection>()));
-        return AddTransport(services);
+        return AddTransport(services, options);
     }
 
     public static IServiceCollection AddSagaFlowRabbitMq(
@@ -47,7 +47,7 @@ public static class RabbitMqServiceCollectionExtensions
                 throw new InvalidOperationException("Managed RabbitMQ mode cannot be combined with an IConnection registration.");
             return new RabbitMqConnectionProvider(options);
         });
-        return AddTransport(services);
+        return AddTransport(services, options);
     }
 
     public static IServiceCollection AddSagaFlowRabbitMq(
@@ -66,11 +66,20 @@ public static class RabbitMqServiceCollectionExtensions
         return options;
     }
 
-    private static IServiceCollection AddTransport(IServiceCollection services)
+    private static IServiceCollection AddTransport(IServiceCollection services, RabbitMqOptions options)
     {
         services.AddSingleton<RabbitMqTransport>();
         services.AddSingleton<ISagaMessageBus>(provider => provider.GetRequiredService<RabbitMqTransport>());
         services.AddHostedService(provider => provider.GetRequiredService<RabbitMqTransport>());
+        if (options.EnableProcessInvocations)
+        {
+            services.AddScoped<ProcessInvocationPublisher>();
+            services.AddScoped<ProcessInvocationReceiver>();
+            services.AddSingleton<RabbitMqInvocationTransport>();
+            services.AddSingleton<IProcessInvocationBus>(provider => provider.GetRequiredService<RabbitMqInvocationTransport>());
+            services.AddSingleton<IProcessInvocationReconciliation>(provider => provider.GetRequiredService<RabbitMqInvocationTransport>());
+            services.AddHostedService(provider => provider.GetRequiredService<RabbitMqInvocationTransport>());
+        }
         return services;
     }
 
