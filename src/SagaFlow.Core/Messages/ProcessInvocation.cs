@@ -55,7 +55,7 @@ public sealed record ProcessInvocationRejected(InvocationMessage Message, string
     public InvocationMessage Message { get; } = Message ?? throw new ArgumentNullException(nameof(Message));
     public string Reason { get; } = InvocationGuard.Text(Reason);
 }
-public enum ExternalProcessStatus { Prepared, Requested, Accepted, Rejected, Completed, Failed, Compensated }
+public enum ExternalProcessStatus { Prepared, Requested, Accepted, Rejected, Completed, Failed, Compensated, Running }
 public sealed record ProcessInvocationTerminalOutcome(InvocationMessage Message, string TargetSagaInstanceId, ExternalProcessStatus Status)
 {
     public InvocationMessage Message { get; } = Message ?? throw new ArgumentNullException(nameof(Message));
@@ -70,7 +70,7 @@ public sealed record ProcessInvocationReceipt(string InvocationId, ProcessIdenti
     public ExternalProcessStatus Status { get; } = Status is ExternalProcessStatus.Prepared or ExternalProcessStatus.Requested ? Status : throw new ArgumentException("Receipt must describe local registration/request only.");
 }
 public sealed record CrossDomainInstanceRelationship(ProcessInvocationIdentity Identity, string? TargetSagaInstanceId,
-    ExternalProcessStatus LastKnownStatus, DateTimeOffset UpdatedAt)
+    ExternalProcessStatus LastKnownStatus, DateTimeOffset UpdatedAt, DateTimeOffset? CreatedAt = null, DateTimeOffset? LastObservedAt = null)
 {
     public ProcessInvocationIdentity Identity { get; } = Identity ?? throw new ArgumentNullException(nameof(Identity));
     public string? TargetSagaInstanceId { get; } = LastKnownStatus is ExternalProcessStatus.Prepared or ExternalProcessStatus.Requested or ExternalProcessStatus.Rejected

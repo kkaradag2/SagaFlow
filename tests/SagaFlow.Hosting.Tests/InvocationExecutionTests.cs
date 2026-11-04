@@ -44,7 +44,14 @@ public sealed class InvocationExecutionTests
         Assert.Equal(8, states.Count);
         Assert.Equal(8, states.Select(s => s.Steps[0].Invocation!.Identity.InvocationId).Distinct().Count());
         foreach (var state in states)
+        {
             Assert.Equal(state.Id, state.Steps[0].Invocation!.Identity.SourceSagaInstanceId);
+            Assert.Equal(ExternalProcessStatus.Prepared, state.Steps[0].InvocationProgress!.Status);
+            var manager = provider.GetRequiredService<IServiceScopeFactory>();
+            await using var eligibilityScope = manager.CreateAsyncScope();
+            Assert.Equal(!fail, await eligibilityScope.ServiceProvider.GetRequiredService<ProcessInvocationManager>()
+                .CanPublishAsync(state.Id, state.Steps[0].Invocation!.Identity.InvocationId));
+        }
         foreach (var captured in Handler.Captured)
             await Assert.ThrowsAsync<InvalidOperationException>(() => captured.InvokeAsync("target-process", 1));
     }
@@ -55,7 +62,9 @@ public sealed class InvocationExecutionTests
         {
             var first = await flow.InvokeAsync("target-process", new { Value = 1 }, cancellationToken);
             await Task.Yield();
-            var second = await flow.InvokeAsync("target-process", new { Value = 1 }, cancellationToken);
+            var repeats = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => flow.InvokeAsync("target-process", new { Value = 1 }, cancellationToken)));
+            Assert.All(repeats, receipt => Assert.Equal(first.InvocationId, receipt.InvocationId));
+            var second = repeats[0];
             Assert.Equal(first.InvocationId, second.InvocationId);
             Assert.Equal(ExternalProcessStatus.Prepared, first.Status);
             Captured.Add(flow);

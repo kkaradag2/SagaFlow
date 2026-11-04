@@ -56,6 +56,7 @@ public static class SagaFlowServiceCollectionExtensions
         services.AddScoped<CompensationManager>();
         services.AddScoped<SagaInstanceManager>();
         services.AddScoped<CommandDispatcher>();
+        services.AddScoped<ProcessInvocationManager>();
         services.AddScoped<InvocationExecutionContext>();
         services.AddSingleton<ILocalSagaExecutionBoundary, LocalSagaExecutionBoundary>();
         services.AddScoped<SagaStepExecutor>();
