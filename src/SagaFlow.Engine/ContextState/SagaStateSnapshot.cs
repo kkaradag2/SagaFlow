@@ -12,7 +12,7 @@ internal static class SagaStateSnapshot
         CreatedAt = state.CreatedAt, UpdatedAt = state.UpdatedAt, FailureReason = state.FailureReason, Revision = state.Revision,
         Steps = Array.AsReadOnly(state.Steps.Select(step => new SagaStepState
         {
-            ObservedMessages = Array.AsReadOnly(step.ObservedMessages.ToArray()), Reconciliation = step.Reconciliation, Publication = step.Publication, InvocationProgress = step.InvocationProgress, Invocation = step.Invocation, StepName = step.StepName, Command = step.Command, Status = step.Status, ExecutionOrder = step.ExecutionOrder,
+            ObservedMessages = Array.AsReadOnly(step.ObservedMessages.ToArray()), Reconciliation = step.Reconciliation, Publication = step.Publication, InvocationProgress = step.InvocationProgress, Invocation = step.Invocation, StepName = step.StepName, Command = step.Command, External = step.External, Status = step.Status, ExecutionOrder = step.ExecutionOrder,
             Input = step.Input?.Clone(), Result = step.Result?.Clone(), StartedAt = step.StartedAt, CompletedAt = step.CompletedAt,
             TimeoutLimit = step.TimeoutLimit, TimedOutAt = step.TimedOutAt
         }).ToArray()),

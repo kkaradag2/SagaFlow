@@ -41,6 +41,15 @@ public sealed class SagaStepExecutor(ISagaStateStore store, CommandDispatcher di
         try
         {
             if (execution is not null) await execution.ExecuteAsync(command, cancellationToken);
+            var snapshot = await store.FindAsync(command.Headers.SagaInstanceId, cancellationToken)
+                ?? throw new KeyNotFoundException("Saga disappeared before publication.");
+            var step = snapshot.Steps.Single(s => s.StepId == command.Headers.StepId);
+            if (step.External)
+            {
+                if (step.Invocation is null || step.Publication is null)
+                    throw new InvalidOperationException("External step requires a handler invocation and an enabled process transport.");
+                return; // Dispatched is the asynchronous external wait state; no participant command is sent.
+            }
             await dispatcher.PublishAsync(command, cancellationToken);
         }
         catch (ProcessInvocationPublishException) { throw; }

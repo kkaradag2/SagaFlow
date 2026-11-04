@@ -45,7 +45,7 @@ public sealed class DefinitionYamlCodec
         return new SerializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance)
             .WithTypeConverter(new TransitionYamlConverter())
             .WithTypeConverter(new ConditionValueYamlConverter())
-            .ConfigureDefaultValuesHandling(DefaultValuesHandling.OmitNull)
+            .ConfigureDefaultValuesHandling(DefaultValuesHandling.OmitNull | DefaultValuesHandling.OmitDefaults)
             .Build().Serialize(DefinitionSnapshot.Copy(definition, includeBigPicture));
     }
 }

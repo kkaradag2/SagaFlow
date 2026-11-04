@@ -26,7 +26,7 @@ public sealed class SagaInstanceManager(ISagaClock clock)
             Steps = Array.AsReadOnly(definition.Steps.Select(step => new SagaStepState
             {
                 StepName = step.Name,
-                Command = step.Command,
+                Command = step.Command, External = step.External,
                 TimeoutLimit = step.TimeoutLimit is null ? null
                     : ProcessDefinitionValidator.TryParseDuration(step.TimeoutLimit, out var timeout) ? timeout
                     : throw new InvalidOperationException($"Step '{step.Name}' has an invalid validated timeout limit.")

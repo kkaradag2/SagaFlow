@@ -10,7 +10,7 @@ internal static class DefinitionSnapshot
         Name = d.Name, Domain = d.Domain, Version = d.Version,
         Steps = Array.AsReadOnly(d.Steps.Select(s => new SagaStepDefinition
         {
-            Name = s.Name, Command = s.Command, TimeoutLimit = s.TimeoutLimit, MaxAttempts = s.MaxAttempts,
+            Name = s.Name, Command = s.Command, External = s.External, TimeoutLimit = s.TimeoutLimit, MaxAttempts = s.MaxAttempts,
             Compensation = s.Compensation is null ? null : new() { Command = s.Compensation.Command },
             Transitions = Array.AsReadOnly(s.Transitions.Select(t => new SagaTransitionDefinition
                 {

@@ -11,6 +11,7 @@ public sealed class SagaStepState
     public InvocationProgress? InvocationProgress { get; set; }
     public string StepName { get; init; } = string.Empty;
     public string StepId => StepName;
+    public bool External { get; init; }
     public string Command { get; init; } = string.Empty;
     public int? ExecutionOrder { get; set; }
     public JsonElement? Input { get; set; }

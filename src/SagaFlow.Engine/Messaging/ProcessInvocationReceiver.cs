@@ -14,7 +14,7 @@ public interface IProcessInvocationPolicy
 public sealed class InvocationOutcomeNotReadyException(string message) : Exception(message);
 
 public sealed class ProcessInvocationReceiver(ISagaStateStore store, ProcessDefinitionRegistry definitions,
-    ProcessInvocationManager manager, IProcessInvocationBus bus, ISagaClock clock, IEnumerable<IProcessInvocationPolicy> policies)
+    ProcessInvocationManager manager, IProcessInvocationBus bus, ISagaClock clock, IEnumerable<IProcessInvocationPolicy> policies, SagaCoordinator coordinator)
 {
     public async Task ReceiveAsync(ProcessInvocationRequest request, CancellationToken cancellationToken = default)
     {
@@ -50,6 +50,7 @@ public sealed class ProcessInvocationReceiver(ISagaStateStore store, ProcessDefi
         {
             var instance = await manager.GetOrCreateTargetAsync(request, cancellationToken);
             await bus.PublishAsync(new ProcessInvocationAccepted(decision.Reply, instance.Id), cancellationToken);
+            await coordinator.StartIncomingAsync(instance.Id, cancellationToken);
         }
     }
 
@@ -63,6 +64,7 @@ public sealed class ProcessInvocationReceiver(ISagaStateStore store, ProcessDefi
     {
         await ValidateOutcomeAsync(rejected.Message, cancellationToken);
         await manager.ObserveAsync(rejected.Message.Identity, ExternalProcessStatus.Rejected, cancellationToken: cancellationToken, message: rejected.Message, fingerprint: Fingerprint(rejected));
+        await coordinator.HandleExternalRejectedAsync(rejected, cancellationToken);
     }
     public async Task ReceiveAsync(ProcessInvocationTerminalOutcome outcome, CancellationToken cancellationToken = default)
     {
@@ -70,6 +72,7 @@ public sealed class ProcessInvocationReceiver(ISagaStateStore store, ProcessDefi
         if (current.LastKnownStatus == ExternalProcessStatus.Requested)
             throw new InvocationOutcomeNotReadyException("Terminal outcome must wait for acceptance; redeliver or replay acceptance.");
         await manager.ObserveAsync(outcome.Message.Identity, outcome.Status, outcome.TargetSagaInstanceId, cancellationToken, outcome.Message, Fingerprint(outcome));
+        await coordinator.HandleExternalTerminalAsync(outcome, cancellationToken);
     }
     private static string Fingerprint<T>(T message) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(message)));
     private async Task<CrossDomainInstanceRelationship> ValidateOutcomeAsync(InvocationMessage message, CancellationToken cancellationToken)
