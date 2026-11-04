@@ -227,3 +227,63 @@ Broker parking InMemory state değildir: queue durable, mesaj persistent ve tran
 Kanıt: [`ProcessInvocationIntegrationTests`](../tests/SagaFlow.Messaging.RabbitMQ.Tests/ProcessInvocationIntegrationTests.cs) gerçek RabbitMQ participant publisher channel'ını kapatıp invocation kanalını açık tutarak Source Failed/Target Pending, korunmuş ilişki ve stable duplicate target'ı sınar. Erken terminal testleri acceptance sonradan geldiğinde uygulamayı, hiç gelmediğinde durable beklemeyi, sıfır parking consumer'ını ve iki mesajda 1/64 limitli replay sayısını koşul/counter üzerinden doğrular; arbitrary sleep kullanılmaz. Çelişen terminal gerçek adapter reject sayacıyla doğrulanır. [`ProcessMessagingTests.PartialExecutionMarkerSurvivesRemoteTerminalSuccess`](../tests/SagaFlow.Engine.Tests/ProcessMessagingTests.cs) remote Completed sonrasında dahi Source Failed ve açık reconciliation kaydını doğrular. Normal acceptance → terminal regresyonu korunur. Güncel koşu sonuçları [proje durumunda](01-PROJECT_STATUS.md).
 
 S2-3-R01 kapanışı: [`ProcessInvocationIntegrationTests`](../tests/SagaFlow.Messaging.RabbitMQ.Tests/ProcessInvocationIntegrationTests.cs) gerçek broker üzerinde `.deferred` kuyruğunu geçici kaldırarak mandatory parking publish/confirm hatasını oluşturur. Orijinal terminal ACK edilmeden NACK/requeue üzerinden tekrar teslim edilir; kuyruk yeniden açılınca tek parked mesaj ve acceptance sonrasında terminal gözlemi doğrulanır. İkinci test, aynı kaynak process altındaki iki bağımsız invocation terminalini park eder: ilk acceptance yalnız ilk state’i, ikinci acceptance yalnız ikinci state’i tamamlar; Message ID ve Invocation ID ayrılığı, kalan queue sayısı ve duplicate terminalde değişmeyen `UpdatedAt` sınanır. Odak koşu 2/2, izole tam suite 458/458; build 0 uyarı/hata. Bu kanıt aynı process/vhost ve InMemory source state sınırındadır; restart recovery veya exactly-once garantisi eklemez.
+
+## S2-4: target execution ve source external-step continuation
+
+Durum: yerel cross-domain koordinasyon entegrasyonu `Implemented`; S2 bütünü `Partial`. Önceki S2-3 bölümlerindeki target Pending/no automatic terminal hook/source transition Planned ifadeleri bu aşamanın aşağıdaki davranışıyla güncellenir. S2-5/S2-6 instance/BigPicture runtime görünürlüğü ve durable recovery bu çalışmada geliştirilmedi.
+
+### External YAML ve uygulama modeli
+
+[`SagaStepDefinition.External`](../src/SagaFlow.Core/Definitions/SagaStepDefinition.cs) geriye uyumlu bool alandır; varsayılan false, canonical YAML'da false atlanır. `external: true` bir participant command göndermek yerine invocation terminal sonucunu bekler. Command hâlâ zorunlu handler etiketi/identifier'dır. `bigPicture.relationship: invokes` tek başına execution başlatmaz. Örnek kaynak tanımı:
+
+```yaml
+name: source-process
+domain: domain-x
+version: "1.0"
+steps:
+  - name: remote
+    command: InvokeRemote
+    external: true
+    transitions:
+      - event: success
+        nextStep: finalize
+      - event: failure
+        nextStep: compensation
+  - name: finalize
+    command: Finalize
+    transitions:
+      - event: success
+        nextStep: completed
+bigPicture:
+  - domain: domain-y
+    process: remote-process
+    version: "1.0"
+    endpoint: https://definition-discovery
+    relationship: invokes
+```
+
+Domain Starter scoped `ILocalSagaStepHandler` içinde `command.Name == "InvokeRemote"` olduğunda `await sagaFlow.InvokeAsync("remote-process", command.Payload, cancellationToken)` çağırır; diğer command'larda handler return etmelidir. Source metadata uygulamadan alınmaz. Handler sonrasında mevcut publisher request'i claim edip gönderir. [`SagaStepExecutor`](../src/SagaFlow.Engine/Coordination/SagaStepExecutor.cs) External step için participant forward publish yapmaz; handler invocation veya enabled transport yoksa açık dispatch hatası üretir. External step Dispatched kalır: bu, mesaj temelli beklemedir; consumer/worker thread'i remote completion Task'i beklemez. InvokeAsync receipt Prepared semantiği değişmedi. External=false legacy step'ten invocation yapılırsa eski fire-and-forget + participant davranışı korunur; uzak terminal yalnız ilişkiyi günceller.
+
+### Target başlangıcı ve ilk dispatch sınırı
+
+[`ProcessInvocationReceiver`](../src/SagaFlow.Engine/Messaging/ProcessInvocationReceiver.cs) önce admission ve atomik GetOrCreateTargetAsync, sonra acceptance publish, ardından [`SagaCoordinator.StartIncomingAsync`](../src/SagaFlow.Engine/Coordination/SagaCoordinator.cs) yürütür. Target kendi ID/correlation değerlerini korur. StartIncomingAsync Local ownership/incoming kaydını kontrol eder ve ilk Pending step'i aynı store callback'inde mevcut executor.Prepare ile Dispatched yapar. Broker I/O callback dışındadır. Eşzamanlı duplicate request/acceptance aynı target kaydını kullanır; ilk step zaten Dispatched/Completed/Failed ise tekrar başlatılmaz.
+
+Acceptance publication başarısızsa target henüz Pending kalabilir; request redelivery aynı instance'ı bulup acceptance'ı tekrar yollar ve ilk dispatch'i claim eder. İlk command publish hatasında mevcut executor target step/Saga'yı Failed yapar, failure reason saklanır ve gerçek terminal Failed bildirimi denenir. Duplicate request yeni instance yaratmaz veya ilk step'i yeniden publish etmez; mevcut failed target ve stable terminal sonucu tekrar bildirilir. İlk dispatch claim'i ile publish arasında durable outbox yoktur: crash/confirmation uncertainty için exactly-once veya otomatik yeniden dispatch garantisi verilmez. Broker request redelivery geçici hataları tekrar işler; terminal Failed target'ın business etkisinin kesinlikle hiç oluşmadığı iddiası değildir, belirsiz durum manuel uzlaştırma gerektirir.
+
+### Genel terminal lifecycle hook'u
+
+Opt-in process adapter'ın scoped ProcessInvocationPublisher servisi Coordinator'a bağlanır. Coordinator target initial dispatch, forward outcome/next dispatch, compensation ve DomainRollback tamamlanması sınırlarından sonra IncomingInvocation sahibi gerçek Completed/Failed/Compensated Saga'yı bildirir. TimedOut/Compensating/CompensationRequested terminal olarak yeniden sınıflandırılmaz. Domain başına publisher yazmak gerekmez. Uygulamanın doğrudan store mutation yapması genel bir terminal event hook'u değildir; explicit PublishTerminalAsync mevcut manuel uzlaştırma yolu olarak kalır.
+
+Target InvocationTerminalOutcome kaydı ilk gerçek terminalden üretilir ve MessageId/identity korunur. Birden fazla hook gözlemi aynı mantıksal mesajı tekrar gönderebilir; source dedup tek step transition sağlar. Notification I/O store callback dışında yapılır. Publish hatası çağırana taşınır, target terminal state geri çevrilmez. Önceki local participant outcome commit edilmişken notification başarısızsa broker outcome redelivery'sindeki DuplicateSagaOutcome yolu notification'ı yeniden dener; explicit PublishTerminalAsync de aynı kaydı kullanır. Compensation ve domain rollback mevcut mekanizmalarıyla çalışır. Incoming business context JsonElement olduğundan target rollback handler gerekiyorsa mevcut SagaRollbackHandler<JsonElement> sözleşmesiyle kaydedilebilir; normal StartAsync typed payload davranışı değişmedi.
+
+### Source completion ve yarış koruması
+
+Receiver önce tam invocation/source/target/correlation ve target Saga kimliğini doğrular, S2-2 ObserveAsync ile ilişki gözlemini kaydeder, ardından Coordinator.HandleExternalTerminalAsync çağırır. İkinci store callback'inde **tekrar** identity/status/target ID, source Running, aynı current Dispatched External step, boş Result ve kapalı Reconciliation kontrol edilir. Gözlem ile continuation arasındaki eşzamanlı local failure bu kontrolü geçemez. Remote gözlem korunur; Failed/TimedOut source veya açık reconciliation yeniden Running/Completed yapılmaz. Manuel uzlaştırma kaydı otomatik temizlenmez.
+
+Completed → success; Failed/Compensated → failure; business Rejected → failure event'i mevcut TransitionResolver/ProcessStateManager'a verilir. YAML uygun success/failure politikalarını tanımlamalıdır. External result JSON'unda `status` (Completed/Failed/Compensated/Rejected), `invocationId`, terminalde `targetSagaInstanceId`, rejection'da `reason` bulunur; uzak business result payload'ı icat edilmez. Structured condition'lar bu teknik sonucu kullanabilir. Failure transition compensation veya recovery step seçebilir; source'un son Saga status'u kendi YAML/rollback politikasının sonucudur, remote failure otomatik source Completed anlamına gelmez.
+
+External step Result/status, source transition ve bir sonraki command'ın Prepare claim'i tek atomik UpdateAsync içindedir. Duplicate terminal aynı step'i ikinci kez complete/dispatch etmez. Participant outcome external step'i tamamlayamaz; explicit local compensation outcome'ları mevcut compensation planı üzerinden işlenir. Dış I/O commit sonrasındadır; sonraki command publish başarısızlığı mevcut Failed/manual-resolution sınırlarını taşır, durable transaction eklenmedi. Observe ve continuation iki ayrı yerel commit'tir; crash recovery/outbox yoktur. Redelivery aynı stable terminal ile devamı yeniden değerlendirebilir; process restart state kaybını onarmaz.
+
+S2-3 parking/replay, metadata/fingerprint kontrolü ve Reconciliation koruması sürer. Erken terminal acceptance sonrasında replay edildiğinde de aynı source continuation yolunu kullanır. Scope cleanup, compensation routing, normal StartAsync ve legacy related/invokes metadata korunur. Static discovery/canonical snapshot External alanını taşır; Dashboard/BigPicture UI'ya external/wait/instance ilişki görünürlüğü eklenmedi.
+
+Kanıt: [`CrossDomainCoordinationTests`](../tests/SagaFlow.Engine.Tests/CrossDomainCoordinationTests.cs) gerçek Engine/store ile target tek-dispatch, success/failure/compensated/rejected devamı, concurrent duplicate, initial/terminal publish failure, stable retry, malformed participant outcome, observation-continuation arası local failure, reconciliation ve YAML roundtrip'i sınar. [`ProcessInvocationIntegrationTests`](../tests/SagaFlow.Messaging.RabbitMQ.Tests/ProcessInvocationIntegrationTests.cs) iki ayrı IHost/container/store/managed RabbitMQ bağlantısında gerçek request → target participant command/outcome → automatic terminal → source participant continuation zincirini, compensation/failure/duplicate ve geç acceptance replay'ini doğrular. Worker test driver'ları brokerdaki command'ları okuyup generic outcome yayımlar; target/source terminal state normal E2E'de doğrudan değiştirilmez. Hostlar aynı test OS process'i içindedir. S2-3 testlerinin eski target Pending beklentileri, receiver sonrası artık Dispatched olacağı için güncellendi; yalnız GetOrCreateTargetAsync çağrısının Pending semantiği korunur.

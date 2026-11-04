@@ -49,7 +49,7 @@ public sealed class ProcessInvocationIntegrationTests(RabbitMqBrokerFixture brok
             Assert.NotEqual(sourceState.CorrelationId, targetState.CorrelationId);
             Assert.Equal(request.Identity, targetState.IncomingInvocation!.Identity);
             Assert.Equal(targetState.Id, sourceState.Steps[0].InvocationProgress!.TargetSagaInstanceId);
-            Assert.All(targetState.Steps, step => Assert.Equal(SagaStepStatus.Pending, step.Status));
+            Assert.All(targetState.Steps, step => Assert.Equal(SagaStepStatus.Dispatched, step.Status));
             Assert.Equal(42, targetState.Context.GetProperty("value").GetInt32());
             // Explicit actual state change tests the terminal messaging hook; no automatic/synthetic terminal hook is installed.
             await targetStore.UpdateAsync(targetState.Id, state => { state.Status = SagaStatus.Completed; return true; });
@@ -161,7 +161,7 @@ public sealed class ProcessInvocationIntegrationTests(RabbitMqBrokerFixture brok
             var targetStore = targetHost.Services.GetRequiredService<ISagaStateStore>();
             var before = Assert.Single(await targetStore.ListAsync());
             Assert.Equal(SagaStatus.Running, before.Status);
-            Assert.All(before.Steps, step => Assert.Equal(SagaStepStatus.Pending, step.Status));
+            Assert.All(before.Steps, step => Assert.Equal(SagaStepStatus.Dispatched, step.Status));
             var receiver = targetHost.Services.GetRequiredService<RabbitMqInvocationTransport>();
             var handled = receiver.HandledMessageCount;
             await sourceHost.Services.GetRequiredService<IProcessInvocationBus>().PublishAsync(request); // broker duplicate simulation, not a new authorized source attempt
@@ -280,11 +280,14 @@ public sealed class ProcessInvocationIntegrationTests(RabbitMqBrokerFixture brok
         finally { await sourceHost.StopAsync(); if (targetHost is not null) { await targetHost.StopAsync(); targetHost.Dispose(); } }
     }
 
-    private async Task EarlyTerminal(bool acceptLater)
+    private async Task EarlyTerminal(bool acceptLater, bool external = false)
     {
         var suffix = Guid.NewGuid().ToString("N");
         var target = Definition("target" + suffix, "remote", "targetStep" + suffix);
         var source = SourceDefinition(target, suffix);
+        if (external) source = new SagaDefinition { Domain = source.Domain, Name = source.Name, Version = source.Version, BigPicture = source.BigPicture,
+            Steps = [new() { Name = source.Steps[0].Name, Command = "InvokeRemote", External = true,
+                Transitions = [new() { Event = "success", NextStep = "completed" }, new() { Event = "failure", NextStep = "compensation" }] }] };
         using var sourceHost = await Start(source, target.Name);
         IHost? targetHost = null;
         try
@@ -327,6 +330,7 @@ public sealed class ProcessInvocationIntegrationTests(RabbitMqBrokerFixture brok
                 await Wait(() => Task.FromResult(transport.RejectedMessageCount > rejectedCount));
                 Assert.Equal(ExternalProcessStatus.Completed, (await sourceStore.FindAsync(state.Id))!.Steps[0].InvocationProgress!.Status);
                 Assert.Equal(0u, await reconciliation.GetDeferredCountAsync());
+                if (external) Assert.Equal(SagaStatus.Completed, (await sourceStore.FindAsync(state.Id))!.Status);
             }
             else
             {
@@ -344,6 +348,117 @@ public sealed class ProcessInvocationIntegrationTests(RabbitMqBrokerFixture brok
             Assert.Equal(2u, await channel.MessageCountAsync(RabbitMqInvocationTransport.Queue(new(source.Domain, source.Name, source.Version), false) + ".deferred"));
         }
     }
+    [RabbitMqFact]
+    public Task ParkingReplayContinuesExternalStepAfterLateAcceptance() => EarlyTerminal(true, external: true);
+
+    [RabbitMqFact]
+    public Task TwoHostLocalCoordinationAutomaticallyCompletesAndContinuesSource() => RunCoordinated(ExternalProcessStatus.Completed);
+    [RabbitMqFact]
+    public Task TwoHostCompensationAutomaticallyContinuesSourceFailurePolicy() => RunCoordinated(ExternalProcessStatus.Compensated);
+    [RabbitMqFact]
+    public Task TwoHostCompensationFailureAutomaticallyNotifiesFailed() => RunCoordinated(ExternalProcessStatus.Failed);
+    [RabbitMqFact]
+    public Task InitialTargetDispatchFailureDoesNotRestartOnDuplicateRequest() => RunCoordinated(ExternalProcessStatus.Failed, true);
+
+    private async Task RunCoordinated(ExternalProcessStatus expected, bool initialFailure = false)
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var one = "targetOne" + suffix; var two = "targetTwo" + suffix;
+        var invocationStep = "invoke" + suffix; var success = "success" + suffix; var failure = "failure" + suffix;
+        var target = new SagaDefinition { Domain = "target" + suffix, Name = "remote", Version = "1.0",
+            Steps = [new() { Name = one, Command = "Work", Compensation = new() { Command = "Undo" },
+                    Transitions = [new() { Event = "success", NextStep = two }, new() { Event = "failure", NextStep = "compensation" }] },
+                new() { Name = two, Command = "Work2", Transitions = [new() { Event = "success", NextStep = "completed" }, new() { Event = "failure", NextStep = "compensation" }] }] };
+        var source = new SagaDefinition { Domain = "source" + suffix, Name = "local", Version = "1.0",
+            BigPicture = [new() { Domain = target.Domain, Process = target.Name, Version = target.Version, Endpoint = "https://discovery", Relationship = "invokes" }],
+            Steps = [new() { Name = invocationStep, Command = "InvokeRemote", External = true,
+                    Transitions = [new() { Event = "success", NextStep = success }, new() { Event = "failure", NextStep = failure }] },
+                new() { Name = success, Command = "Continue", Transitions = [new() { Event = "success", NextStep = "completed" }] },
+                new() { Name = failure, Command = "Recover", Transitions = [new() { Event = "success", NextStep = "completed" }] }] };
+        using var targetHost = await Start(target);
+        using var sourceHost = await Start(source, target.Name);
+        try
+        {
+            if (initialFailure) await targetHost.Services.GetRequiredService<RabbitMqTransport>().PublisherChannel!.CloseAsync(CancellationToken.None);
+            string sourceId;
+            await using (var scope = sourceHost.Services.CreateAsyncScope())
+                sourceId = (await scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { allow = true, value = 42 })).ToString("N");
+            var sourceStore = sourceHost.Services.GetRequiredService<ISagaStateStore>();
+            var targetStore = targetHost.Services.GetRequiredService<ISagaStateStore>();
+            await Wait(async () => (await targetStore.ListAsync()).Count == 1);
+            var targetState = Assert.Single(await targetStore.ListAsync());
+            var request = (await sourceStore.FindAsync(sourceId))!.Steps[0].Invocation!;
+            var targetTransport = targetHost.Services.GetRequiredService<RabbitMqInvocationTransport>();
+            var handled = targetTransport.HandledMessageCount;
+            await Task.WhenAll(Enumerable.Range(0, 5).Select(_ => sourceHost.Services.GetRequiredService<IProcessInvocationBus>().PublishAsync(request).AsTask()));
+            await Wait(() => Task.FromResult(targetTransport.HandledMessageCount >= handled + 5));
+            Assert.Equal(targetState.Id, Assert.Single(await targetStore.ListAsync()).Id);
+            if (!initialFailure)
+            {
+                var first = await ReadParticipant(one);
+                Assert.Equal(targetState.Id, first.Headers.SagaInstanceId);
+                Assert.NotEqual(sourceId, first.Headers.SagaInstanceId);
+                Assert.NotEqual(request.Identity.CorrelationId, first.Headers.CorrelationId);
+                await AssertQueueCount(one, 0);
+                await SendParticipantOutcome(target.Domain, first, true);
+                var second = await ReadParticipant(two);
+                await SendParticipantOutcome(target.Domain, second, expected == ExternalProcessStatus.Completed);
+                if (expected != ExternalProcessStatus.Completed)
+                {
+                    var compensation = await ReadParticipant(one);
+                    Assert.True(compensation.Headers.IsCompensation); Assert.Equal("Undo", compensation.Name);
+                    await SendParticipantOutcome(target.Domain, compensation, expected == ExternalProcessStatus.Compensated);
+                }
+            }
+            var nextStep = expected == ExternalProcessStatus.Completed ? success : failure;
+            await Wait(async () =>
+            {
+                var state = (await sourceStore.FindAsync(sourceId))!;
+                return state.CurrentStep == nextStep && state.Steps[0].InvocationProgress!.Status == expected;
+            });
+            var continued = await ReadParticipant(nextStep);
+            Assert.Equal(sourceId, continued.Headers.SagaInstanceId);
+            Assert.Equal(expected == ExternalProcessStatus.Completed ? "Continue" : "Recover", continued.Name);
+            var finalTarget = (await targetStore.FindAsync(targetState.Id))!;
+            Assert.Equal(expected.ToString(), finalTarget.Status.ToString());
+            Assert.NotNull(finalTarget.InvocationTerminalOutcome);
+            var sourceTransport = sourceHost.Services.GetRequiredService<RabbitMqInvocationTransport>();
+            handled = sourceTransport.HandledMessageCount;
+            await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => targetHost.Services.GetRequiredService<IProcessInvocationBus>().PublishAsync(finalTarget.InvocationTerminalOutcome!).AsTask()));
+            await Wait(() => Task.FromResult(sourceTransport.HandledMessageCount >= handled + 4));
+            await AssertQueueCount(nextStep, 0); // source continuation has a single participant dispatch
+            if (initialFailure) await AssertQueueCount(one, 0);
+            await SendParticipantOutcome(source.Domain, continued, true);
+            await Wait(async () => (await sourceStore.FindAsync(sourceId))!.Status == SagaStatus.Completed);
+            Assert.Equal(expected.ToString(), (await sourceStore.FindAsync(sourceId))!.Steps[0].Result!.Value.GetProperty("status").GetString());
+        }
+        finally { await sourceHost.StopAsync(); await targetHost.StopAsync(); }
+    }
+
+    private async Task<SagaCommand> ReadParticipant(string queue)
+    {
+        BasicGetResult? delivery = null;
+        await Wait(async () =>
+        {
+            await using var channel = await broker.Connection.CreateChannelAsync();
+            delivery = await channel.BasicGetAsync(queue, true);
+            return delivery is not null;
+        });
+        return RabbitMqMessageSerializer.DeserializeCommand(delivery!.Body.Span);
+    }
+    private async Task SendParticipantOutcome(string domain, SagaCommand command, bool success)
+    {
+        await using var channel = await broker.Connection.CreateChannelAsync(new CreateChannelOptions(true, true));
+        await channel.BasicPublishAsync("", domain + ".outcomes", true,
+            new BasicProperties { ContentType = "application/json", DeliveryMode = DeliveryModes.Persistent, MessageId = Guid.NewGuid().ToString("N") },
+            RabbitMqMessageSerializer.Serialize(new SagaOutcomeEvent { Headers = command.Headers, IsSuccess = success, Result = JsonSerializer.SerializeToElement(new { success }) }));
+    }
+    private async Task AssertQueueCount(string queue, uint expected)
+    {
+        await using var channel = await broker.Connection.CreateChannelAsync();
+        Assert.Equal(expected, await channel.MessageCountAsync(queue));
+    }
+
     private static SagaDefinition SourceDefinition(SagaDefinition target, string suffix) => new()
     {
         Domain = "source" + suffix, Name = "local", Version = "1.0",
@@ -380,6 +495,7 @@ public sealed class ProcessInvocationIntegrationTests(RabbitMqBrokerFixture brok
     {
         public async Task ExecuteAsync(SagaCommand command, CancellationToken ct)
         {
+            if (command.Name is not ("Work" or "InvokeRemote")) return;
             await flow.InvokeAsync(target.Process, command.Payload, ct);
             if (target.Fail) throw new InvalidOperationException("Local handler failed after preparing invocation.");
         }

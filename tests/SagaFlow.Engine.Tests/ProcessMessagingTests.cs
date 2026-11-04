@@ -69,8 +69,8 @@ public sealed class ProcessMessagingTests
             var targetManager = new ProcessInvocationManager(Target.Store, Target.Registry, Target.Clock);
             Publisher = new(Source.Store, SourceBus, Source.Registry, Source.Clock);
             TargetPublisher = new(Target.Store, TargetBus, Target.Registry, Target.Clock);
-            SourceReceiver = new(Source.Store, Source.Registry, SourceManager, SourceBus, Source.Clock, []);
-            TargetReceiver = new(Target.Store, Target.Registry, targetManager, TargetBus, Target.Clock, [Policy]);
+            SourceReceiver = new(Source.Store, Source.Registry, SourceManager, SourceBus, Source.Clock, [], Source.Coordinator);
+            TargetReceiver = new(Target.Store, Target.Registry, targetManager, TargetBus, Target.Clock, [Policy], Target.Coordinator);
             SourceBus.Request = request => TargetReceiver.ReceiveAsync(request);
             TargetBus.Accept = message => SourceReceiver.ReceiveAsync(message);
             TargetBus.Reject = message => SourceReceiver.ReceiveAsync(message);
@@ -91,8 +91,8 @@ public sealed class ProcessMessagingTests
         var s = new Setup(); await s.Prepare();
         await s.Publisher.PublishAsync(s.Id, s.Request.Identity.InvocationId);
         var target = Assert.Single(await s.Target.Store.ListAsync());
-        Assert.Equal(SagaStepStatus.Pending, target.Steps[0].Status);
-        Assert.Empty(s.Target.Bus.Commands);
+        Assert.Equal(SagaStepStatus.Dispatched, target.Steps[0].Status);
+        Assert.Single(s.Target.Bus.Commands);
         Assert.NotEqual(s.Request.Identity.CorrelationId, target.CorrelationId);
         Assert.Equal(s.Request.Identity, target.IncomingInvocation!.Identity);
         Assert.Equal(ExternalProcessStatus.Accepted, (await s.State()).Steps[0].InvocationProgress!.Status);
@@ -202,7 +202,7 @@ public sealed class ProcessMessagingTests
         Assert.Empty(await s.Target.Store.ListAsync());
         s.TargetBus.Reject = _ => Task.CompletedTask;
         var receiver = new ProcessInvocationReceiver(s.Target.Store, s.Target.Registry,
-            new(s.Target.Store, s.Target.Registry, s.Target.Clock), s.TargetBus, s.Target.Clock, []);
+            new(s.Target.Store, s.Target.Registry, s.Target.Clock), s.TargetBus, s.Target.Clock, [], s.Target.Coordinator);
         await receiver.ReceiveAsync(s.Request);
         Assert.Single(s.TargetBus.Rejected);
         Assert.Empty(await s.Target.Store.ListAsync());
@@ -237,7 +237,7 @@ public sealed class ProcessMessagingTests
         Assert.Equal(SagaStatus.Failed, source.Status);
         Assert.NotNull(source.Steps[0].Reconciliation);
         var target = Assert.Single(await s.Target.Store.ListAsync());
-        Assert.Equal(SagaStepStatus.Pending, target.Steps[0].Status);
+        Assert.Equal(SagaStepStatus.Dispatched, target.Steps[0].Status);
         await s.Target.Store.UpdateAsync(target.Id, state => { state.Status = SagaStatus.Completed; return true; });
         await s.TargetPublisher.PublishTerminalAsync(target.Id);
         var relation = await s.SourceManager.FindAsync(source.Id, source.Steps[0].Invocation!.Identity.InvocationId);
