@@ -7,7 +7,7 @@ using SagaFlow.Engine.Notifications;
 namespace SagaFlow.Engine.Coordination;
 
 public sealed class SagaStepExecutor(ISagaStateStore store, CommandDispatcher dispatcher, ISagaClock clock,
-    SagaStateChangePublisher? changes = null)
+    SagaStateChangePublisher? changes = null, ILocalSagaExecutionBoundary? execution = null)
 {
     public void EnsureTransport() => dispatcher.EnsureTransport();
 
@@ -38,7 +38,11 @@ public sealed class SagaStepExecutor(ISagaStateStore store, CommandDispatcher di
 
     internal async Task PublishPreparedAsync(SagaCommand command, CancellationToken cancellationToken)
     {
-        try { await dispatcher.PublishAsync(command, cancellationToken); }
+        try
+        {
+            if (execution is not null) await execution.ExecuteAsync(command, cancellationToken);
+            await dispatcher.PublishAsync(command, cancellationToken);
+        }
         catch (Exception error)
         {
             await store.UpdateAsync(command.Headers.SagaInstanceId, instance =>

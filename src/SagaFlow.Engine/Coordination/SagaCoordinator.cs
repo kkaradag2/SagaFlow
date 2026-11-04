@@ -10,9 +10,21 @@ namespace SagaFlow.Engine.Coordination;
 
 public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISagaStateStore store, SagaInstanceManager instances,
     SagaStepExecutor executor, TransitionResolver resolver, ProcessStateManager states, CompensationManager compensations, ISagaClock clock,
-    SagaStateChangePublisher? changes = null, IServiceProvider? services = null) : ISagaFlow
+    SagaStateChangePublisher? changes = null, IServiceProvider? services = null, InvocationExecutionContext? invocationContext = null) : ISagaFlow
 {
     public string Name => nameof(SagaCoordinator);
+
+    public async Task<ProcessInvocationReceipt> InvokeAsync<TPayload>(string target, TPayload payload, CancellationToken cancellationToken = default)
+    {
+        if (invocationContext?.InstanceId is not { } id || invocationContext.StepId is not { } step)
+            throw new InvalidOperationException("InvokeAsync requires an active Domain Starter local step handler scope.");
+        var request = await store.UpdateAsync(id, instance =>
+        {
+            if (instance.CurrentStep != step) throw new InvalidOperationException("Execution context is stale.");
+            return new ProcessInvocationResolver(definitions).Create(instance, target, payload);
+        }, cancellationToken);
+        return new(request.Identity.InvocationId, request.Identity.Target, ExternalProcessStatus.Prepared);
+    }
 
     public async Task<Guid> StartAsync<TPayload>(TPayload payload, CancellationToken cancellationToken = default)
     {

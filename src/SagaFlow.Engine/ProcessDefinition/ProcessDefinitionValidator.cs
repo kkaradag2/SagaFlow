@@ -88,7 +88,7 @@ public sealed partial class ProcessDefinitionValidator
             Check(IsIdentifier(source.Domain) && IsIdentifier(source.Process), "bigPicture domain and process must be identifiers.");
             Check(source.Version is null || IsVersion(source.Version), $"bigPicture '{source.Domain}/{source.Process}': invalid version.");
             Check(TryEndpoint(source.Endpoint, out _), $"bigPicture '{source.Domain}/{source.Process}': endpoint must be an absolute HTTP(S) origin with no credentials, path, query, or fragment.");
-            Check(!source.HasExplicitRelationship() || source.Relationship == "related", $"bigPicture '{source.Domain}/{source.Process}': relationship must be 'related' when supplied; null or empty is invalid.");
+            Check(!source.HasExplicitRelationship() || source.Relationship is "related" or "invokes", $"bigPicture '{source.Domain}/{source.Process}': relationship must be 'related' or 'invokes' when supplied; null or empty is invalid.");
             Check(sources.Add($"{source.Domain}/{source.Process}@{source.Version}"), $"duplicate bigPicture reference '{source.Domain}/{source.Process}@{source.Version}'.");
         }
         if (errors.Count == 0) ValidateGraph(definition, Check);

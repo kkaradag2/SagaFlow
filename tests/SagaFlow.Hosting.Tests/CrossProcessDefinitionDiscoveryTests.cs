@@ -20,7 +20,7 @@ public sealed class CrossProcessDefinitionDiscoveryTests
             {
                 Domain = "order", Name = "order-process", Version = "1.0",
                 Steps = [new() { Name = "payment", Command = "AuthorizePayment", Transitions = [new() { Event = "success", NextStep = "completed" }] }],
-                BigPicture = [new() { Domain = "fulfillment", Process = "fulfillment-process", Version = "1.0", Endpoint = catalog.Endpoint, Relationship = "related" }]
+                BigPicture = [new() { Domain = "fulfillment", Process = "fulfillment-process", Version = "1.0", Endpoint = catalog.Endpoint, Relationship = "invokes" }]
             };
             await File.WriteAllTextAsync(Path.Combine(directory, "purchase.yaml"), new DefinitionYamlCodec().Serialize(published));
             await using var publisher = await PublisherProcess.StartAsync(directory);
@@ -37,7 +37,7 @@ public sealed class CrossProcessDefinitionDiscoveryTests
             var relationship = Assert.Single(retrieved.BigPicture);
             Assert.Equal(("fulfillment", "fulfillment-process", "1.0", catalog.Endpoint),
                 (relationship.Domain, relationship.Process, relationship.Version, relationship.Endpoint));
-            Assert.Equal("related", relationship.Relationship);
+            Assert.Equal("invokes", relationship.Relationship);
 
             var root = new SagaDefinition
             {
@@ -56,7 +56,7 @@ public sealed class CrossProcessDefinitionDiscoveryTests
             Assert.Contains(graph.Nodes, n => n.Id == new ProcessDefinitionId("order", "order-process", "1.0") && n.Origin == DefinitionOrigin.Remote);
             Assert.Contains(graph.Edges, edge => edge.Source == ProcessDefinitionId.From(published)
                 && edge.Target == new ProcessDefinitionId("fulfillment", "fulfillment-process", "1.0")
-                && edge.Relationship == "related");
+                && edge.Relationship == "invokes");
             Assert.Single(registry.Snapshot());
         }
         finally { Directory.Delete(directory, true); }
