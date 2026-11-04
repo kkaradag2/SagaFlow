@@ -404,6 +404,8 @@ public sealed class OrderSampleTests
 
     private sealed class RecordingSagaFlow(Action? onStart = null) : ISagaFlow
     {
+        public Task<SagaFlow.Core.Messages.ProcessInvocationReceipt> InvokeAsync<TPayload>(string target, TPayload payload, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("Cross-domain invocation runtime is not available.");
         public Guid InstanceId { get; } = Guid.NewGuid();
         public object? Payload { get; private set; }
         public int Calls { get; private set; }
@@ -413,6 +415,8 @@ public sealed class OrderSampleTests
 
     private sealed class FailingSagaFlow : ISagaFlow
     {
+        public Task<SagaFlow.Core.Messages.ProcessInvocationReceipt> InvokeAsync<TPayload>(string target, TPayload payload, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("Cross-domain invocation runtime is not available.");
         public Task<Guid> StartAsync<TPayload>(TPayload payload, CancellationToken cancellationToken = default) =>
             Task.FromException<Guid>(new InvalidOperationException("No ISagaMessageBus transport adapter is registered."));
     }

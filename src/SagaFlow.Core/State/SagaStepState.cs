@@ -4,6 +4,7 @@ namespace SagaFlow.Core.State;
 
 public sealed class SagaStepState
 {
+    public SagaFlow.Core.Messages.ProcessInvocationRequest? Invocation { get; set; }
     public string StepName { get; init; } = string.Empty;
     public string StepId => StepName;
     public string Command { get; init; } = string.Empty;
