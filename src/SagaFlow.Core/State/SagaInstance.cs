@@ -4,6 +4,7 @@ namespace SagaFlow.Core.State;
 
 public sealed class SagaInstance
 {
+    public IncomingInvocation? IncomingInvocation { get; set; }
     public string Id { get; init; } = Guid.NewGuid().ToString("N");
 
     public string DefinitionName { get; init; } = string.Empty;

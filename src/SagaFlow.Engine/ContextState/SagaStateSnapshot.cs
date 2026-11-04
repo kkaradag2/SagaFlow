@@ -6,13 +6,13 @@ internal static class SagaStateSnapshot
 {
     public static SagaInstance Copy(SagaInstance state) => new()
     {
-        Id = state.Id, DefinitionName = state.DefinitionName, DefinitionDomain = state.DefinitionDomain,
+        IncomingInvocation = state.IncomingInvocation, Id = state.Id, DefinitionName = state.DefinitionName, DefinitionDomain = state.DefinitionDomain,
         DefinitionVersion = state.DefinitionVersion, CorrelationId = state.CorrelationId,
         CurrentStep = state.CurrentStep, Status = state.Status, Context = state.Context.Clone(), PayloadType = state.PayloadType,
         CreatedAt = state.CreatedAt, UpdatedAt = state.UpdatedAt, FailureReason = state.FailureReason, Revision = state.Revision,
         Steps = Array.AsReadOnly(state.Steps.Select(step => new SagaStepState
         {
-            Invocation = step.Invocation, StepName = step.StepName, Command = step.Command, Status = step.Status, ExecutionOrder = step.ExecutionOrder,
+            InvocationProgress = step.InvocationProgress, Invocation = step.Invocation, StepName = step.StepName, Command = step.Command, Status = step.Status, ExecutionOrder = step.ExecutionOrder,
             Input = step.Input?.Clone(), Result = step.Result?.Clone(), StartedAt = step.StartedAt, CompletedAt = step.CompletedAt,
             TimeoutLimit = step.TimeoutLimit, TimedOutAt = step.TimedOutAt
         }).ToArray()),

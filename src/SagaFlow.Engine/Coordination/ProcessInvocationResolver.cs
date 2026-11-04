@@ -1,5 +1,6 @@
 using System.Text.Json;
 using SagaFlow.Core.Messages;
+using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.Definitions;
 using SagaFlow.Core.State;
 using SagaFlow.Engine.ProcessDefinition;
@@ -7,7 +8,7 @@ using SagaFlow.Engine.ProcessDefinition;
 namespace SagaFlow.Engine.Coordination;
 
 /// <summary>Builds an invocation from the engine's active instance/step, never from application-supplied source metadata.</summary>
-public sealed class ProcessInvocationResolver(ProcessDefinitionRegistry definitions)
+public sealed class ProcessInvocationResolver(ProcessDefinitionRegistry definitions, ISagaClock? clock = null)
 {
     public ProcessInvocationRequest Create<TPayload>(SagaInstance instance, string target, TPayload payload)
     {
@@ -33,8 +34,9 @@ public sealed class ProcessInvocationResolver(ProcessDefinitionRegistry definiti
                 throw new InvalidOperationException("One invocation per executable step; repeated target and payload must match.");
             return existing;
         }
-        return step.Invocation = new(new(Guid.NewGuid().ToString("N"), instance.CorrelationId,
-            new(sourceId.Domain, sourceId.Name, sourceId.Version), instance.Id, instance.CurrentStep!, targetId), json);
+        var identity = new ProcessInvocationIdentity(Guid.NewGuid().ToString("N"), instance.CorrelationId,
+            new(sourceId.Domain, sourceId.Name, sourceId.Version), instance.Id, instance.CurrentStep!, targetId);
+        return step.Invocation = new(identity, json, new(identity, Guid.NewGuid().ToString("N"), clock?.UtcNow ?? DateTimeOffset.UtcNow));
     }
 
     public static ProcessIdentity ResolveTarget(SagaDefinition source, string target)

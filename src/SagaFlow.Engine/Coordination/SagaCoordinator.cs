@@ -18,12 +18,8 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
     {
         if (invocationContext?.InstanceId is not { } id || invocationContext.StepId is not { } step)
             throw new InvalidOperationException("InvokeAsync requires an active Domain Starter local step handler scope.");
-        var request = await store.UpdateAsync(id, instance =>
-        {
-            if (instance.CurrentStep != step) throw new InvalidOperationException("Execution context is stale.");
-            return new ProcessInvocationResolver(definitions).Create(instance, target, payload);
-        }, cancellationToken);
-        return new(request.Identity.InvocationId, request.Identity.Target, ExternalProcessStatus.Prepared);
+        return await new ProcessInvocationManager(store, definitions, clock)
+            .PrepareAsync(id, step, target, payload, cancellationToken);
     }
 
     public async Task<Guid> StartAsync<TPayload>(TPayload payload, CancellationToken cancellationToken = default)
