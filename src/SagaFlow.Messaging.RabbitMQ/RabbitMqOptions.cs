@@ -4,6 +4,8 @@ namespace SagaFlow.Messaging.RabbitMQ;
 
 public sealed class RabbitMqOptions
 {
+    /// <summary>Enable separate domain invocation request/outcome queues. Default keeps existing participant transport unchanged.</summary>
+    public bool EnableProcessInvocations { get; set; }
     public string HostName { get; set; } = "localhost";
     public int Port { get; set; } = AmqpTcpEndpoint.UseDefaultPort;
     public string UserName { get; set; } = ConnectionFactory.DefaultUser;

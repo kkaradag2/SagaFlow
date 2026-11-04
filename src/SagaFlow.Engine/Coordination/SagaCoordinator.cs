@@ -33,6 +33,7 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
         await store.SaveAsync(instance, cancellationToken);
         if (changes is not null) await changes.PublishAsync(instance.Id);
         try { await executor.ExecuteAsync(instance.Id, cancellationToken); }
+        catch (SagaFlow.Engine.Messaging.ProcessInvocationPublishException) { throw; }
         catch (SagaDispatchException) { throw; }
         catch (Exception error)
         {

@@ -4,6 +4,7 @@ namespace SagaFlow.Core.State;
 
 public sealed class SagaInstance
 {
+    public SagaFlow.Core.Messages.ProcessInvocationTerminalOutcome? InvocationTerminalOutcome { get; set; }
     public IncomingInvocation? IncomingInvocation { get; set; }
     public string Id { get; init; } = Guid.NewGuid().ToString("N");
 

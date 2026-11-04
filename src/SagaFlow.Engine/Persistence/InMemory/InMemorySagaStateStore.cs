@@ -20,6 +20,45 @@ public sealed class InMemorySagaStateStore : ISagaStateStore
     private readonly object _incomingGate = new();
     private readonly Dictionary<Guid, string> _incoming = [];
     private bool _claiming;
+    private readonly Dictionary<Guid, IncomingInvocationDecision> _decisions = [];
+
+    public ValueTask<IncomingInvocationDecision?> FindIncomingDecisionAsync(string invocationId, CancellationToken cancellationToken = default)
+    {
+        lock (_incomingGate)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(_decisions.GetValueOrDefault(Guid.Parse(invocationId)));
+        }
+    }
+
+    public ValueTask<IncomingInvocationDecision> RecordIncomingDecisionAsync(IncomingInvocationDecision decision, CancellationToken cancellationToken = default)
+    {
+        decision.Reply.ValidateAgainst(decision.Request.Identity);
+        lock (_incomingGate)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var key = Guid.Parse(decision.Request.Identity.InvocationId);
+            if (_decisions.TryGetValue(key, out var existing))
+            {
+                ValidateSameRequest(existing.Request, decision.Request);
+                return ValueTask.FromResult(existing);
+            }
+            if (_incoming.TryGetValue(key, out var target))
+            {
+                var state = _instances[target].State.IncomingInvocation!;
+                if (state.Identity != decision.Request.Identity || state.Payload?.GetRawText() != decision.Request.Payload.GetRawText()
+                    || decision.RejectionReason is not null) throw new InvalidOperationException("Admission conflicts with an existing target.");
+            }
+            _decisions.Add(key, decision);
+            return ValueTask.FromResult(decision);
+        }
+    }
+
+    private static void ValidateSameRequest(ProcessInvocationRequest expected, ProcessInvocationRequest actual)
+    {
+        if (expected.Identity != actual.Identity || expected.Payload.GetRawText() != actual.Payload.GetRawText())
+            throw new InvalidOperationException("Invocation identity/payload conflict.");
+    }
 
     public ValueTask<SagaInstance> GetOrCreateIncomingAsync(ProcessInvocationRequest request, Func<SagaInstance> create,
         DateTimeOffset acceptedAt, CancellationToken cancellationToken = default) => ClaimIncoming(request, create, null, acceptedAt, cancellationToken);
@@ -41,6 +80,11 @@ public sealed class InMemorySagaStateStore : ISagaStateStore
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var key = Guid.Parse(request.Identity.InvocationId);
+                if (_decisions.TryGetValue(key, out var decision))
+                {
+                    ValidateSameRequest(decision.Request, request);
+                    if (decision.RejectionReason is not null) throw new InvalidOperationException("Invocation was rejected.");
+                }
                 if (_incoming.TryGetValue(key, out var claimed))
                 {
                     if (targetId is not null && targetId != claimed) throw new InvalidOperationException("Invocation already belongs to another target Saga.");

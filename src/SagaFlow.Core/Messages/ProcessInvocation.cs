@@ -70,7 +70,7 @@ public sealed record ProcessInvocationReceipt(string InvocationId, ProcessIdenti
     public ExternalProcessStatus Status { get; } = Status is ExternalProcessStatus.Prepared or ExternalProcessStatus.Requested ? Status : throw new ArgumentException("Receipt must describe local registration/request only.");
 }
 public sealed record CrossDomainInstanceRelationship(ProcessInvocationIdentity Identity, string? TargetSagaInstanceId,
-    ExternalProcessStatus LastKnownStatus, DateTimeOffset UpdatedAt, DateTimeOffset? CreatedAt = null, DateTimeOffset? LastObservedAt = null)
+    ExternalProcessStatus LastKnownStatus, DateTimeOffset UpdatedAt, DateTimeOffset? CreatedAt = null, DateTimeOffset? LastObservedAt = null, SagaFlow.Core.State.InvocationReconciliation? Reconciliation = null)
 {
     public ProcessInvocationIdentity Identity { get; } = Identity ?? throw new ArgumentNullException(nameof(Identity));
     public string? TargetSagaInstanceId { get; } = LastKnownStatus is ExternalProcessStatus.Prepared or ExternalProcessStatus.Requested or ExternalProcessStatus.Rejected

@@ -31,4 +31,11 @@ public interface ISagaStateStore
     ValueTask<SagaInstance> AttachIncomingAsync(string targetInstanceId, ProcessInvocationRequest request,
         DateTimeOffset acceptedAt, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("Store does not support atomic incoming invocation claims.");
+
+    ValueTask<IncomingInvocationDecision?> FindIncomingDecisionAsync(string invocationId, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Store does not support incoming admission decisions.");
+
+    /// <summary>First decision wins atomically; duplicate request identity/payload must match, otherwise conflict.</summary>
+    ValueTask<IncomingInvocationDecision> RecordIncomingDecisionAsync(IncomingInvocationDecision decision, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Store does not support incoming admission decisions.");
 }

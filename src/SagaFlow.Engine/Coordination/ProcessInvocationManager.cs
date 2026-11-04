@@ -33,18 +33,37 @@ public sealed class ProcessInvocationManager(ISagaStateStore store, ProcessDefin
 
     /// <summary>Explicit observation/application call for future messaging adapters. Identity must match the stored request exactly.</summary>
     public ValueTask<CrossDomainInstanceRelationship> ObserveAsync(ProcessInvocationIdentity identity, ExternalProcessStatus status,
-        string? targetSagaInstanceId = null, CancellationToken cancellationToken = default) =>
+        string? targetSagaInstanceId = null, CancellationToken cancellationToken = default,
+        InvocationMessage? message = null, string? fingerprint = null) =>
         store.UpdateAsync(identity.SourceSagaInstanceId, instance =>
         {
             EnsureOwner(instance, identity.Source);
             var step = FindStep(instance, identity.InvocationId);
             if (step.Invocation!.Identity != identity) throw new InvalidOperationException("Invocation source/target/correlation mismatch.");
+            if (message is not null)
+            {
+                message.ValidateAgainst(identity);
+                if (string.IsNullOrWhiteSpace(fingerprint)) throw new ArgumentException("Outcome fingerprint is required.");
+                var priorMessage = step.ObservedMessages.SingleOrDefault(m => m.MessageId == message.MessageId);
+                if (priorMessage is not null)
+                {
+                    if (priorMessage.Fingerprint != fingerprint) throw new InvalidOperationException("Same MessageId was reused for conflicting outcome content.");
+                    return Snapshot(step);
+                }
+            }
             var progress = step.InvocationProgress ?? throw new InvalidOperationException("Invocation has not been registered.");
             if (!Enum.IsDefined(status)) throw new ArgumentException("Unknown external status.", nameof(status));
             if (targetSagaInstanceId is not null && string.IsNullOrWhiteSpace(targetSagaInstanceId)) throw new ArgumentException("Invalid target Saga ID.");
             if (progress.TargetSagaInstanceId is not null && targetSagaInstanceId is not null && progress.TargetSagaInstanceId != targetSagaInstanceId)
                 throw new InvalidOperationException("Target Saga identity cannot change.");
             var targetId = progress.TargetSagaInstanceId ?? targetSagaInstanceId;
+            var lateAcceptance = status == ExternalProcessStatus.Accepted && targetSagaInstanceId == progress.TargetSagaInstanceId
+                && progress.Status is ExternalProcessStatus.Running or ExternalProcessStatus.Completed or ExternalProcessStatus.Failed or ExternalProcessStatus.Compensated;
+            if (lateAcceptance)
+            {
+                if (message is not null) step.ObservedMessages = Array.AsReadOnly(step.ObservedMessages.Append(new InvocationObservedMessage(message.MessageId, fingerprint!)).ToArray());
+                return Snapshot(step);
+            }
             if (status is ExternalProcessStatus.Accepted or ExternalProcessStatus.Running or ExternalProcessStatus.Completed or ExternalProcessStatus.Failed or ExternalProcessStatus.Compensated)
             {
                 if (targetId is null) throw new InvalidOperationException("Accepted/running/terminal observations require a target Saga ID.");
@@ -57,6 +76,7 @@ public sealed class ProcessInvocationManager(ISagaStateStore store, ProcessDefin
                 throw new InvalidOperationException("Observation clock moved backwards.");
             step.InvocationProgress = new(status, targetId, progress.CreatedAt,
                 status == progress.Status ? progress.UpdatedAt : now, now);
+            if (message is not null) step.ObservedMessages = Array.AsReadOnly(step.ObservedMessages.Append(new InvocationObservedMessage(message.MessageId, fingerprint!)).ToArray());
             instance.UpdatedAt = now;
             return Snapshot(step);
         }, cancellationToken);
@@ -115,7 +135,7 @@ public sealed class ProcessInvocationManager(ISagaStateStore store, ProcessDefin
     private static CrossDomainInstanceRelationship Snapshot(SagaStepState step)
     {
         var progress = step.InvocationProgress ?? throw new InvalidOperationException("Invocation progress is unavailable.");
-        return new(step.Invocation!.Identity, progress.TargetSagaInstanceId, progress.Status, progress.UpdatedAt, progress.CreatedAt, progress.LastObservedAt);
+        return new(step.Invocation!.Identity, progress.TargetSagaInstanceId, progress.Status, progress.UpdatedAt, progress.CreatedAt, progress.LastObservedAt, step.Reconciliation);
     }
     private static bool CanTransition(ExternalProcessStatus from, ExternalProcessStatus to) => (from, to) switch
     {
