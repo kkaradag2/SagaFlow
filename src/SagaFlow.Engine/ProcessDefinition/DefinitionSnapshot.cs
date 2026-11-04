@@ -19,7 +19,6 @@ internal static class DefinitionSnapshot
                     { Path = t.Condition.Path, Operator = t.Condition.Operator, Value = t.Condition.Value.Clone() }
                 }).ToArray())
         }).ToArray()),
-        BigPicture = Array.AsReadOnly(includeBigPicture ? d.BigPicture.Select(s => new BigPictureSourceDefinition
-            { Domain = s.Domain, Process = s.Process, Version = s.Version, Endpoint = s.Endpoint }).ToArray() : [])
+        BigPicture = Array.AsReadOnly(includeBigPicture ? d.BigPicture.Select(s => s.Snapshot()).ToArray() : [])
     };
 }

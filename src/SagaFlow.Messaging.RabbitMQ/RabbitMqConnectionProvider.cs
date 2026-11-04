@@ -1,4 +1,6 @@
 using RabbitMQ.Client;
+using RabbitMQ.Client.Exceptions;
+using System.Runtime.ExceptionServices;
 
 namespace SagaFlow.Messaging.RabbitMQ;
 
@@ -65,8 +67,16 @@ internal sealed class RabbitMqConnectionProvider : IAsyncDisposable
 
         if (OwnsConnection && _connection is not null)
         {
-            if (_connection.IsOpen) await _connection.CloseAsync(CancellationToken.None);
-            await _connection.DisposeAsync();
+            Exception? failure = null;
+            try { if (_connection.IsOpen) await _connection.CloseAsync(CancellationToken.None); }
+            catch (Exception error) when (error is AlreadyClosedException or ObjectDisposedException) { }
+            catch (Exception error) { failure = error; }
+            try { await _connection.DisposeAsync(); }
+            catch (Exception error) when (error is AlreadyClosedException or ObjectDisposedException) { }
+            catch (Exception error) { failure ??= error; }
+            _gate.Dispose();
+            if (failure is not null) ExceptionDispatchInfo.Capture(failure).Throw();
+            return;
         }
 
         _gate.Dispose();

@@ -2,6 +2,7 @@ bin/
 obj/
 node_modules/
 dist/
+.artifacts/
 *.tsbuildinfo
 .vs/
 .vscode/

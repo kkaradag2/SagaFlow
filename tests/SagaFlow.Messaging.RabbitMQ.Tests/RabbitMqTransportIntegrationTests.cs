@@ -18,6 +18,43 @@ namespace SagaFlow.Messaging.RabbitMQ.Tests;
 public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture broker)
 {
     [RabbitMqFact]
+    public async Task ShutdownAfterConsumerChannelClosedIsIdempotent()
+    {
+        await using var runtime = await StartExternalAsync();
+        var transport = runtime.Host.Services.GetRequiredService<RabbitMqTransport>();
+        var channel = Assert.IsAssignableFrom<IChannel>(transport.ConsumerChannel);
+        await channel.CloseAsync(CancellationToken.None);
+
+        await transport.StopAsync(CancellationToken.None);
+        await transport.StopAsync(CancellationToken.None);
+        Assert.Null(transport.ConsumerChannel);
+        Assert.Null(transport.PublisherChannel);
+    }
+
+    [RabbitMqFact]
+    public async Task ConcurrentShutdownClosesChannelsOnce()
+    {
+        await using var runtime = await StartExternalAsync();
+        var transport = runtime.Host.Services.GetRequiredService<RabbitMqTransport>();
+        await Task.WhenAll(Enumerable.Range(0, 8)
+            .Select(_ => transport.StopAsync(CancellationToken.None)));
+        Assert.Null(transport.ConsumerChannel);
+        Assert.Null(transport.PublisherChannel);
+    }
+
+    [RabbitMqFact]
+    public async Task NormalShutdownStopsConsumerAndClosesChannels()
+    {
+        await using var runtime = await StartExternalAsync();
+        var transport = runtime.Host.Services.GetRequiredService<RabbitMqTransport>();
+        var consumer = Assert.IsAssignableFrom<IChannel>(transport.ConsumerChannel);
+        var publisher = Assert.IsAssignableFrom<IChannel>(transport.PublisherChannel);
+        await transport.StopAsync(CancellationToken.None);
+        Assert.False(consumer.IsOpen);
+        Assert.False(publisher.IsOpen);
+    }
+
+    [RabbitMqFact]
     public async Task ParameterlessRegistrationUsesHostConnectionAndExistingTopology()
     {
         var queue = $"sagaflow.tests.parameterless.{Guid.NewGuid():N}";
@@ -715,6 +752,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
             options.Port = broker.Port;
             options.UserName = broker.UserName;
             options.Password = broker.Password;
+            options.VirtualHost = broker.VirtualHost;
             options.ClientProvidedName = $"sagaflow-managed-test-{Guid.NewGuid():N}";
             ConfigureTopology(options, topology);
         });

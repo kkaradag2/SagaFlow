@@ -55,6 +55,9 @@ builder.Services.AddSagaFlow(options =>
     options.Publication.Enabled = publishDefinitions;
     options.Publication.IncludeBigPictureSources = builder.Configuration.GetValue<bool>("SagaFlow:PublishBigPictureSources");
     options.Publication.PublishedDefinitions.Add(new("order", publishedProcess, "1.0"));
+    foreach (var endpoint in builder.Configuration.GetSection("SagaFlow:Discovery:AllowedEndpoints").Get<string[]>() ?? [])
+        options.Discovery.AllowedEndpoints.Add(endpoint);
+    options.Discovery.AllowInsecureHttp = builder.Configuration.GetValue<bool>("SagaFlow:Discovery:AllowInsecureHttp");
     // CreateAsync persists this Order before StartAsync. The Saga payload is its creation result;
     // local operation timing and the original CreateOrderRequest are not recorded.
     options.Dashboard.DescribeDomainStarter = instance =>

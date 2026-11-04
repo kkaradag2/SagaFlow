@@ -23,11 +23,70 @@ namespace SagaFlow.Hosting.Tests;
 public sealed class DefinitionDiscoveryIntegrationTests
 {
     [Fact]
+    public async Task DashboardGraphMapsDeclaredRelationshipFromRealGrpcWithoutStartingSagas()
+    {
+        await using var remote = await DomainHost.Start("return", "return-process");
+        await using var local = await DomainHost.Start("order", "order-process", references:
+            [new() { Domain = "return", Process = "return-process", Version = "1.0",
+                Endpoint = remote.Endpoint, Relationship = "related" }], publishTopology: true);
+        using var client = new HttpClient { DefaultRequestVersion = HttpVersion.Version20,
+            DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact };
+        var response = await client.GetAsync($"{local.Endpoint}/sagaflow/api/definition-graph?domain=order&process=order-process&version=1.0");
+        response.EnsureSuccessStatusCode();
+        using var json = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = json.RootElement;
+        Assert.Equal(2, root.GetProperty("nodes").GetArrayLength());
+        Assert.Contains(root.GetProperty("nodes").EnumerateArray(), node =>
+            node.GetProperty("domain").GetString() == "order" && node.GetProperty("origin").GetString() == "Local");
+        Assert.Contains(root.GetProperty("nodes").EnumerateArray(), node =>
+            node.GetProperty("domain").GetString() == "return" && node.GetProperty("origin").GetString() == "Remote");
+        var remoteNode = root.GetProperty("nodes").EnumerateArray().Single(node =>
+            node.GetProperty("domain").GetString() == "return");
+        Assert.Equal("return-process", remoteNode.GetProperty("definition").GetProperty("name").GetString());
+        Assert.Equal("1.0", remoteNode.GetProperty("definition").GetProperty("version").GetString());
+        Assert.True(remoteNode.GetProperty("definition").GetProperty("steps").GetArrayLength() > 0);
+        Assert.False(remoteNode.GetProperty("definition").TryGetProperty("endpoint", out _));
+        Assert.Equal("related", root.GetProperty("edges")[0].GetProperty("relationship").GetString());
+        Assert.Empty(root.GetProperty("failures").EnumerateArray());
+        Assert.DoesNotContain(remote.Endpoint, await response.Content.ReadAsStringAsync());
+        Assert.Empty(await local.App.Services.GetRequiredService<ISagaStateStore>().ListAsync());
+        Assert.Empty(await remote.App.Services.GetRequiredService<ISagaStateStore>().ListAsync());
+    }
+
+    [Fact]
+    public async Task DiscoveryAndDashboardPreserveRequestedVersionOnFailures()
+    {
+        var references = new[] { "1.0", "2.0" }.Select(version => new BigPictureSourceDefinition
+        {
+            Domain = "return", Process = "return-process", Version = version,
+            Endpoint = "http://127.0.0.1:1", Relationship = "related"
+        }).ToArray();
+        var options = new DefinitionDiscoveryOptions { AllowInsecureHttp = true };
+        options.AllowedEndpoints.Add("http://127.0.0.1:1");
+        var discovery = new DefinitionDiscovery(new VersionFailureClient(), options);
+        var result = await discovery.DiscoverAsync(Definition("order", "order-process", references));
+        Assert.Equal(new[] { "1.0", "2.0" }, result.Failures.Select(failure => failure.RequestedVersion));
+        Assert.Equal(new[] { DiscoveryFailureKind.NotFound, DiscoveryFailureKind.Unavailable },
+            result.Failures.Select(failure => failure.Kind));
+
+        await using var host = await DomainHost.Start("order", "order-process", references: references, publishTopology: true);
+        using var client = new HttpClient { DefaultRequestVersion = HttpVersion.Version20,
+            DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact };
+        var json = await client.GetStringAsync($"{host.Endpoint}/sagaflow/api/definition-graph?domain=order&process=order-process&version=1.0");
+        using var document = System.Text.Json.JsonDocument.Parse(json);
+        Assert.Equal(new[] { "1.0", "2.0" }, document.RootElement.GetProperty("failures").EnumerateArray()
+            .Select(failure => failure.GetProperty("requestedVersion").GetString()));
+        Assert.DoesNotContain("127.0.0.1:1", json);
+    }
+
+    [Fact]
     public async Task ThreeDomainsLoadTheirYamlAndDiscoverDefinitionGraphOverRealGrpc()
     {
         await using var b = await DomainHost.Start("payment", "payment-process");
         await using var c = await DomainHost.Start("fulfillment", "fulfillment-process");
-        await using var a = await DomainHost.Start("order", "order-process", references: [Source(b, "payment", "payment-process"), Source(c, "fulfillment", "fulfillment-process")]);
+        await using var a = await DomainHost.Start("order", "order-process", references:
+            [new() { Domain = "payment", Process = "payment-process", Version = "1.0", Endpoint = b.Endpoint, Relationship = "related" },
+                Source(c, "fulfillment", "fulfillment-process")]);
         // No coordinator can be resolved in these fixtures; discovery still works through HTTP/2.
         Assert.Null(a.App.Services.GetService<SagaCoordinator>());
         var registry = a.App.Services.GetRequiredService<ProcessDefinitionRegistry>();
@@ -37,6 +96,8 @@ public sealed class DefinitionDiscoveryIntegrationTests
         Assert.Equal(3, graph.Nodes.Count);
         Assert.Equal(2, graph.Edges.Count);
         Assert.All(graph.Edges, edge => Assert.NotNull(edge.Target));
+        Assert.Equal("related", graph.Edges.Single(edge => edge.TargetDomain == "payment").Relationship);
+        Assert.Null(graph.Edges.Single(edge => edge.TargetDomain == "fulfillment").Relationship);
         Assert.Equal(2, graph.Nodes.Count(n => n.Origin == DefinitionOrigin.Remote));
         Assert.All(graph.Nodes, node =>
         {
@@ -50,7 +111,7 @@ public sealed class DefinitionDiscoveryIntegrationTests
     [Fact]
     public async Task PublicationListsOnlyAllowedLocalDefinitionsAndRedactsTopologyByDefault()
     {
-        await using var host = await DomainHost.Start("payment", "payment-process", references: [new() { Domain = "private", Process = "private-process", Endpoint = "https://private-internal:7001" }]);
+        await using var host = await DomainHost.Start("payment", "payment-process", references: [new() { Domain = "private", Process = "private-process", Endpoint = "https://private-internal:7001", Relationship = "related" }]);
         var registry = host.App.Services.GetRequiredService<ProcessDefinitionRegistry>();
         registry.RegisterRemote(Definition("remote", "remote-process"), "https://remote");
         registry.RegisterLocalBatch([Definition("payment", "private-process")]);
@@ -64,9 +125,63 @@ public sealed class DefinitionDiscoveryIntegrationTests
         var published = new DefinitionYamlCodec().Parse(response.CanonicalYaml);
         Assert.Equal("work", published.Steps[0].Name);
         Assert.DoesNotContain("private-internal", response.CanonicalYaml);
+        Assert.DoesNotContain("relationship:", response.CanonicalYaml);
+        using var dashboardClient = new HttpClient { DefaultRequestVersion = HttpVersion.Version20,
+            DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact };
+        var definitionsJson = await dashboardClient.GetStringAsync($"{host.Endpoint}/sagaflow/api/definitions");
+        Assert.DoesNotContain("private-internal", definitionsJson);
+        Assert.Contains("related", definitionsJson);
+        var graphJson = await dashboardClient.GetStringAsync($"{host.Endpoint}/sagaflow/api/definition-graph?domain=payment&process=payment-process&version=1.0");
+        Assert.DoesNotContain("private-internal", graphJson);
+        Assert.Contains("related", graphJson);
         Assert.DoesNotContain(host.Directory, response.CanonicalYaml);
         var ex = await Assert.ThrowsAsync<RpcException>(async () => await client.GetDefinitionAsync(new() { Domain = "payment", Process = "private-process" }));
         Assert.Equal(StatusCode.NotFound, ex.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task LocalDashboardTopologyIsIndependentOfRemotePublication(bool publish, bool includeTopology)
+    {
+        const string secret = "https://private-topology:7001";
+        await using var host = await DomainHost.Start("order", "order-process", publish: publish,
+            publishTopology: includeTopology, references:
+            [new() { Domain = "private", Process = "private-process", Endpoint = secret, Relationship = "related" }]);
+        using var client = new HttpClient { DefaultRequestVersion = HttpVersion.Version20,
+            DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact };
+        var graphUrl = $"{host.Endpoint}/sagaflow/api/definition-graph?domain=order&process=order-process&version=1.0";
+        var definitions = await client.GetStringAsync($"{host.Endpoint}/sagaflow/api/definitions");
+        var graph = await client.GetStringAsync(graphUrl);
+        Assert.Contains("related", definitions);
+        Assert.Contains("related", graph);
+        Assert.DoesNotContain(secret, definitions);
+        Assert.DoesNotContain(secret, graph);
+        if (publish)
+        {
+            using var channel = GrpcChannel.ForAddress(host.Endpoint);
+            var remote = new ProcessDefinitions.ProcessDefinitionsClient(channel);
+            var yaml = (await remote.GetDefinitionAsync(new() { Domain = "order", Process = "order-process", Version = "1.0" })).CanonicalYaml;
+            Assert.Equal(includeTopology, yaml.Contains("related", StringComparison.Ordinal));
+        }
+    }
+
+    [Fact]
+    public async Task ExplicitDashboardEndpointMappingAlsoShowsLocalTopologyWithoutLogin()
+    {
+        await using var host = await DomainHost.Start("order", "order-process", publishTopology: true,
+            mapDashboardEndpoints: true, references:
+            [new() { Domain = "private", Process = "private-process", Endpoint = "https://private-topology:7001", Relationship = "related" }]);
+        using var client = new HttpClient { DefaultRequestVersion = HttpVersion.Version20,
+            DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact };
+        var url = $"{host.Endpoint}/sagaflow/api/definition-graph?domain=order&process=order-process&version=1.0";
+        var definitionsUrl = $"{host.Endpoint}/sagaflow/api/definitions";
+        Assert.Contains("related", await client.GetStringAsync(url));
+        Assert.Contains("related", await client.GetStringAsync(definitionsUrl));
+        Assert.DoesNotContain("private-topology", await client.GetStringAsync(url));
+        Assert.DoesNotContain("private-topology", await client.GetStringAsync(definitionsUrl));
     }
 
     [Fact]
@@ -260,7 +375,7 @@ public sealed class DefinitionDiscoveryIntegrationTests
         public string Directory { get; } = directory;
         public string Endpoint => Address(App);
 
-        public static async Task<DomainHost> Start(string domain, string process, BigPictureSourceDefinition[]? references = null, bool publish = true, bool publishTopology = false, string[]? versions = null)
+        public static async Task<DomainHost> Start(string domain, string process, BigPictureSourceDefinition[]? references = null, bool publish = true, bool publishTopology = false, string[]? versions = null, bool mapDashboardEndpoints = false)
         {
             var directory = System.IO.Directory.CreateTempSubdirectory("sagaflow-grpc-").FullName;
             var builder = Builder();
@@ -272,6 +387,7 @@ public sealed class DefinitionDiscoveryIntegrationTests
                 options.LoadFromDirectory(directory);
                 options.Publication.Enabled = publish;
                 options.Publication.IncludeBigPictureSources = publishTopology;
+                if (mapDashboardEndpoints) options.Dashboard.Enabled = false;
                 foreach (var version in versions) options.Publication.PublishedDefinitions.Add(new(domain, process, version));
                 options.Discovery.AllowInsecureHttp = true;
                 foreach (var source in references ?? []) options.Discovery.AllowedEndpoints.Add(source.Endpoint);
@@ -281,6 +397,7 @@ public sealed class DefinitionDiscoveryIntegrationTests
             builder.Services.RemoveAll<SagaFlow.Engine.Messaging.OutcomeEventReceiver>();
             var app = builder.Build();
             if (publish) app.MapSagaFlowDefinitionDiscovery();
+            if (mapDashboardEndpoints) app.MapSagaFlowDashboard();
             await app.StartAsync();
             return new(app, directory);
         }
@@ -306,6 +423,14 @@ public sealed class DefinitionDiscoveryIntegrationTests
             return new(app);
         }
         public ValueTask DisposeAsync() => app.DisposeAsync();
+    }
+
+    private sealed class VersionFailureClient : IRemoteDefinitionClient
+    {
+        public Task<RemoteDefinitionEnvelope> GetAsync(Uri endpoint, BigPictureSourceDefinition source,
+            TimeSpan timeout, CancellationToken cancellationToken) =>
+            throw new RemoteDefinitionException(source.Version == "1.0" ? DiscoveryFailureKind.NotFound : DiscoveryFailureKind.Unavailable,
+                $"Version {source.Version} failed.");
     }
 
     public sealed record StubMode(string Mode);

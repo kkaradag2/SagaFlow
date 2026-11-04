@@ -7,6 +7,16 @@
         "ASPNETCORE_ENVIRONMENT": "Development"
       },
       "applicationUrl": "https://localhost:50823;http://localhost:50824"
+    },
+    "SagaFlow.Order.Discovery": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "SagaFlow__PublishDefinitions": "true",
+        "SagaFlow__PublishBigPictureSources": "true"
+      },
+      "applicationUrl": "https://localhost:50823;http://localhost:50824"
     }
   }
 }

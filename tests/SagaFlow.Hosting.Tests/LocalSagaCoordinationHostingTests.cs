@@ -194,7 +194,7 @@ public sealed class LocalSagaCoordinationHostingTests
     }
 
     [Fact]
-    public async Task DashboardDefinitionsPreserveExactComparisonLiteralsAndDeclaredReferences()
+    public async Task DashboardDefinitionsPreserveExactComparisonLiteralsAndRedactUnpublishedReferences()
     {
         const string yaml = """
             name: return-flow
@@ -229,7 +229,8 @@ public sealed class LocalSagaCoordinationHostingTests
         Assert.Equal("9007199254740993", step.GetProperty("transitions")[0].GetProperty("condition").GetProperty("value").GetRawText());
         Assert.Equal(JsonValueKind.Null, step.GetProperty("timeoutLimit").ValueKind);
         Assert.Equal(1, step.GetProperty("maxAttempts").GetInt32());
-        Assert.Equal("reconciliation", Assert.Single(definition.GetProperty("bigPicture").EnumerateArray()).GetProperty("process").GetString());
+        Assert.Single(definition.GetProperty("bigPicture").EnumerateArray());
+        Assert.DoesNotContain("accounts.example", definitions.RootElement.GetRawText());
     }
 
     [Fact]
@@ -255,6 +256,23 @@ public sealed class LocalSagaCoordinationHostingTests
         context.Response.Body.Position = 0;
         using var instances = await JsonDocument.ParseAsync(context.Response.Body);
         Assert.Empty(instances.RootElement.EnumerateArray());
+    }
+
+    [Theory]
+    [InlineData("/sagaflow")]
+    [InlineData("/operations")]
+    public async Task DeepWorkflowUrlLoadsAssetsFromConfiguredDashboardRoot(string dashboardPath)
+    {
+        await using var host = await RuntimeHost.Start(registerTransport: false, dashboardPath: dashboardPath);
+        var address = host.App.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+        using var client = new HttpClient { BaseAddress = new Uri(address) };
+        var html = await client.GetStringAsync($"{dashboardPath}/bigpicture/workflow/order/order-process/1.0");
+        Assert.Contains($"<base href=\"{dashboardPath}/\">", html);
+        Assert.True(html.IndexOf("<base ", StringComparison.Ordinal) < html.IndexOf("<script ", StringComparison.Ordinal));
+        var asset = System.Text.RegularExpressions.Regex.Match(html, "src=\"\\./assets/([^\"]+)\"");
+        Assert.True(asset.Success);
+        using var response = await client.GetAsync($"{dashboardPath}/assets/{asset.Groups[1].Value}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
     [Theory]

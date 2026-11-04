@@ -26,6 +26,7 @@ public sealed class ReturnRabbitMqEndToEndTests
     [SampleRabbitMqFact]
     public async Task AcceptedAndRejectedReturnsRunThroughIndependentParticipants()
     {
+        SampleRabbitMqTestIsolation.RequireVirtualHost();
         await using var returns = new WebApplicationFactory<ReturnProgram>();
         await using var warehouse = new WebApplicationFactory<WarehouseProgram>();
         using var returnClient = returns.CreateClient();
@@ -91,6 +92,7 @@ public sealed class ReturnRabbitMqEndToEndTests
     [SampleRabbitMqFact]
     public async Task RestockFailureAfterRefundRequiresManualReview()
     {
+        SampleRabbitMqTestIsolation.RequireVirtualHost();
         await using var returns = new WebApplicationFactory<ReturnProgram>();
         await using var warehouse = new WebApplicationFactory<WarehouseProgram>();
         using var returnClient = returns.CreateClient();
@@ -117,6 +119,7 @@ public sealed class ReturnRabbitMqEndToEndTests
     [SampleRabbitMqFact]
     public async Task TechnicalFailuresDoNotPretendToReverseRefund()
     {
+        SampleRabbitMqTestIsolation.RequireVirtualHost();
         await using var returns = new WebApplicationFactory<ReturnProgram>();
         await using var warehouse = new WebApplicationFactory<WarehouseProgram>();
         using var returnClient = returns.CreateClient();
@@ -148,6 +151,7 @@ public sealed class ReturnRabbitMqEndToEndTests
     [SampleRabbitMqFact]
     public async Task OrderAndReturnShareParticipantsWithoutSharingSagaState()
     {
+        SampleRabbitMqTestIsolation.RequireVirtualHost();
         await using var orders = new WebApplicationFactory<global::Program>();
         await using var returns = new WebApplicationFactory<ReturnProgram>();
         await using var warehouse = new WebApplicationFactory<WarehouseProgram>();
@@ -225,7 +229,10 @@ public sealed class ReturnRabbitMqEndToEndTests
         var root = FindRoot();
         var project = Path.Combine(root, "samples", "Participants", name);
         var config = new DirectoryInfo(AppContext.BaseDirectory).Parent?.Name ?? "Debug";
-        var info = new ProcessStartInfo("dotnet", Path.Combine(project, "bin", config, "net10.0", name + ".dll")) {
+        var isolated = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", name,
+            new DirectoryInfo(AppContext.BaseDirectory).Name, name + ".dll"));
+        var assembly = File.Exists(isolated) ? isolated : Path.Combine(project, "bin", config, "net10.0", name + ".dll");
+        var info = new ProcessStartInfo("dotnet", assembly) {
             WorkingDirectory = project, UseShellExecute = false,
             RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
         return Process.Start(info) ?? throw new InvalidOperationException($"Could not start {name}.");
@@ -240,10 +247,13 @@ public sealed class ReturnRabbitMqEndToEndTests
 
     private static async Task<IConnection> ConnectAsync()
     {
+        var vhost = SampleRabbitMqTestIsolation.RequireVirtualHost();
         var factory = new ConnectionFactory {
             HostName = Environment.GetEnvironmentVariable("RabbitMq__HostName") ?? "localhost",
+            Port = int.TryParse(Environment.GetEnvironmentVariable("RabbitMq__Port"), out var port) ? port : 5672,
             UserName = Environment.GetEnvironmentVariable("RabbitMq__UserName") ?? "sagaflow",
-            Password = Environment.GetEnvironmentVariable("RabbitMq__Password") ?? "sagaflow-dev" };
+            Password = Environment.GetEnvironmentVariable("RabbitMq__Password") ?? "sagaflow-dev",
+            VirtualHost = vhost };
         return await factory.CreateConnectionAsync();
     }
 

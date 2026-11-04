@@ -24,6 +24,7 @@
     <ProjectReference Include="..\..\src\SagaFlow.Engine\SagaFlow.Engine.csproj" />
     <ProjectReference Include="..\..\src\SagaFlow.Core\SagaFlow.Core.csproj" />
     <ProjectReference Include="..\..\samples\OrderProcess\SagaFlow.Order\SagaFlow.Order.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\samples\ReturnProcess\SagaFlow.Return\SagaFlow.Return.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <Target Name="CopyDiscoveryProcessFixture" AfterTargets="Build">

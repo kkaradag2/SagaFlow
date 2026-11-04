@@ -20,7 +20,7 @@ public sealed class CrossProcessDefinitionDiscoveryTests
             {
                 Domain = "order", Name = "order-process", Version = "1.0",
                 Steps = [new() { Name = "payment", Command = "AuthorizePayment", Transitions = [new() { Event = "success", NextStep = "completed" }] }],
-                BigPicture = [new() { Domain = "fulfillment", Process = "fulfillment-process", Version = "1.0", Endpoint = catalog.Endpoint }]
+                BigPicture = [new() { Domain = "fulfillment", Process = "fulfillment-process", Version = "1.0", Endpoint = catalog.Endpoint, Relationship = "related" }]
             };
             await File.WriteAllTextAsync(Path.Combine(directory, "purchase.yaml"), new DefinitionYamlCodec().Serialize(published));
             await using var publisher = await PublisherProcess.StartAsync(directory);
@@ -37,6 +37,7 @@ public sealed class CrossProcessDefinitionDiscoveryTests
             var relationship = Assert.Single(retrieved.BigPicture);
             Assert.Equal(("fulfillment", "fulfillment-process", "1.0", catalog.Endpoint),
                 (relationship.Domain, relationship.Process, relationship.Version, relationship.Endpoint));
+            Assert.Equal("related", relationship.Relationship);
 
             var root = new SagaDefinition
             {
@@ -54,7 +55,8 @@ public sealed class CrossProcessDefinitionDiscoveryTests
             Assert.Equal(2, graph.Edges.Count);
             Assert.Contains(graph.Nodes, n => n.Id == new ProcessDefinitionId("order", "order-process", "1.0") && n.Origin == DefinitionOrigin.Remote);
             Assert.Contains(graph.Edges, edge => edge.Source == ProcessDefinitionId.From(published)
-                && edge.Target == new ProcessDefinitionId("fulfillment", "fulfillment-process", "1.0"));
+                && edge.Target == new ProcessDefinitionId("fulfillment", "fulfillment-process", "1.0")
+                && edge.Relationship == "related");
             Assert.Single(registry.Snapshot());
         }
         finally { Directory.Delete(directory, true); }
@@ -83,6 +85,7 @@ public sealed class CrossProcessDefinitionDiscoveryTests
                 UseShellExecute = false, CreateNoWindow = true
             };
             foreach (var argument in new[] { host, "--urls", "http://127.0.0.1:0", "--Kestrel:EndpointDefaults:Protocols", "Http2",
+                "--RabbitMq:Enabled", "false",
                 "--SagaFlow:PublishDefinitions", "true", "--SagaFlow:PublishBigPictureSources", "true",
                 "--SagaFlow:DefinitionDirectory", directory, "--Logging:LogLevel:Microsoft.Hosting.Lifetime", "Information" }) start.ArgumentList.Add(argument);
             _process = new() { StartInfo = start, EnableRaisingEvents = true };

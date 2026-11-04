@@ -61,7 +61,7 @@ export default function WorkflowGraph({ definition }: { definition: SagaDefiniti
           onSelectionChange={selectNodes}
           nodesDraggable={false} nodesConnectable={false} edgesReconnectable={false} deleteKeyCode={null}
           selectionOnDrag={false} multiSelectionKeyCode={null} colorMode={theme} minZoom={0.1} maxZoom={2}
-          autoPanOnNodeFocus={false} fitView fitViewOptions={{ padding: 0.12, minZoom: 0.9, maxZoom: 0.9 }} aria-label={`${definition.name} workflow diagram`}>
+          autoPanOnNodeFocus={false} fitView fitViewOptions={{ padding: 0.12, minZoom: 0.25, maxZoom: 0.9 }} aria-label={`${definition.name} workflow diagram`}>
           <Background variant={BackgroundVariant.Dots} gap={22} size={1.5} color={theme === "dark" ? "#52525b" : "#94a3b8"} bgColor={theme === "dark" ? "#09090b" : "#fafafa"} />
           <Controls showInteractive={false} />
         </ReactFlow>}
