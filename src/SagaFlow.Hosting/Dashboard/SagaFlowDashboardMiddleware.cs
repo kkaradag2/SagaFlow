@@ -4,6 +4,9 @@ using SagaFlow.Core.Abstractions;
 using SagaFlow.Hosting.Endpoints;
 using SagaFlow.Engine.ProcessDefinition;
 using Microsoft.Extensions.DependencyInjection;
+using System.Text.Encodings.Web;
+using SagaFlow.Engine.Discovery;
+using SagaFlow.Hosting.Definitions;
 
 namespace SagaFlow.Hosting.Dashboard;
 
@@ -33,6 +36,23 @@ public sealed class SagaFlowDashboardMiddleware
             }
             var registry = context.RequestServices.GetRequiredService<ProcessDefinitionRegistry>();
             await Results.Ok(SagaFlowDashboardEndpoints.ToDefinitions(registry)).ExecuteAsync(context);
+            return;
+        }
+
+        if (string.Equals(requestPath, $"{dashboardPath}/api/definition-graph", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!HttpMethods.IsGet(context.Request.Method))
+            {
+                context.Response.StatusCode = StatusCodes.Status405MethodNotAllowed;
+                context.Response.Headers.Allow = "GET";
+                return;
+            }
+            var graph = await SagaFlowDashboardEndpoints.ToDefinitionGraphAsync(
+                context.RequestServices.GetRequiredService<ProcessDefinitionRegistry>(),
+                context.RequestServices.GetRequiredService<DefinitionDiscovery>(),
+                context.Request.Query["domain"].ToString(), context.Request.Query["process"].ToString(),
+                context.Request.Query["version"].ToString(), context.RequestAborted);
+            await (graph is null ? Results.NotFound() : Results.Ok(graph)).ExecuteAsync(context);
             return;
         }
 
@@ -80,7 +100,7 @@ public sealed class SagaFlowDashboardMiddleware
         var relativePath = requestPath[dashboardPath.Length..].TrimStart('/');
         if (string.IsNullOrWhiteSpace(relativePath))
         {
-            await SendFileAsync(context, indexPath);
+            await SendIndexAsync(context, indexPath, dashboardPath);
             return;
         }
 
@@ -98,7 +118,7 @@ public sealed class SagaFlowDashboardMiddleware
             return;
         }
 
-        await SendFileAsync(context, indexPath);
+        await SendIndexAsync(context, indexPath, dashboardPath);
     }
 
     private static bool IsDashboardRequest(string requestPath, string dashboardPath)
@@ -111,6 +131,14 @@ public sealed class SagaFlowDashboardMiddleware
     {
         context.Response.ContentType = GetContentType(path);
         await context.Response.SendFileAsync(path);
+    }
+
+    private static async Task SendIndexAsync(HttpContext context, string path, string dashboardPath)
+    {
+        var html = await File.ReadAllTextAsync(path, context.RequestAborted);
+        var baseTag = $"<base href=\"{HtmlEncoder.Default.Encode(dashboardPath)}/\">";
+        context.Response.ContentType = "text/html; charset=utf-8";
+        await context.Response.WriteAsync(html.Replace("<head>", $"<head>{baseTag}", StringComparison.OrdinalIgnoreCase));
     }
 
     private static async Task WriteMissingAssetsFallbackAsync(HttpContext context)

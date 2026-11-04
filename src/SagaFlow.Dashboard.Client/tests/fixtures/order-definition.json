@@ -208,6 +208,13 @@
         ]
       }
     ],
-    "bigPicture": []
+    "bigPicture": [
+      {
+        "domain": "return",
+        "process": "return-process",
+        "version": "1.0",
+        "relationship": "related"
+      }
+    ]
   }
 ]

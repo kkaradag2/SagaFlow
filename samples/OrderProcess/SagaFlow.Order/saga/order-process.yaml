@@ -88,3 +88,10 @@ steps:
         nextStep: compensation
       - event: timeout
         nextStep: compensation
+
+bigPicture:
+  - domain: return
+    process: return-process
+    endpoint: "https://localhost:65305"
+    version: "1.0"
+    relationship: related

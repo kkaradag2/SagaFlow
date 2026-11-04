@@ -39,6 +39,35 @@ public sealed class ProcessDefinitionTests
         """;
 
     [Fact]
+    public void BigPictureRelationshipRoundTripsAndLegacyOmissionRemainsAbsent()
+    {
+        var codec = new DefinitionYamlCodec();
+        var legacy = codec.Parse(Valid);
+        Assert.Null(Assert.Single(legacy.BigPicture).Relationship);
+        Assert.DoesNotContain("relationship:", codec.Serialize(legacy));
+
+        var declared = codec.Parse(Valid.Replace("endpoint: https://payment-service:7001",
+            "endpoint: https://payment-service:7001\n    relationship: related", StringComparison.Ordinal));
+        Assert.Equal("related", Assert.Single(declared.BigPicture).Relationship);
+        Assert.Equal("related", Assert.Single(codec.Parse(codec.Serialize(declared)).BigPicture).Relationship);
+        var registry = new ProcessDefinitionRegistry();
+        registry.RegisterLocalBatch([declared]);
+        Assert.Equal("related", Assert.Single(registry.Snapshot().Single().Definition.BigPicture).Relationship);
+    }
+
+    [Theory]
+    [InlineData("unknown")]
+    [InlineData("''")]
+    [InlineData("null")]
+    [InlineData("~")]
+    public void RejectsUnknownEmptyOrNullExplicitRelationship(string value)
+    {
+        var yaml = Valid.Replace("endpoint: https://payment-service:7001",
+            $"endpoint: https://payment-service:7001\n    relationship: {value}", StringComparison.Ordinal);
+        Assert.Contains("relationship", Assert.Throws<DefinitionValidationException>(() => new DefinitionYamlCodec().Parse(yaml)).Message);
+    }
+
+    [Fact]
     public async Task LoadsActualYamlIncludingConditionsCompensationAndBigPicture()
     {
         using var directory = new DefinitionDirectory();

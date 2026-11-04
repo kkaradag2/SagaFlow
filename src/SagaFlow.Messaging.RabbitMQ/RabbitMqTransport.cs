@@ -4,12 +4,14 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using RabbitMQ.Client.Exceptions;
 using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.Messages;
 using SagaFlow.Engine.Coordination;
 using SagaFlow.Engine.Messaging;
 using SagaFlow.Engine.ProcessDefinition;
 using System.Globalization;
+using System.Runtime.ExceptionServices;
 
 namespace SagaFlow.Messaging.RabbitMQ;
 
@@ -21,12 +23,14 @@ internal sealed class RabbitMqTransport(
     ILogger<RabbitMqTransport> logger) : ISagaMessageBus, IHostedService, IAsyncDisposable
 {
     private readonly SemaphoreSlim _publishGate = new(1, 1);
+    private readonly SemaphoreSlim _stopGate = new(1, 1);
     private readonly CancellationTokenSource _consumerCancellation = new();
     private IChannel? _publisherChannel;
     private IChannel? _consumerChannel;
     private string? _outcomeQueue;
     private string? _consumerTag;
     private bool _disposed;
+    private bool _stopped;
 
     internal IChannel? PublisherChannel => _publisherChannel;
     internal IChannel? ConsumerChannel => _consumerChannel;
@@ -101,20 +105,44 @@ internal sealed class RabbitMqTransport(
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        _consumerCancellation.Cancel();
-        if (_consumerTag is not null && _consumerChannel is { IsOpen: true })
+        await _stopGate.WaitAsync(cancellationToken);
+        try
         {
-            try { await _consumerChannel.BasicCancelAsync(_consumerTag, cancellationToken: cancellationToken); }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
-        }
+            if (_stopped) return;
+            _consumerCancellation.Cancel();
+            Exception? failure = null;
+            if (_consumerTag is not null && _consumerChannel is { } channel)
+            {
+                try { await CancelConsumerAsync(channel, _consumerTag, cancellationToken); }
+                catch (Exception error) { failure = error; }
+            }
 
-        await CloseChannelAsync(_consumerChannel);
-        await CloseChannelAsync(_publisherChannel);
-        _consumerChannel = null;
-        _publisherChannel = null;
-        _outcomeQueue = null;
-        _consumerTag = null;
-        await connections.DisposeAsync();
+            try { await CloseChannelAsync(_consumerChannel); }
+            catch (Exception error) { failure ??= error; }
+            try { await CloseChannelAsync(_publisherChannel); }
+            catch (Exception error) { failure ??= error; }
+            _consumerChannel = null;
+            _publisherChannel = null;
+            _outcomeQueue = null;
+            _consumerTag = null;
+            try { await connections.DisposeAsync(); }
+            catch (Exception error) { failure ??= error; }
+            _stopped = true;
+            if (failure is not null) ExceptionDispatchInfo.Capture(failure).Throw();
+        }
+        finally { _stopGate.Release(); }
+    }
+
+    internal static async Task CancelConsumerAsync(IChannel channel, string consumerTag, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (channel.IsOpen)
+                await channel.BasicCancelAsync(consumerTag, cancellationToken: cancellationToken);
+        }
+        catch (AlreadyClosedException) { }
+        catch (ObjectDisposedException) { }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
     }
 
     public async ValueTask DisposeAsync()
@@ -229,14 +257,19 @@ internal sealed class RabbitMqTransport(
     private static async ValueTask CloseChannelAsync(IChannel? channel)
     {
         if (channel is null) return;
+        Exception? failure = null;
         try
         {
             if (channel.IsOpen) await channel.CloseAsync(CancellationToken.None);
-            await channel.DisposeAsync();
         }
-        catch (ObjectDisposedException)
+        catch (Exception error) when (error is ObjectDisposedException or AlreadyClosedException)
         {
-            // A recovering connection can dispose its channel while host shutdown is already closing it.
+            // The channel can close after IsOpen while host shutdown is closing it.
         }
+        catch (Exception error) { failure = error; }
+        try { await channel.DisposeAsync(); }
+        catch (Exception error) when (error is ObjectDisposedException or AlreadyClosedException) { }
+        catch (Exception error) { failure ??= error; }
+        if (failure is not null) ExceptionDispatchInfo.Capture(failure).Throw();
     }
 }

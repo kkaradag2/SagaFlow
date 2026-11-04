@@ -21,6 +21,7 @@ public sealed class SampleRabbitMqEndToEndTests
     [SampleRabbitMqFact]
     public async Task OrdersCompleteAcrossIndependentParticipantsAndWorkersCanRestart()
     {
+        SampleRabbitMqTestIsolation.RequireVirtualHost();
         await using var factory = new WebApplicationFactory<global::Program>();
         using var client = factory.CreateClient();
         await using var broker = await CreateConnectionAsync();
@@ -55,6 +56,7 @@ public sealed class SampleRabbitMqEndToEndTests
     [SampleRabbitMqFact]
     public async Task RequestedParticipantFailureExecutesCompensationsInReverseOrder()
     {
+        SampleRabbitMqTestIsolation.RequireVirtualHost();
         await using var factory = new WebApplicationFactory<global::Program>();
         using var client = factory.CreateClient();
         await using var broker = await CreateConnectionAsync();
@@ -85,6 +87,7 @@ public sealed class SampleRabbitMqEndToEndTests
     [SampleRabbitMqFact]
     public async Task LargeOrdersWaitForApiDecisionAndUseYamlForApproveRejectAndCompensation()
     {
+        SampleRabbitMqTestIsolation.RequireVirtualHost();
         await using var factory = new WebApplicationFactory<global::Program>();
         await using var approvalFactory = new WebApplicationFactory<ManagerApprovalProgram>();
         using var client = factory.CreateClient();
@@ -267,7 +270,9 @@ public sealed class SampleRabbitMqEndToEndTests
         var root = FindRepositoryRoot();
         var projectDirectory = Path.Combine(root, "samples", "Participants", projectName);
         var configuration = new DirectoryInfo(AppContext.BaseDirectory).Parent?.Name ?? "Debug";
-        var assembly = Path.Combine(projectDirectory, "bin", configuration, "net10.0", $"{projectName}.dll");
+        var isolated = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", projectName,
+            new DirectoryInfo(AppContext.BaseDirectory).Name, projectName + ".dll"));
+        var assembly = File.Exists(isolated) ? isolated : Path.Combine(projectDirectory, "bin", configuration, "net10.0", $"{projectName}.dll");
         var startInfo = new ProcessStartInfo("dotnet", assembly)
         {
             WorkingDirectory = projectDirectory,
@@ -298,11 +303,12 @@ public sealed class SampleRabbitMqEndToEndTests
             Port = int.TryParse(Environment.GetEnvironmentVariable("RabbitMq__Port"), out var port) ? port : 5672,
             UserName = Environment.GetEnvironmentVariable("RabbitMq__UserName") ?? "sagaflow",
             Password = Environment.GetEnvironmentVariable("RabbitMq__Password") ?? "sagaflow-dev",
-            VirtualHost = Environment.GetEnvironmentVariable("RabbitMq__VirtualHost") ?? "/",
+            VirtualHost = SampleRabbitMqTestIsolation.RequireVirtualHost(),
             ClientProvidedName = "sagaflow-sample-tests"
         };
         return await factory.CreateConnectionAsync();
     }
+
 
     private static async Task WaitForConsumersAsync(IConnection connection, bool includeApproval = false)
     {

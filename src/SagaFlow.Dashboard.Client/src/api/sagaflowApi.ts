@@ -117,8 +117,22 @@ export type SagaDefinition = {
   domain: string;
   version: string;
   steps: SagaStepDefinition[];
-  bigPicture: { domain: string; process: string; version: string | null; endpoint: string }[];
+  bigPicture: { domain: string; process: string; version: string | null; relationship?: "related" | null }[];
 };
+
+export type DefinitionIdentity = { domain: string; name: string; version: string };
+export type DefinitionGraph = {
+  nodes: { domain: string; process: string; version: string; origin: "Local" | "Remote"; definition?: SagaDefinition }[];
+  edges: { source: DefinitionIdentity; targetDomain: string; targetProcess: string;
+    requestedVersion: string | null; target: DefinitionIdentity | null; relationship: "related" | null }[];
+  failures: { source: DefinitionIdentity; targetDomain: string; targetProcess: string;
+    requestedVersion?: string | null; kind: string; message: string }[];
+};
+
+export function getDefinitionGraph(definition: SagaDefinition, signal?: AbortSignal): Promise<DefinitionGraph> {
+  const query = new URLSearchParams({ domain: definition.domain, process: definition.name, version: definition.version });
+  return getJson(`api/definition-graph?${query}`, signal);
+}
 
 export function getDefinitions(signal?: AbortSignal): Promise<SagaDefinition[]> {
   return getJson("api/definitions", signal);

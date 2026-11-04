@@ -28,8 +28,8 @@ public sealed class DefinitionDiscoveryOptions
 }
 
 public sealed record DefinitionGraphNode(ProcessDefinitionId Id, SagaDefinition Definition, DefinitionOrigin Origin);
-public sealed record DefinitionGraphEdge(ProcessDefinitionId Source, string TargetDomain, string TargetProcess, string? RequestedVersion, string Endpoint, ProcessDefinitionId? Target);
-public sealed record DiscoveryFailure(ProcessDefinitionId Source, string TargetDomain, string TargetProcess, DiscoveryFailureKind Kind, string Message);
+public sealed record DefinitionGraphEdge(ProcessDefinitionId Source, string TargetDomain, string TargetProcess, string? RequestedVersion, string Endpoint, ProcessDefinitionId? Target, string? Relationship = null);
+public sealed record DiscoveryFailure(ProcessDefinitionId Source, string TargetDomain, string TargetProcess, DiscoveryFailureKind Kind, string Message, string? RequestedVersion = null);
 public sealed record DefinitionGraph(IReadOnlyList<DefinitionGraphNode> Nodes, IReadOnlyList<DefinitionGraphEdge> Edges, IReadOnlyList<DiscoveryFailure> Failures);
 
 /// <summary>Builds a static definition graph. Deliberately has no coordinator, bus, or state-store dependency.</summary>
@@ -100,7 +100,7 @@ public sealed class DefinitionDiscovery
                 cancellationToken.ThrowIfCancellationRequested();
                 if (overallBudgetExceeded) break;
                 ProcessDefinitionId? target = null;
-                void Fail(DiscoveryFailureKind kind, string message) => failures.Add(new(id, source.Domain, source.Process, kind, message));
+                void Fail(DiscoveryFailureKind kind, string message) => failures.Add(new(id, source.Domain, source.Process, kind, message, source.Version));
                 try
                 {
                     if (BudgetExpired()) throw new OperationCanceledException(overall.Token);
@@ -169,7 +169,7 @@ public sealed class DefinitionDiscovery
                     else Fail(ex.Kind, ex.Message);
                 }
                 catch (DefinitionValidationException) { Fail(DiscoveryFailureKind.InvalidResponse, "Remote YAML failed structural/condition validation."); }
-                finally { edges.Add(new(id, source.Domain, source.Process, source.Version, source.Endpoint, target)); }
+                finally { edges.Add(new(id, source.Domain, source.Process, source.Version, source.Endpoint, target, source.Relationship)); }
             }
             active.Remove(id);
         }

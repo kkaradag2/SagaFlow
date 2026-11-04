@@ -4,7 +4,7 @@
 
 [`SagaFlow.Return`](../samples/ReturnProcess/SagaFlow.Return/Program.cs) kendi `return-process.yaml` tanımını, `return.outcomes` kuyruğunu, InMemory Saga state'ini ve gömülü dashboard'unu barındırır. [`SagaFlow.Order`](../samples/OrderProcess/SagaFlow.Order/Program.cs) ayrı kalır. [`CreateReturnRequest`](../samples/ReturnProcess/SagaFlow.Return/ReturnModels.cs) bir `OrderId` kabul eder; Return kendi `ReturnId` ve Saga instance ID'sini üretir. Order kaydını sorgulama veya sahipliğini doğrulama bu PoC'de yoktur. `OrderId` iş ilişkisi, Saga instance ID ve correlation ID ise ayrı yürütüm kimlikleridir. [`ReturnsController`](../samples/ReturnProcess/SagaFlow.Return/Controllers/ReturnsController.cs) `GET /returns/{returnId}` ile bu kimlikleri ve türetilen iş durumunu verir.
 
-Return iş API uçları controller içinde tanımlıdır; controller doğrulama ve HTTP yanıtını yönetir, DI ile kayıt oluşturma/Saga başlatma ve iş durumu sorgusunu [`ReturnService`](../samples/ReturnProcess/SagaFlow.Return/ReturnService.cs) üzerinden çağırır. `Program.cs` servis kaydı ve controller eşlemesini yapar. İsteğe bağlı `MapSagaFlowDefinitionDiscovery` genel Hosting keşif endpoint'idir, Return iş API'si değildir.
+Return iş API uçları controller içinde tanımlıdır; controller doğrulama ve HTTP yanıtını yönetir, DI ile kayıt oluşturma/Saga başlatma ve iş durumu sorgusunu [`ReturnService`](../samples/ReturnProcess/SagaFlow.Return/ReturnService.cs) üzerinden çağırır. `Program.cs` servis kaydı ve controller eşlemesini yapar. `MapSagaFlowDefinitionDiscovery` genel Hosting keşif endpoint'idir, Return iş API'si değildir. Normal Return geliştirme launch profili bu endpoint'i `return/return-process@1.0` tanımı için açar; profil dışındaki varsayılan yayın kapalıdır.
 
 ## YAML akışları
 
@@ -36,7 +36,7 @@ Warehouse teknik hatası, refund hatası, restock hatası ve her iki notificatio
 
 ## Doğrulama
 
-[`ReturnDomainTests`](../tests/SagaFlow.Samples.Tests/ReturnDomainTests.cs) YAML, refund/restock/bildirim idempotency'si, deferred outcome, duplicate/conflicting command ve eşzamanlı karar claim'ini kapsar. [`ReturnRabbitMqEndToEndTests`](../tests/SagaFlow.Samples.Tests/ReturnRabbitMqEndToEndTests.cs) RabbitMQ ile accepted/rejected, teknik hatalar, yanlış correlation, worker restart, Order/Return ortak participant kullanımı ve Return dashboard HTTP/API'sini kapsar. Son tam sonuç ve paralel koşu sınırlaması [01-PROJECT_STATUS.md](01-PROJECT_STATUS.md) içindedir.
+[`ReturnDomainTests`](../tests/SagaFlow.Samples.Tests/ReturnDomainTests.cs) YAML, refund/restock/bildirim idempotency'si, deferred outcome, duplicate/conflicting command ve eşzamanlı karar claim'ini kapsar. [`ReturnRabbitMqEndToEndTests`](../tests/SagaFlow.Samples.Tests/ReturnRabbitMqEndToEndTests.cs) RabbitMQ ile accepted/rejected, teknik hatalar, yanlış correlation, worker restart, Order/Return ortak participant kullanımı ve Return dashboard HTTP/API'sini kapsar. Brokerlı testler PA-01 sonrası her koşu için ayrı vhost üzerinde çalışır; kurulum [mesajlaşma/test yönergesinde](04-local-saga-coordination.md), son tam sonuç [01-PROJECT_STATUS.md](01-PROJECT_STATUS.md) içindedir.
 
 ## Bağımsız inceleme düzeltmeleri ve açık sınırlar (2026-11-03)
 

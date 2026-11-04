@@ -1,37 +1,96 @@
 import {
   Boxes,
+  LayoutDashboard,
+  Network,
   GitBranch,
   PanelLeftOpen,
   type LucideIcon,
 } from "lucide-react";
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { SidebarItem } from "../components/Sidebar/SidebarItem";
 import { ThemeToggle } from "../components/ThemeToggle/ThemeToggle";
 import { DefinitionsPage } from "../pages/DefinitionsPage";
+import { BigPicturePage } from "../pages/BigPicturePage";
 import { InstancesPage } from "../pages/InstancesPage";
+import { OverviewPage } from "../pages/OverviewPage";
+import { getDefinitions, type SagaDefinition } from "../api/sagaflowApi";
+import { workflowFromPath, workflowPath, type WorkflowIdentity } from "./bigPictureRoute";
 
 const pages = [
+  "Overview",
   "Workflows",
+  "BigPicture",
   "Instances",
 ] as const;
 
 type Page = (typeof pages)[number];
 
 const navigationIcons: Record<Page, LucideIcon> = {
+  Overview: LayoutDashboard,
   Workflows: GitBranch,
+  BigPicture: Network,
   Instances: Boxes,
 };
 
 const breadcrumbs: Record<Page, string[]> = {
+  Overview: ["Dashboard", "Overview"],
   Workflows: ["Dashboard", "Workflows"],
+  BigPicture: ["Dashboard", "BigPicture"],
   Instances: ["Dashboard", "Saga Instances"],
 };
 
+const routeName: Record<Page, string> = { Overview: "overview", Workflows: "workflows", BigPicture: "bigpicture", Instances: "instances" };
+function routeBase() {
+  const path = window.location.pathname.replace(/\/$/, "");
+  return path.replace(/\/(?:overview|workflows|bigpicture(?:\/workflow\/[^/]+\/[^/]+\/[^/]+)?|instances)$/i, "") || "/sagaflow";
+}
+function pageFromPath(): Page {
+  const segment = window.location.pathname.replace(/\/$/, "").split("/").pop()?.toLowerCase();
+  return segment === "overview" ? "Overview" : window.location.pathname.toLowerCase().includes("/bigpicture") ? "BigPicture"
+    : segment === "instances" ? "Instances" : "Workflows";
+}
+function hasDeclaredRelationship(definition: SagaDefinition) {
+  return definition.bigPicture.some(reference => reference.relationship === "related");
+}
+
 export function DashboardLayout() {
-  const [activePage, setActivePage] = useState<Page>("Workflows");
+  const [activePage, setActivePage] = useState<Page>(pageFromPath);
+  const [activeWorkflow, setActiveWorkflow] = useState<WorkflowIdentity | null>(() => workflowFromPath(window.location.pathname));
+  const [definitions, setDefinitions] = useState<SagaDefinition[]>([]);
+  const [definitionsLoading, setDefinitionsLoading] = useState(true);
+  const [definitionsError, setDefinitionsError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
   const [isSidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isMobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const relatedDefinitions = useMemo(() => definitions.filter(hasDeclaredRelationship), [definitions]);
+  const bigPictureAvailable = !definitionsLoading && !definitionsError && relatedDefinitions.length > 0;
+  const visiblePage = activePage === "BigPicture" && !bigPictureAvailable ? "Workflows" : activePage;
+
+  useEffect(() => {
+    const abort = new AbortController();
+    setDefinitionsLoading(true);
+    setDefinitionsError(null);
+    setDefinitions([]);
+    void getDefinitions(abort.signal).then(result => { if (!abort.signal.aborted) setDefinitions(result); })
+      .catch(failure => { if (!abort.signal.aborted) setDefinitionsError(failure instanceof Error ? failure.message : "Unable to load workflows."); })
+      .finally(() => { if (!abort.signal.aborted) setDefinitionsLoading(false); });
+    return () => abort.abort();
+  }, [reload]);
+
+  useEffect(() => {
+    const onPopState = () => { setActivePage(pageFromPath()); setActiveWorkflow(workflowFromPath(window.location.pathname)); };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
+    if (activePage === "BigPicture" && !definitionsLoading && !bigPictureAvailable) {
+      window.history.replaceState(null, "", `${routeBase()}/workflows`);
+      setActivePage("Workflows");
+      setActiveWorkflow(null);
+    }
+  }, [activePage, bigPictureAvailable, definitionsLoading]);
 
   const handleWorkflowOpen = useCallback(() => {
     setSidebarCollapsed(!window.matchMedia("(max-width: 1023px)").matches);
@@ -40,19 +99,36 @@ export function DashboardLayout() {
 
   const content = useMemo(() => {
     switch (activePage) {
+      case "Overview":
+        return <OverviewPage />;
       case "Workflows":
-        return <DefinitionsPage onWorkflowOpen={handleWorkflowOpen} />;
+        return <DefinitionsPage onWorkflowOpen={handleWorkflowOpen} definitions={definitions} loading={definitionsLoading}
+          error={definitionsError} onRefresh={() => setReload(value => value + 1)} />;
+      case "BigPicture":
+        return definitionsLoading ? <div role="status" className="text-sm text-zinc-500">Loading process relationships…</div>
+          : bigPictureAvailable ? <BigPicturePage definitions={definitions} workflow={activeWorkflow}
+            onWorkflowOpen={workflow => {
+              window.history.pushState(null, "", workflowPath(routeBase(), workflow));
+              setActiveWorkflow(workflow);
+              handleWorkflowOpen();
+            }} onWorkflowBack={() => {
+              window.history.pushState(null, "", `${routeBase()}/bigpicture`);
+              setActiveWorkflow(null);
+            }} /> : null;
       case "Instances":
         return <InstancesPage />;
     }
-  }, [activePage, handleWorkflowOpen]);
+  }, [activePage, activeWorkflow, handleWorkflowOpen, definitions, definitionsLoading, definitionsError, bigPictureAvailable, relatedDefinitions]);
 
   const closeMobileSidebar = () => {
     setMobileSidebarOpen(false);
   };
 
   const navigateTo = (page: Page) => {
+    if (page === "BigPicture" && !bigPictureAvailable) return;
+    window.history.pushState(null, "", `${routeBase()}/${routeName[page]}`);
     setActivePage(page);
+    setActiveWorkflow(null);
     closeMobileSidebar();
   };
 
@@ -103,7 +179,7 @@ export function DashboardLayout() {
 
         <div className={isSidebarCollapsed ? "mt-9 lg:mt-10" : "mt-9"}>
           <nav className="flex flex-col gap-1">
-            {pages.map((page) => (
+            {pages.filter(page => page !== "BigPicture" || bigPictureAvailable).map((page) => (
               <SidebarItem
                 key={page}
                 label={page}
@@ -161,10 +237,10 @@ export function DashboardLayout() {
 
             <div className="min-w-0">
               <h1 className="m-0 truncate text-[22px] font-bold leading-7 tracking-tight text-zinc-950 dark:text-zinc-100">
-                {activePage}
+                {visiblePage}
               </h1>
 
-              <Breadcrumb items={breadcrumbs[activePage]} />
+              <Breadcrumb items={breadcrumbs[visiblePage]} />
             </div>
           </div>
 
