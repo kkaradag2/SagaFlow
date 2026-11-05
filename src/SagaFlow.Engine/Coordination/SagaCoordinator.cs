@@ -20,7 +20,7 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
     {
         if (invocationContext?.InstanceId is not { } id || invocationContext.StepId is not { } step)
             throw new InvalidOperationException("InvokeAsync requires an active Domain Starter local step handler scope.");
-        return await new ProcessInvocationManager(store, definitions, clock)
+        return await new ProcessInvocationManager(store, definitions, clock, changes)
             .PrepareAsync(id, step, target, payload, cancellationToken);
     }
 
@@ -70,6 +70,7 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
             if (instance.CurrentStep != registered.Definition.Steps[0].Name) throw new InvalidOperationException("Incoming target has an invalid initial step.");
             return executor.Prepare(instance);
         }, cancellationToken);
+        if (command is not null && changes is not null) await changes.PublishAsync(instanceId);
         try { if (command is not null) await executor.PublishPreparedAsync(command, cancellationToken); }
         catch { await NotifyTerminalAsync(instanceId, CancellationToken.None); throw; }
         await NotifyTerminalAsync(instanceId, cancellationToken);

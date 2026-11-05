@@ -1,4 +1,9 @@
 using System.Text.Json;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using SagaFlow.Hosting.Endpoints;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -15,7 +20,7 @@ using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
 
 namespace SagaFlow.Messaging.RabbitMQ.Tests;
 [Collection(RabbitMqIntegrationCollection.Name)]
-public sealed class ProcessInvocationIntegrationTests(RabbitMqBrokerFixture broker)
+public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixture broker)
 {
     [RabbitMqFact]
     public async Task IndependentHostsExchangeRequestsAcceptanceRejectionAndTerminalOutcomes()
@@ -457,6 +462,73 @@ public sealed class ProcessInvocationIntegrationTests(RabbitMqBrokerFixture brok
     {
         await using var channel = await broker.Connection.CreateChannelAsync();
         Assert.Equal(expected, await channel.MessageCountAsync(queue));
+    }
+
+    [RabbitMqFact]
+    public async Task DashboardApisProjectBothSidesOfActualCrossDomainExecution()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var target = Definition("target" + suffix, "remote", "targetStep" + suffix);
+        var source = new SagaDefinition { Domain = "source" + suffix, Name = "local", Version = "1.0",
+            BigPicture = [new() { Domain = target.Domain, Process = target.Name, Version = target.Version, Endpoint = "https://internal-definition-address", Relationship = "invokes" }],
+            Steps = [new() { Name = "invoke" + suffix, Command = "InvokeRemote", External = true,
+                Transitions = [new() { Event = "success", NextStep = "completed" }, new() { Event = "failure", NextStep = "compensation" }] }] };
+        await using var targetHost = await StartDashboard(target);
+        await using var sourceHost = await StartDashboard(source, target.Name);
+        using var sourceClient = DashboardClient(sourceHost); using var targetClient = DashboardClient(targetHost);
+        string sourceId;
+        await using (var scope = sourceHost.Services.CreateAsyncScope())
+            sourceId = (await scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { allow = true, value = 42 })).ToString("N");
+        var sourceStore = sourceHost.Services.GetRequiredService<ISagaStateStore>();
+        await Wait(async () => (await sourceStore.FindAsync(sourceId))!.Steps[0].InvocationProgress!.Status == ExternalProcessStatus.Accepted);
+        var accepted = await ApiDetail(sourceClient, sourceId);
+        var relationship = accepted.GetProperty("steps")[0].GetProperty("invocation");
+        Assert.Equal("Local", accepted.GetProperty("origin").GetString());
+        Assert.Equal("Accepted", relationship.GetProperty("lastKnownStatus").GetString());
+        Assert.Equal(target.Domain, relationship.GetProperty("target").GetProperty("domain").GetString());
+        var targetId = relationship.GetProperty("targetSagaInstanceId").GetString()!;
+        var targetView = await ApiDetail(targetClient, targetId);
+        var incoming = targetView.GetProperty("incomingInvocation");
+        Assert.Equal("External", targetView.GetProperty("origin").GetString());
+        Assert.Equal(sourceId, incoming.GetProperty("sourceSagaInstanceId").GetString());
+        Assert.Equal(accepted.GetProperty("correlationId").GetString(), incoming.GetProperty("sourceCorrelationId").GetString());
+        Assert.NotEqual(incoming.GetProperty("sourceCorrelationId").GetString(), targetView.GetProperty("correlationId").GetString());
+        Assert.Equal(relationship.GetProperty("invocationId").GetString(), incoming.GetProperty("invocationId").GetString());
+        var command = await ReadParticipant(target.Steps[0].Name);
+        Assert.Equal(targetId, command.Headers.SagaInstanceId);
+        await SendParticipantOutcome(target.Domain, command, true);
+        await Wait(async () => (await sourceStore.FindAsync(sourceId))!.Status == SagaStatus.Completed);
+        var completed = await ApiDetail(sourceClient, sourceId);
+        Assert.Equal("Completed", completed.GetProperty("steps")[0].GetProperty("invocation").GetProperty("lastKnownStatus").GetString());
+        Assert.Equal("Completed", (await ApiDetail(targetClient, targetId)).GetProperty("status").GetString());
+        using var sourceList = JsonDocument.Parse(await sourceClient.GetStringAsync("/sagaflow/api/instances"));
+        using var targetList = JsonDocument.Parse(await targetClient.GetStringAsync("/sagaflow/api/instances"));
+        Assert.Equal(sourceId, Assert.Single(sourceList.RootElement.EnumerateArray()).GetProperty("id").GetString());
+        Assert.Equal(targetId, Assert.Single(targetList.RootElement.EnumerateArray()).GetProperty("id").GetString());
+        Assert.DoesNotContain("internal-definition-address", completed.GetRawText() + targetView.GetRawText());
+        Assert.DoesNotContain("publication", completed.GetRawText());
+        await sourceHost.StopAsync(); await targetHost.StopAsync();
+    }
+    private async Task<WebApplication> StartDashboard(SagaDefinition definition, string? target = null, Action<IServiceCollection>? configure = null)
+    {
+        var builder = WebApplication.CreateBuilder(); builder.Logging.ClearProviders(); builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Services.AddSagaFlow(); builder.Services.AddScoped<IProcessInvocationPolicy, Policy>();
+        if (target is not null) { builder.Services.AddSingleton(new Target(target, false)); builder.Services.AddScoped<ILocalSagaStepHandler, Handler>(); }
+        builder.Services.AddSagaFlowRabbitMq(options =>
+        {
+            options.HostName = broker.HostName; options.Port = broker.Port; options.UserName = broker.UserName;
+            options.Password = broker.Password; options.VirtualHost = broker.VirtualHost; options.EnableProcessInvocations = true;
+        });
+        configure?.Invoke(builder.Services);
+        var app = builder.Build(); app.Services.GetRequiredService<ProcessDefinitionRegistry>().RegisterLocalBatch([definition]);
+        app.MapSagaFlowDashboard(); await app.StartAsync(); return app;
+    }
+    private static HttpClient DashboardClient(WebApplication app) => new()
+    { BaseAddress = new(app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single()) };
+    private static async Task<JsonElement> ApiDetail(HttpClient client, string id)
+    {
+        using var json = JsonDocument.Parse(await client.GetStringAsync("/sagaflow/api/instances/" + id));
+        return json.RootElement.Clone();
     }
 
     private static SagaDefinition SourceDefinition(SagaDefinition target, string suffix) => new()

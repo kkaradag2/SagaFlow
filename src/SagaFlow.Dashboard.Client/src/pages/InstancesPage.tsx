@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
+import { IncomingOrigin, InvocationDetails, OriginBadge, ReconciliationAlert } from "../components/InstanceTraceability";
 import { EmptyPanel } from "../layout/DashboardLayout";
 import { useSagaFlowLiveUpdates } from "../live/useSagaFlowLiveUpdates";
 import {
@@ -53,7 +54,7 @@ export function InstancesPage() {
         selectedId ? getInstance(selectedId) : Promise.resolve(null),
       ]);
       setInstances(nextInstances);
-      if (nextDetail) setSelected(nextDetail);
+      if (nextDetail) setSelected(current => current?.id === nextDetail.id ? nextDetail : current);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Unable to refresh Saga state.");
     } finally {
@@ -70,6 +71,7 @@ export function InstancesPage() {
       ]);
       if (request !== liveRequest.current) return;
       setInstances(nextInstances);
+      setError(null);
       if (nextDetail) setSelected(current => current?.id === nextDetail.id ? nextDetail : current);
     } catch (requestError) {
       if (request !== liveRequest.current) return;
@@ -138,7 +140,7 @@ function InstanceList({ instances, loading, onOpen, onRefresh }: {
         <div className="divide-y divide-zinc-100 dark:divide-zinc-900">
           {instances.map(instance => <button key={instance.id} type="button" onClick={() => onOpen(instance.id)}
             className="grid w-full gap-3 px-5 py-4 text-left transition hover:bg-zinc-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-emerald-500 dark:hover:bg-zinc-900/50 lg:grid-cols-[minmax(230px,1.4fr)_minmax(150px,0.8fr)_minmax(140px,0.7fr)_minmax(190px,0.9fr)_32px] lg:items-center lg:gap-4">
-            <div className="min-w-0"><div className="font-semibold text-zinc-950 dark:text-zinc-100">{instance.processName}</div><div className="mt-1 truncate font-mono text-xs text-zinc-500" title={instance.id}>{instance.id}</div></div>
+            <div className="min-w-0"><div className="font-semibold text-zinc-950 dark:text-zinc-100">{instance.processName} <OriginBadge origin={instance.origin} /></div><div className="mt-1 truncate font-mono text-xs text-zinc-500" title={instance.id}>{instance.id}</div></div>
             <div><Status value={instance.status} /></div>
             <div className="text-sm"><span className="mr-2 text-xs text-zinc-500 lg:hidden">Current:</span>{instance.currentStep ?? "—"}</div>
             <div className="text-sm text-zinc-600 dark:text-zinc-400"><div>{formatDate(instance.updatedAt)}</div><div className="mt-0.5 text-xs text-zinc-400">Created {formatDate(instance.createdAt)}</div></div>
@@ -200,20 +202,22 @@ function InstanceDetail({ instance, loading, onBack, onRefresh }: {
 
     <section className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950/40">
       <div className="flex flex-wrap items-start justify-between gap-5 border-b border-zinc-100 px-5 py-5 dark:border-zinc-900 sm:px-6">
-        <div className="min-w-0"><div className="flex flex-wrap items-center gap-3"><h2 className="text-xl font-bold tracking-tight text-zinc-950 dark:text-white">{instance.processName}</h2><Status value={instance.status} /></div><div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-zinc-500"><span>Instance</span><code className="break-all rounded-md bg-zinc-100 px-2 py-1 font-mono dark:bg-zinc-900">{instance.id}</code></div></div>
+        <div className="min-w-0"><div className="flex flex-wrap items-center gap-3"><h2 className="break-all text-xl font-bold tracking-tight text-zinc-950 dark:text-white">{instance.processName}</h2><Status value={instance.status} /><OriginBadge origin={instance.origin ?? (instance.incomingInvocation ? "External" : "Local")} /></div><div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-zinc-500"><span>Instance</span><code className="break-all rounded-md bg-zinc-100 px-2 py-1 font-mono dark:bg-zinc-900">{instance.id}</code></div></div>
         <div className="min-w-24 rounded-xl bg-zinc-50 px-4 py-3 text-right dark:bg-zinc-900/70"><div className="text-2xl font-bold tabular-nums">{completedSteps}<span className="text-base font-medium text-zinc-500">/{instance.steps.length}</span></div><div className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">steps completed</div></div>
       </div>
       <dl className="grid gap-x-8 gap-y-4 px-5 py-5 sm:grid-cols-2 sm:px-6 lg:grid-cols-4">
         <Fact label="Current step" value={instance.currentStep ?? "—"} accent />
-        <Fact label="Correlation ID" value={instance.correlationId} mono />
+        <Fact label="Local correlation ID" value={instance.correlationId} mono />
         <Fact label="Created" value={formatDate(instance.createdAt)} />
         <Fact label="Last updated" value={formatDate(instance.updatedAt)} />
       </dl>
       {instance.failureReason ? <div className="mx-5 mb-5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300 sm:mx-6"><strong>Failure:</strong> {instance.failureReason}</div> : null}
     </section>
 
+    <IncomingOrigin instance={instance} />
+
     <section aria-labelledby="steps-heading">
-      <div className="mb-4 flex items-end justify-between gap-4"><div><h3 id="steps-heading" className="text-base font-bold">Execution flow</h3><p className="mt-1 text-sm text-zinc-500">Domain starter first, followed by participant steps.</p></div><span className="text-xs text-zinc-500">1 starter · {instance.steps.length} steps</span></div>
+      <div className="mb-4 flex items-end justify-between gap-4"><div><h3 id="steps-heading" className="text-base font-bold">Execution flow</h3><p className="mt-1 text-sm text-zinc-500">Local domain starter, participant steps and declared external process steps.</p></div><span className="text-xs text-zinc-500">1 starter · {instance.steps.length} steps</span></div>
       <ol className="space-y-0">
         <DomainStarterItem key={`${instance.id}:starter`} instance={instance} />
         {instance.steps.map((step, index) => <StepItem key={`${instance.id}:${step.stepName}`} step={step} compensation={instance.compensations.find(item => item.stepId === step.stepName)} index={index} isLast={index === instance.steps.length - 1} isCurrent={instance.currentStep === step.stepName} notExecuted={forwardEnded && step.status === "Pending" && step.executionOrder === null} now={now} />)}
@@ -236,7 +240,7 @@ function DomainStarterItem({ instance }: { instance: SagaInstanceDetail }) {
       {status === "Completed" ? <CheckCircle2 size={19} aria-label="Completed" /> : status === "Failed" ? <XCircle size={19} aria-label="Failed" /> : <Circle size={18} aria-label={status} />}
     </span>
     <article className="mb-3 overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950/40">
-      <div className="flex items-center gap-2 border-b border-zinc-100 px-4 py-2 dark:border-zinc-900 sm:px-5"><h4 className="text-sm font-semibold">{instance.definitionDomain || instance.processName}</h4><span className="text-[10px] text-zinc-500">Domain starter</span></div>
+      <div className="flex flex-wrap items-center gap-2 border-b border-zinc-100 px-4 py-2 dark:border-zinc-900 sm:px-5"><h4 className="text-sm font-semibold">{instance.definitionDomain || instance.processName}</h4><span className="text-[10px] text-zinc-500">Domain starter</span></div>
       <OperationHeader kind="Local operation" command={starter.operationName} status={status} executionOrder={null}
         startedAt={starter.startedAt} endedAt={starter.completedAt} expanded={expanded} onToggle={() => setExpanded(value => !value)} />
       <div hidden={!expanded} className="border-t border-zinc-100 px-4 py-4 dark:border-zinc-900 sm:px-5">
@@ -269,6 +273,7 @@ function CompensationItem({ item }: { item: SagaCompensation }) {
 }
 
 function StepItem({ step, compensation, index, isLast, isCurrent, notExecuted, now }: { step: SagaStep; compensation?: SagaCompensation; index: number; isLast: boolean; isCurrent: boolean; notExecuted: boolean; now: number }) {
+  const externalTerminalObserved = ["Completed", "Failed", "Compensated", "Rejected"].includes(step.invocation?.lastKnownStatus ?? "");
   const hasInput = step.input != null;
   const hasResult = step.result != null;
   const isTimedOut = step.status === "TimedOut";
@@ -295,13 +300,15 @@ function StepItem({ step, compensation, index, isLast, isCurrent, notExecuted, n
     {!isLast ? <span className="absolute left-[17px] top-8 h-[calc(100%-12px)] w-px bg-zinc-200 dark:bg-zinc-800 sm:left-[21px]" aria-hidden="true" /> : null}
     <span className={`relative z-10 mt-3 inline-flex size-9 items-center justify-center rounded-full border sm:size-11 ${stepMarkerClass(displayStatus)}`}>{stepIcon(displayStatus, index)}</span>
     <article className={`mb-3 overflow-hidden rounded-2xl border bg-white transition dark:bg-zinc-950/40 ${cardClass}`}>
-      <div className="flex items-center gap-2 border-b border-zinc-100 px-4 py-2 dark:border-zinc-900 sm:px-5"><h4 className="text-sm font-semibold">{step.stepName}</h4>{isCurrent ? <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">Current</span> : null}</div>
-      <OperationHeader kind="Forward" command={step.command} status={displayStatus} executionOrder={step.executionOrder}
+      <div className="flex flex-wrap items-center gap-2 border-b border-zinc-100 px-4 py-2 dark:border-zinc-900 sm:px-5"><h4 className="min-w-0 break-all text-sm font-semibold">{step.stepName}</h4>{step.external ? <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-800 dark:bg-violet-950 dark:text-violet-200">External process</span> : null}{isCurrent ? <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">Current</span> : null}</div>
+      <OperationHeader kind={step.external ? "External process" : "Forward"} command={step.command} status={displayStatus} executionOrder={step.executionOrder}
         startedAt={step.startedAt} endedAt={step.timedOutAt ?? step.completedAt} expanded={expanded} onToggle={toggleExpanded} />
+      {step.invocation ? <ReconciliationAlert invocation={step.invocation} stepName={step.stepName} localStatus={step.status} /> : null}
       <div hidden={!expanded} className="border-t border-zinc-100 px-4 py-4 dark:border-zinc-900 sm:px-5">
+        {step.invocation ? <InvocationDetails invocation={step.invocation} localStatus={step.status} /> : null}
         {notExecuted ? <p className="mb-4 text-xs text-zinc-500">No forward command was dispatched for this step.</p> : null}
-        {isCurrent && step.status === "Dispatched" ? <p className="mb-4 text-xs text-zinc-500">Waiting for an outcome.{step.timeoutLimit === null ? " No step timeout is configured." : ""}</p> : null}
-        <dl className={`grid gap-x-5 gap-y-4 sm:grid-cols-2 ${remaining !== null ? "xl:grid-cols-6" : "xl:grid-cols-5"}`}><Fact label="Execution order" value={step.executionOrder?.toString() ?? "—"} /><Fact label="Timeout limit" value={step.timeoutLimit ?? "—"} /><Fact label="Dispatched" value={formatDate(step.startedAt)} />{remaining !== null ? <CountdownFact milliseconds={remaining} /> : null}<Fact label="Completed" value={formatDate(step.completedAt)} /><Fact label="Timed out at" value={formatDate(step.timedOutAt)} /></dl>
+        {isCurrent && step.status === "Dispatched" ? <p className="mb-4 text-xs text-zinc-500">{step.external ? (step.invocation?.reconciliation ? "External continuation is held for manual reconciliation." : externalTerminalObserved ? "External result recorded; local continuation is pending." : "Waiting for an external process outcome.") : "Waiting for an outcome."}{step.timeoutLimit === null ? " No step timeout is configured." : ""}</p> : null}
+        <dl className={`grid gap-x-5 gap-y-4 sm:grid-cols-2 ${remaining !== null ? "xl:grid-cols-6" : "xl:grid-cols-5"}`}><Fact label="Execution order" value={step.executionOrder?.toString() ?? "—"} /><Fact label="Timeout limit" value={step.timeoutLimit ?? "—"} /><Fact label={step.external ? "Wait started" : "Dispatched"} value={formatDate(step.startedAt)} />{remaining !== null ? <CountdownFact milliseconds={remaining} /> : null}<Fact label="Completed" value={formatDate(step.completedAt)} /><Fact label="Timed out at" value={formatDate(step.timedOutAt)} /></dl>
         {isTimedOut ? <div className="mt-4 flex items-start gap-3 rounded-xl border border-orange-200 bg-orange-50 px-3.5 py-3 text-sm text-orange-800 dark:border-orange-900 dark:bg-orange-950/30 dark:text-orange-200"><TimerOff size={17} className="mt-0.5 shrink-0" aria-hidden="true" /><div><div className="font-semibold">Step timed out</div><div className="mt-0.5 text-xs text-orange-700/80 dark:text-orange-300/80">No valid outcome was received before {formatDate(step.timedOutAt)}.</div></div></div> : null}
         {hasInput || hasResult ? <div className="mt-4 grid gap-3 xl:grid-cols-2">{hasInput ? <PayloadPanel label="Input payload" value={step.input} /> : null}{hasResult ? <PayloadPanel label="Result" value={step.result} /> : null}</div> : null}
       </div>
@@ -311,7 +318,7 @@ function StepItem({ step, compensation, index, isLast, isCurrent, notExecuted, n
 }
 
 function OperationHeader({ kind, command, status, executionOrder, startedAt, endedAt, expanded, onToggle }: {
-  kind: "Forward" | "Compensation" | "Local operation" | "Local rollback"; command: string; status: string; executionOrder: number | null;
+  kind: "Forward" | "External process" | "Compensation" | "Local operation" | "Local rollback"; command: string; status: string; executionOrder: number | null;
   startedAt: string | null; endedAt: string | null; expanded: boolean; onToggle: () => void;
 }) {
   const timestamp = endedAt ?? startedAt;

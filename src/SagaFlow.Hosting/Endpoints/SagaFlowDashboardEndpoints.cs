@@ -91,6 +91,8 @@ public static class SagaFlowDashboardEndpoints
     {
         instance.Id,
         ProcessName = instance.DefinitionName,
+        instance.DefinitionDomain, instance.DefinitionVersion,
+        Origin = instance.IncomingInvocation is null ? "Local" : "External",
         instance.CorrelationId,
         Status = instance.Status.ToString(),
         instance.CurrentStep,
@@ -110,11 +112,34 @@ public static class SagaFlowDashboardEndpoints
         instance.CreatedAt,
         instance.UpdatedAt,
         instance.FailureReason,
+        Origin = instance.IncomingInvocation is null ? "Local" : "External",
+        IncomingInvocation = instance.IncomingInvocation is null ? null : new
+        {
+            instance.IncomingInvocation.Identity.InvocationId,
+            Source = instance.IncomingInvocation.Identity.Source,
+            instance.IncomingInvocation.Identity.SourceSagaInstanceId,
+            instance.IncomingInvocation.Identity.SourceStep,
+            SourceCorrelationId = instance.IncomingInvocation.Identity.CorrelationId,
+            SourceRequestCreatedAt = instance.IncomingInvocation.CreatedAt,
+            instance.IncomingInvocation.AcceptedAt
+        },
         DomainStarter = describeDomainStarter?.Invoke(instance) ?? new SagaDomainStarterDisplay(),
         Steps = instance.Steps.Select(step => new
         {
             step.StepName,
             step.Command,
+            step.External,
+            Invocation = step.Invocation is null ? null : new
+            {
+                step.Invocation.Identity.InvocationId,
+                step.Invocation.Identity.Target,
+                step.InvocationProgress?.TargetSagaInstanceId,
+                LastKnownStatus = step.InvocationProgress?.Status.ToString(),
+                CreatedAt = step.InvocationProgress?.CreatedAt,
+                UpdatedAt = step.InvocationProgress?.UpdatedAt,
+                LastObservedAt = step.InvocationProgress?.LastObservedAt,
+                Reconciliation = step.Reconciliation
+            },
             Status = step.Status.ToString(),
             step.ExecutionOrder,
             step.StartedAt,

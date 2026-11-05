@@ -2,14 +2,16 @@ using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.Messages;
 using SagaFlow.Core.State;
 using SagaFlow.Engine.ProcessDefinition;
+using SagaFlow.Engine.Notifications;
 
 namespace SagaFlow.Engine.Coordination;
 
 /// <summary>Local state operations only. Calls do not send requests or advance local Saga execution.</summary>
-public sealed class ProcessInvocationManager(ISagaStateStore store, ProcessDefinitionRegistry definitions, ISagaClock clock)
+public sealed class ProcessInvocationManager(ISagaStateStore store, ProcessDefinitionRegistry definitions, ISagaClock clock, SagaStateChangePublisher? changes = null)
 {
-    internal ValueTask<ProcessInvocationReceipt> PrepareAsync<T>(string instanceId, string stepId, string target, T payload, CancellationToken cancellationToken) =>
-        store.UpdateAsync(instanceId, instance =>
+    internal async ValueTask<ProcessInvocationReceipt> PrepareAsync<T>(string instanceId, string stepId, string target, T payload, CancellationToken cancellationToken)
+    {
+        var receipt = await store.UpdateAsync(instanceId, instance =>
         {
             if (instance.CurrentStep != stepId) throw new InvalidOperationException("Execution context is stale.");
             var request = new ProcessInvocationResolver(definitions, clock).Create(instance, target, payload);
@@ -23,6 +25,9 @@ public sealed class ProcessInvocationManager(ISagaStateStore store, ProcessDefin
             // The receipt describes registration, even if later observations have advanced the relationship.
             return new ProcessInvocationReceipt(request.Identity.InvocationId, request.Identity.Target, ExternalProcessStatus.Prepared);
         }, cancellationToken);
+        if (changes is not null) await changes.PublishAsync(instanceId);
+        return receipt;
+    }
 
     public async ValueTask<CrossDomainInstanceRelationship> FindAsync(string sourceInstanceId, string invocationId, CancellationToken cancellationToken = default)
     {
@@ -32,10 +37,11 @@ public sealed class ProcessInvocationManager(ISagaStateStore store, ProcessDefin
     }
 
     /// <summary>Explicit observation/application call for future messaging adapters. Identity must match the stored request exactly.</summary>
-    public ValueTask<CrossDomainInstanceRelationship> ObserveAsync(ProcessInvocationIdentity identity, ExternalProcessStatus status,
+    public async ValueTask<CrossDomainInstanceRelationship> ObserveAsync(ProcessInvocationIdentity identity, ExternalProcessStatus status,
         string? targetSagaInstanceId = null, CancellationToken cancellationToken = default,
-        InvocationMessage? message = null, string? fingerprint = null) =>
-        store.UpdateAsync(identity.SourceSagaInstanceId, instance =>
+        InvocationMessage? message = null, string? fingerprint = null)
+    {
+        var relationship = await store.UpdateAsync(identity.SourceSagaInstanceId, instance =>
         {
             EnsureOwner(instance, identity.Source);
             var step = FindStep(instance, identity.InvocationId);
@@ -80,15 +86,20 @@ public sealed class ProcessInvocationManager(ISagaStateStore store, ProcessDefin
             instance.UpdatedAt = now;
             return Snapshot(step);
         }, cancellationToken);
+        if (changes is not null) await changes.PublishAsync(identity.SourceSagaInstanceId);
+        return relationship;
+    }
 
     /// <summary>Create only local target state, without dispatching steps. Atomic store claim prevents duplicate creation.</summary>
-    public ValueTask<SagaInstance> GetOrCreateTargetAsync(ProcessInvocationRequest request, CancellationToken cancellationToken = default)
+    public async ValueTask<SagaInstance> GetOrCreateTargetAsync(ProcessInvocationRequest request, CancellationToken cancellationToken = default)
     {
         var target = request.Identity.Target;
         var definition = definitions.Find(new(target.Domain, target.Process, target.Version));
         if (definition?.Origin != DefinitionOrigin.Local) throw new InvalidOperationException("Target definition is not locally owned.");
-        return store.GetOrCreateIncomingAsync(request,
+        var instance = await store.GetOrCreateIncomingAsync(request,
             () => new SagaInstanceManager(clock).Create(definition.Definition, request.Payload), clock.UtcNow, cancellationToken);
+        if (changes is not null) await changes.PublishAsync(instance.Id);
+        return instance;
     }
 
     public async ValueTask<IncomingInvocation> AttachIncomingAsync(string targetInstanceId, ProcessInvocationRequest request,
@@ -97,6 +108,7 @@ public sealed class ProcessInvocationManager(ISagaStateStore store, ProcessDefin
         var instance = await store.FindAsync(targetInstanceId, cancellationToken) ?? throw new KeyNotFoundException("Target instance not found.");
         EnsureOwner(instance, request.Identity.Target);
         var bound = await store.AttachIncomingAsync(targetInstanceId, request, clock.UtcNow, cancellationToken);
+        if (changes is not null) await changes.PublishAsync(bound.Id);
         return bound.IncomingInvocation!;
     }
 

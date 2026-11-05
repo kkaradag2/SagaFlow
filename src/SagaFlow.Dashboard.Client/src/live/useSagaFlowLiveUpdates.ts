@@ -41,9 +41,8 @@ export function useSagaFlowLiveUpdates(onInstanceChanged: (instanceId: string | 
   }, []);
 }
 
-function getHubPath() {
-  const path = window.location.pathname.endsWith("/")
-    ? window.location.pathname
-    : `${window.location.pathname}/`;
-  return `${path}hub`;
+export function getHubPath() {
+  // The embedded middleware supplies a base URL for nested Dashboard routes.
+  // Resolve exactly like the API client rather than appending hub to /instances or a workflow URL.
+  return new URL("hub", document.baseURI).pathname;
 }
