@@ -10,7 +10,13 @@ vi.mock("@microsoft/signalr", () => ({
 }));
 beforeEach(() => { vi.clearAllMocks(); });
 afterEach(() => document.querySelector("base")?.remove());
-function Watch({ changed }: { changed: (id: string | null) => void }) { useSagaFlowLiveUpdates(changed); return null; }
+function Watch({ changed, enabled = true }: { changed: (id: string | null) => void; enabled?: boolean }) { useSagaFlowLiveUpdates(changed, enabled); return null; }
+it("does not subscribe in definition-only mode and cleans up when context is cleared", () => {
+  const view = render(<Watch changed={vi.fn()} enabled={false} />);
+  expect(hub.on).not.toHaveBeenCalled();
+  view.rerender(<Watch changed={vi.fn()} enabled={true} />); expect(hub.on).toHaveBeenCalledTimes(1);
+  view.rerender(<Watch changed={vi.fn()} enabled={false} />); expect(hub.off).toHaveBeenCalledTimes(1); expect(hub.stop).toHaveBeenCalledTimes(1);
+});
 it("resolves the configured Dashboard base on a deep instance URL", () => {
   window.history.replaceState(null, "", "/custom/saga/instances");
   const base = document.createElement("base"); base.href = "/custom/saga/"; document.head.append(base);

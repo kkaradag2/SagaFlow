@@ -11,6 +11,7 @@ export function ProcessNodeCard({ data, selected }: NodeProps<ProcessNode>) {
     <div className="truncate text-[11px] font-semibold uppercase tracking-wide text-zinc-600 dark:text-zinc-300">{data.domain}</div>
     <div className="mt-1 truncate text-sm font-semibold text-zinc-950 dark:text-zinc-50" title={data.process}>{data.process}</div>
     <div className="mt-2 text-xs text-zinc-600 dark:text-zinc-300">Version {data.version ?? "unspecified"}</div>
+    {Boolean(data.runtimeCount) && <div className="mt-1 text-[11px] font-semibold text-violet-700 dark:text-violet-300">Instance context · {data.runtimeCount} loaded</div>}
     <div className="mt-2 flex items-center gap-1.5 border-t border-zinc-100 pt-2 text-[11px] dark:border-zinc-800">
       <span className="font-medium text-zinc-700 dark:text-zinc-200">{data.origin}</span>
       <span className="text-zinc-400">·</span>

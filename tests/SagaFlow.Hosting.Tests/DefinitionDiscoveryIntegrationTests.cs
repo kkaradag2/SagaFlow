@@ -22,13 +22,15 @@ namespace SagaFlow.Hosting.Tests;
 
 public sealed class DefinitionDiscoveryIntegrationTests
 {
-    [Fact]
-    public async Task DashboardGraphMapsDeclaredRelationshipFromRealGrpcWithoutStartingSagas()
+    [Theory]
+    [InlineData("related")]
+    [InlineData("invokes")]
+    public async Task DashboardGraphMapsDeclaredRelationshipFromRealGrpcWithoutStartingSagas(string relationship)
     {
         await using var remote = await DomainHost.Start("return", "return-process");
         await using var local = await DomainHost.Start("order", "order-process", references:
             [new() { Domain = "return", Process = "return-process", Version = "1.0",
-                Endpoint = remote.Endpoint, Relationship = "related" }], publishTopology: true);
+                Endpoint = remote.Endpoint, Relationship = relationship }], publishTopology: true);
         using var client = new HttpClient { DefaultRequestVersion = HttpVersion.Version20,
             DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact };
         var response = await client.GetAsync($"{local.Endpoint}/sagaflow/api/definition-graph?domain=order&process=order-process&version=1.0");
@@ -46,7 +48,14 @@ public sealed class DefinitionDiscoveryIntegrationTests
         Assert.Equal("1.0", remoteNode.GetProperty("definition").GetProperty("version").GetString());
         Assert.True(remoteNode.GetProperty("definition").GetProperty("steps").GetArrayLength() > 0);
         Assert.False(remoteNode.GetProperty("definition").TryGetProperty("endpoint", out _));
-        Assert.Equal("related", root.GetProperty("edges")[0].GetProperty("relationship").GetString());
+        var edge = root.GetProperty("edges")[0];
+        Assert.Equal(relationship, edge.GetProperty("relationship").GetString());
+        Assert.Equal("order", edge.GetProperty("source").GetProperty("domain").GetString());
+        Assert.Equal("order-process", edge.GetProperty("source").GetProperty("name").GetString());
+        Assert.Equal("1.0", edge.GetProperty("source").GetProperty("version").GetString());
+        Assert.Equal("return", edge.GetProperty("target").GetProperty("domain").GetString());
+        Assert.Equal("return-process", edge.GetProperty("targetProcess").GetString());
+        Assert.Equal("1.0", edge.GetProperty("requestedVersion").GetString());
         Assert.Empty(root.GetProperty("failures").EnumerateArray());
         Assert.DoesNotContain(remote.Endpoint, await response.Content.ReadAsStringAsync());
         Assert.Empty(await local.App.Services.GetRequiredService<ISagaStateStore>().ListAsync());
@@ -76,6 +85,9 @@ public sealed class DefinitionDiscoveryIntegrationTests
         using var document = System.Text.Json.JsonDocument.Parse(json);
         Assert.Equal(new[] { "1.0", "2.0" }, document.RootElement.GetProperty("failures").EnumerateArray()
             .Select(failure => failure.GetProperty("requestedVersion").GetString()));
+        Assert.Single(document.RootElement.GetProperty("nodes").EnumerateArray());
+        Assert.All(document.RootElement.GetProperty("edges").EnumerateArray(), edge =>
+            Assert.Equal(System.Text.Json.JsonValueKind.Null, edge.GetProperty("target").ValueKind));
         Assert.DoesNotContain("127.0.0.1:1", json);
     }
 

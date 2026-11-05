@@ -14,8 +14,8 @@ import { DefinitionsPage } from "../pages/DefinitionsPage";
 import { BigPicturePage } from "../pages/BigPicturePage";
 import { InstancesPage } from "../pages/InstancesPage";
 import { OverviewPage } from "../pages/OverviewPage";
-import { getDefinitions, type SagaDefinition } from "../api/sagaflowApi";
-import { workflowFromPath, workflowPath, type WorkflowIdentity } from "./bigPictureRoute";
+import { getDefinitions, type SagaDefinition, type InstanceContext } from "../api/sagaflowApi";
+import { instanceContextFromSearch, instanceContextQuery, workflowFromPath, workflowPath, type WorkflowIdentity } from "./bigPictureRoute";
 
 const pages = [
   "Overview",
@@ -51,12 +51,15 @@ function pageFromPath(): Page {
     : segment === "instances" ? "Instances" : "Workflows";
 }
 function hasDeclaredRelationship(definition: SagaDefinition) {
-  return definition.bigPicture.some(reference => reference.relationship === "related");
+  return definition.bigPicture.some(reference => reference.relationship === "related" || reference.relationship === "invokes");
 }
 
 export function DashboardLayout() {
   const [activePage, setActivePage] = useState<Page>(pageFromPath);
   const [activeWorkflow, setActiveWorkflow] = useState<WorkflowIdentity | null>(() => workflowFromPath(window.location.pathname));
+  const [search, setSearch] = useState(() => window.location.search);
+  const instanceContext = useMemo(() => instanceContextFromSearch(search), [search]);
+  const instanceId = new URLSearchParams(search).get("instanceId");
   const [definitions, setDefinitions] = useState<SagaDefinition[]>([]);
   const [definitionsLoading, setDefinitionsLoading] = useState(true);
   const [definitionsError, setDefinitionsError] = useState<string | null>(null);
@@ -64,7 +67,7 @@ export function DashboardLayout() {
   const [isSidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isMobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const relatedDefinitions = useMemo(() => definitions.filter(hasDeclaredRelationship), [definitions]);
-  const bigPictureAvailable = !definitionsLoading && !definitionsError && relatedDefinitions.length > 0;
+  const bigPictureAvailable = !definitionsLoading && !definitionsError && (relatedDefinitions.length > 0 || Boolean(instanceContext));
   const visiblePage = activePage === "BigPicture" && !bigPictureAvailable ? "Workflows" : activePage;
 
   useEffect(() => {
@@ -79,7 +82,7 @@ export function DashboardLayout() {
   }, [reload]);
 
   useEffect(() => {
-    const onPopState = () => { setActivePage(pageFromPath()); setActiveWorkflow(workflowFromPath(window.location.pathname)); };
+    const onPopState = () => { setActivePage(pageFromPath()); setActiveWorkflow(workflowFromPath(window.location.pathname)); setSearch(window.location.search); };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
@@ -106,19 +109,33 @@ export function DashboardLayout() {
           error={definitionsError} onRefresh={() => setReload(value => value + 1)} />;
       case "BigPicture":
         return definitionsLoading ? <div role="status" className="text-sm text-zinc-500">Loading process relationships…</div>
-          : bigPictureAvailable ? <BigPicturePage definitions={definitions} workflow={activeWorkflow}
+          : bigPictureAvailable ? <BigPicturePage definitions={definitions} workflow={activeWorkflow} instanceContext={instanceContext}
+            onLocalInstanceOpen={id => {
+              const query = `?${new URLSearchParams({ instanceId: id })}`;
+              window.history.pushState(null, "", `${routeBase()}/instances${query}`);
+              setSearch(query); setActivePage("Instances"); setActiveWorkflow(null);
+            }}
+            onContextClear={() => { window.history.pushState(null, "", `${routeBase()}/bigpicture`); setSearch(""); setActiveWorkflow(null); }}
             onWorkflowOpen={workflow => {
-              window.history.pushState(null, "", workflowPath(routeBase(), workflow));
+              window.history.pushState(null, "", workflowPath(routeBase(), workflow) + instanceContextQuery(instanceContext));
               setActiveWorkflow(workflow);
               handleWorkflowOpen();
             }} onWorkflowBack={() => {
-              window.history.pushState(null, "", `${routeBase()}/bigpicture`);
+              window.history.pushState(null, "", `${routeBase()}/bigpicture${instanceContextQuery(instanceContext)}`);
               setActiveWorkflow(null);
             }} /> : null;
       case "Instances":
-        return <InstancesPage />;
+        return <InstancesPage key={instanceId ?? "list"} initialInstanceId={instanceId}
+          onInstanceNavigate={id => {
+            const query = id ? `?${new URLSearchParams({ instanceId: id })}` : "";
+            window.history.pushState(null, "", `${routeBase()}/instances${query}`); setSearch(query);
+          }} onBigPictureOpen={(context: InstanceContext) => {
+            const query = instanceContextQuery(context);
+            window.history.pushState(null, "", `${routeBase()}/bigpicture${query}`);
+            setSearch(query); setActivePage("BigPicture"); setActiveWorkflow(null);
+          }} />;
     }
-  }, [activePage, activeWorkflow, handleWorkflowOpen, definitions, definitionsLoading, definitionsError, bigPictureAvailable, relatedDefinitions]);
+  }, [activePage, activeWorkflow, handleWorkflowOpen, definitions, definitionsLoading, definitionsError, bigPictureAvailable, relatedDefinitions, instanceContext, instanceId]);
 
   const closeMobileSidebar = () => {
     setMobileSidebarOpen(false);
@@ -129,6 +146,7 @@ export function DashboardLayout() {
     window.history.pushState(null, "", `${routeBase()}/${routeName[page]}`);
     setActivePage(page);
     setActiveWorkflow(null);
+    setSearch("");
     closeMobileSidebar();
   };
 

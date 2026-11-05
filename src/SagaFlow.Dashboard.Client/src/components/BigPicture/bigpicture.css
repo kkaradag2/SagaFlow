@@ -12,3 +12,7 @@
 .bigpicture-canvas .react-flow__controls-button { background: #fff; color: #27272a; border-bottom-color: #e4e4e7; }
 .dark .bigpicture-canvas .react-flow__controls-button { background: #27272a; color: #f4f4f5; border-bottom-color: #52525b; }
 .bigpicture-canvas .react-flow__controls-button svg { fill: currentColor; }
+.bigpicture-canvas .bigpicture-edge-invokes .react-flow__edge-path { stroke: #7c3aed; }
+.dark .bigpicture-canvas .bigpicture-edge-invokes .react-flow__edge-path { stroke: #a78bfa; }
+.bigpicture-canvas .bigpicture-edge-runtime .react-flow__edge-path { stroke: #059669; }
+.dark .bigpicture-canvas .bigpicture-edge-runtime .react-flow__edge-path { stroke: #34d399; }

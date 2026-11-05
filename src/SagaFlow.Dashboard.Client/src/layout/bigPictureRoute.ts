@@ -1,4 +1,13 @@
 export type WorkflowIdentity = { domain: string; process: string; version: string };
+export type InstanceContext = WorkflowIdentity & { instanceId: string };
+export function instanceContextFromSearch(search: string): InstanceContext | null {
+  const query = new URLSearchParams(search);
+  const instanceId = query.get("instanceId"), domain = query.get("domain"), process = query.get("process"), version = query.get("version");
+  return instanceId && domain && process && version ? { instanceId, domain, process, version } : null;
+}
+export function instanceContextQuery(context: InstanceContext | null): string {
+  return context ? `?${new URLSearchParams(context)}` : "";
+}
 
 export function workflowPath(base: string, workflow: WorkflowIdentity): string {
   return `${base}/bigpicture/workflow/${encodeURIComponent(workflow.domain)}/${encodeURIComponent(workflow.process)}/${encodeURIComponent(workflow.version)}`;

@@ -14,6 +14,21 @@ export async function getMetadata(): Promise<SagaFlowMetadata> {
 }
 
 export type ProcessIdentity = { domain: string; process: string; version: string };
+export type InstanceContext = ProcessIdentity & { instanceId: string };
+export type InstanceRelationship = {
+  invocationId: string; perspective: "Source" | "Target";
+  source: ProcessIdentity; sourceSagaInstanceId: string; sourceStep: string; sourceCorrelationId: string;
+  target: ProcessIdentity; targetSagaInstanceId: string | null; targetCorrelationId: string | null;
+  lastKnownStatus: string | null; targetLocalStatus: string | null;
+  createdAt: string | null; updatedAt: string | null; lastObservedAt: string | null;
+  reconciliation: { reason: string; requiredAt: string } | null;
+};
+export type InstanceRelationshipPage = { localInstanceId: string; items: InstanceRelationship[]; nextOffset: number | null };
+export function getInstanceRelationships(context: InstanceContext, offset = 0, signal?: AbortSignal): Promise<InstanceRelationshipPage> {
+  const query = new URLSearchParams({ domain: context.domain, process: context.process, version: context.version,
+    offset: String(offset), limit: "100" });
+  return getJson(`api/instances/${encodeURIComponent(context.instanceId)}/relationships?${query}`, signal);
+}
 export type InvocationView = {
   invocationId: string; target: ProcessIdentity; targetSagaInstanceId: string | null;
   lastKnownStatus: string | null; createdAt: string | null; updatedAt: string | null; lastObservedAt: string | null;
@@ -133,14 +148,14 @@ export type SagaDefinition = {
   domain: string;
   version: string;
   steps: SagaStepDefinition[];
-  bigPicture: { domain: string; process: string; version: string | null; relationship?: "related" | null }[];
+  bigPicture: { domain: string; process: string; version: string | null; relationship?: "related" | "invokes" | null }[];
 };
 
 export type DefinitionIdentity = { domain: string; name: string; version: string };
 export type DefinitionGraph = {
   nodes: { domain: string; process: string; version: string; origin: "Local" | "Remote"; definition?: SagaDefinition }[];
   edges: { source: DefinitionIdentity; targetDomain: string; targetProcess: string;
-    requestedVersion: string | null; target: DefinitionIdentity | null; relationship: "related" | null }[];
+    requestedVersion: string | null; target: DefinitionIdentity | null; relationship: "related" | "invokes" | null }[];
   failures: { source: DefinitionIdentity; targetDomain: string; targetProcess: string;
     requestedVersion?: string | null; kind: string; message: string }[];
 };
