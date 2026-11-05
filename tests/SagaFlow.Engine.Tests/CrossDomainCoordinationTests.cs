@@ -8,7 +8,7 @@ using SagaFlow.Engine.Messaging;
 using SagaFlow.Engine.ProcessDefinition;
 namespace SagaFlow.Engine.Tests;
 
-public sealed class CrossDomainCoordinationTests
+public sealed partial class CrossDomainCoordinationTests
 {
     private sealed class Port : IProcessInvocationBus
     {
@@ -94,9 +94,12 @@ public sealed class CrossDomainCoordinationTests
         Assert.Equal(status.ToString(), target.Status.ToString());
         var after = (await s.Source.Store.FindAsync(source.Id))!;
         Assert.Equal(status, after.Steps[0].InvocationProgress!.Status);
-        Assert.Equal(status.ToString(), after.Steps[0].Result!.Value.GetProperty("status").GetString());
+        Assert.Null(after.Steps[0].Result);
+        Assert.NotNull(after.Steps[0].CompletedAt);
+        Assert.Equal(status == ExternalProcessStatus.Completed ? SagaStepStatus.Completed : SagaStepStatus.Failed, after.Steps[0].Status);
         Assert.Equal(nextCommand, Assert.Single(s.Source.Bus.Commands).Name);
         var terminal = target.InvocationTerminalOutcome!;
+        Assert.Equal(terminal.Message.MessageId, s.Source.Bus.Commands.Single().Headers.CausationId);
         await Task.WhenAll(Enumerable.Range(0, 16).Select(_ => s.SourceReceiver.ReceiveAsync(terminal)));
         Assert.Single(s.Source.Bus.Commands);
         await s.Source.Receiver.ReceiveAsync(s.Source.Outcome(s.Source.Bus.Commands.Single()));
@@ -169,7 +172,10 @@ public sealed class CrossDomainCoordinationTests
         var s = new Setup(reject: true); var source = await s.Start();
         Assert.Empty(await s.Target.Store.ListAsync());
         Assert.Equal("Recover", Assert.Single(s.Source.Bus.Commands).Name);
-        Assert.Equal("Rejected", source.Steps[0].Result!.Value.GetProperty("status").GetString());
+        Assert.Null(source.Steps[0].Result);
+        Assert.Equal(ExternalProcessStatus.Rejected, source.Steps[0].InvocationProgress!.Status);
+        Assert.Equal("Business rejection", source.Steps[0].InvocationProgress!.RejectionReason);
+        Assert.Equal(SagaStepStatus.Failed, source.Steps[0].Status);
     }
 
     [Fact]
@@ -194,6 +200,41 @@ public sealed class CrossDomainCoordinationTests
         Assert.Equal(SagaStatus.Failed, after.Status); Assert.Null(after.Steps[0].Result);
         Assert.Equal(ExternalProcessStatus.Completed, after.Steps[0].InvocationProgress!.Status);
         Assert.NotNull(after.Steps[0].Reconciliation); Assert.Empty(s.Source.Bus.Commands);
+    }
+
+    [Fact]
+    public async Task TimedOutSourceKeepsCoordinationObservationWithoutBusinessResultOrContinuation()
+    {
+        var s = new Setup(); var source = await s.Start();
+        await s.Source.Store.UpdateAsync(source.Id, instance =>
+        {
+            instance.Status = SagaStatus.TimedOut;
+            instance.Steps[0].Status = SagaStepStatus.TimedOut;
+            return true;
+        });
+        await s.Finish(ExternalProcessStatus.Completed);
+        var after = (await s.Source.Store.FindAsync(source.Id))!;
+        Assert.Equal(SagaStatus.TimedOut, after.Status);
+        Assert.Equal(SagaStepStatus.TimedOut, after.Steps[0].Status);
+        Assert.Null(after.Steps[0].Result);
+        Assert.Equal(ExternalProcessStatus.Completed, after.Steps[0].InvocationProgress!.Status);
+        Assert.Empty(s.Source.Bus.Commands);
+    }
+
+    [Fact]
+    public async Task ParticipantAndCompensationKeepIndependentBusinessSchemasEvenWithCoordinationLikeFieldNames()
+    {
+        var fixture = new CoordinationTestFixture(CoordinationTestFixture.Linear(2));
+        var id = await fixture.Coordinator.StartAsync(new { invoice = 17 });
+        await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.First(), result: new { status = "business-status", invocationId = "business-field" }));
+        await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.Last(), success: false, result: new[] { "business-error" }));
+        await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.Last(), result: new[] { "release", "receipt" }));
+        var state = await fixture.State(id);
+        Assert.Equal("business-status", state.Steps[0].Result!.Value.GetProperty("status").GetString());
+        Assert.Equal("business-field", state.Steps[0].Result!.Value.GetProperty("invocationId").GetString());
+        Assert.Equal("business-error", state.Steps[1].Result!.Value[0].GetString());
+        Assert.Equal("receipt", state.Compensations.Single().Result!.Value[1].GetString());
+        Assert.Equal(SagaCompensationStatus.Completed, state.Compensations.Single().Status);
     }
 
     [Fact]

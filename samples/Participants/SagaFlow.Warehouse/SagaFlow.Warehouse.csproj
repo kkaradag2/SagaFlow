@@ -3,7 +3,6 @@
   <ItemGroup>
     <PackageReference Include="RabbitMQ.Client" Version="7.2.2" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.2.3" />
-    <ProjectReference Include="../../../src/SagaFlow.Core/SagaFlow.Core.csproj" />
-    <Compile Include="../Shared/RabbitMqParticipantWorker.cs" Link="Messaging/RabbitMqParticipantWorker.cs" />
+    <ProjectReference Include="../Shared/SagaFlow.SampleParticipant.Messaging.csproj" />
   </ItemGroup>
 </Project>

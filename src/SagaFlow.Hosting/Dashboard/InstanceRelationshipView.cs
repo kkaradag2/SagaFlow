@@ -11,7 +11,7 @@ public sealed record InstanceRelationshipView(
     string SourceStep, string SourceCorrelationId, ProcessIdentity Target, string? TargetSagaInstanceId,
     string? TargetCorrelationId, string? LastKnownStatus, string? TargetLocalStatus,
     DateTimeOffset? CreatedAt, DateTimeOffset? UpdatedAt, DateTimeOffset? LastObservedAt,
-    InvocationReconciliation? Reconciliation)
+    InvocationReconciliation? Reconciliation, string? RejectionReason = null)
 {
     internal static async Task<IResult> ReadAsync(string instanceId, HttpContext context, ISagaStateStore store)
     {
@@ -59,7 +59,7 @@ public sealed record InstanceRelationshipView(
             yield return new(identity.InvocationId, "Source", identity.Source, instance.Id,
                 identity.SourceStep, identity.CorrelationId, identity.Target, step.InvocationProgress?.TargetSagaInstanceId,
                 null, step.InvocationProgress?.Status.ToString(), null, step.InvocationProgress?.CreatedAt,
-                step.InvocationProgress?.UpdatedAt, step.InvocationProgress?.LastObservedAt, step.Reconciliation);
+                step.InvocationProgress?.UpdatedAt, step.InvocationProgress?.LastObservedAt, step.Reconciliation, step.InvocationProgress?.RejectionReason);
         }
     }
 }

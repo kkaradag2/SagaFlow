@@ -12,6 +12,7 @@ public partial class WarehouseProgram
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen();
         builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<DeferredReplies>();
         builder.Services.AddSingleton<WarehouseRepository>();
         builder.Services.AddSingleton<IParticipantCommandHandler, WarehouseCommandHandler>();
         builder.Services.AddSingleton<IWarehouseOutcomePublisher, WarehouseOutcomePublisher>();

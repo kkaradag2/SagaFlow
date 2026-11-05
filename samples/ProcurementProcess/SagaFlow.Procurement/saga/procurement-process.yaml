@@ -1,0 +1,32 @@
+name: procurement-process
+version: "1.0"
+domain: procurement
+steps:
+  # The existing participant accepts id + totalQuantity and sends a deferred outcome to procurement.outcomes.
+  - name: managerApproval
+    command: RequestManagerApproval
+    transitions:
+      - on: success
+        when:
+          path: steps.managerApproval.result.approved
+          operator: equals
+          value: true
+        nextStep: invokeOrder
+      - on: success
+        nextStep: completed
+      - on: failure
+        nextStep: compensation
+  - name: invokeOrder
+    command: InvokeOrder
+    external: true
+    transitions:
+      - on: success
+        nextStep: completed
+      - on: failure
+        nextStep: compensation
+bigPicture:
+  - domain: order
+    process: order-process
+    version: "1.0"
+    relationship: invokes
+    endpoint: "https://localhost:50823"

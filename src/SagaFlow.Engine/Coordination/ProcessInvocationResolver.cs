@@ -35,8 +35,8 @@ public sealed class ProcessInvocationResolver(ProcessDefinitionRegistry definiti
             return existing;
         }
         var identity = new ProcessInvocationIdentity(Guid.NewGuid().ToString("N"), instance.CorrelationId,
-            new(sourceId.Domain, sourceId.Name, sourceId.Version), instance.Id, instance.CurrentStep!, targetId);
-        return step.Invocation = new(identity, json, new(identity, Guid.NewGuid().ToString("N"), clock?.UtcNow ?? DateTimeOffset.UtcNow));
+            new(sourceId.Domain, sourceId.Name, sourceId.Version), instance.Id, instance.CurrentStep!, targetId, step.Execution?.ExecutionId);
+        return step.Invocation = new(identity, json, new(identity, Guid.NewGuid().ToString("N"), clock?.UtcNow ?? DateTimeOffset.UtcNow, step.Execution?.CommandId));
     }
 
     public static ProcessIdentity ResolveTarget(SagaDefinition source, string target)

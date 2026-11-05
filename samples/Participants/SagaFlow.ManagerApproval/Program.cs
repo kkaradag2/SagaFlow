@@ -15,6 +15,7 @@ public class ManagerApprovalProgram
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen();
         builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<DeferredReplies>();
         builder.Services.AddSingleton<InMemoryApprovalRepository>();
         builder.Services.AddSingleton<IParticipantCommandHandler, ApprovalCommandHandler>();
         builder.Services.AddSingleton<IApprovalOutcomePublisher, RabbitMqApprovalOutcomePublisher>();

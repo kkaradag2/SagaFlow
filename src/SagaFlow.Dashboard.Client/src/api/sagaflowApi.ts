@@ -19,6 +19,7 @@ export type InstanceRelationship = {
   invocationId: string; perspective: "Source" | "Target";
   source: ProcessIdentity; sourceSagaInstanceId: string; sourceStep: string; sourceCorrelationId: string;
   target: ProcessIdentity; targetSagaInstanceId: string | null; targetCorrelationId: string | null;
+  rejectionReason?: string | null;
   lastKnownStatus: string | null; targetLocalStatus: string | null;
   createdAt: string | null; updatedAt: string | null; lastObservedAt: string | null;
   reconciliation: { reason: string; requiredAt: string } | null;
@@ -31,6 +32,7 @@ export function getInstanceRelationships(context: InstanceContext, offset = 0, s
 }
 export type InvocationView = {
   invocationId: string; target: ProcessIdentity; targetSagaInstanceId: string | null;
+  rejectionReason?: string | null;
   lastKnownStatus: string | null; createdAt: string | null; updatedAt: string | null; lastObservedAt: string | null;
   reconciliation: { reason: string; requiredAt: string } | null;
 };

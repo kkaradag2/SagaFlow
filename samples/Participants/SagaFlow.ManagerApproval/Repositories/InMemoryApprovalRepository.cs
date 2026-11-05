@@ -5,19 +5,18 @@ namespace SagaFlow.ManagerApproval.Repositories;
 public sealed class InMemoryApprovalRepository
 {
     private readonly object _gate = new();
-    private readonly Dictionary<(string Saga, string Step), ApprovalRecord> _approvals = [];
+    private readonly Dictionary<Guid, ApprovalRecord> _approvals = [];
 
     public ApprovalRecord Register(ApprovalRecord request)
     {
         lock (_gate)
         {
-            var key = (request.SagaInstanceId, request.StepId);
+            var key = request.ApprovalId;
             if (_approvals.TryGetValue(key, out var current))
             {
-                if (current.OrderId != request.OrderId || current.TotalQuantity != request.TotalQuantity
-                    || current.CorrelationId != request.CorrelationId || current.ReplyTo != request.ReplyTo)
-                    throw new InvalidOperationException("Duplicate approval command has conflicting metadata.");
-                return current; // Redelivery must never reset a decision or create another pending approval.
+                if (current.OrderId != request.OrderId || current.TotalQuantity != request.TotalQuantity)
+                    throw new InvalidOperationException("Approval business ID has conflicting input.");
+                return current;
             }
             _approvals.Add(key, request);
             return request;
@@ -52,7 +51,7 @@ public sealed class InMemoryApprovalRepository
                 Status = ApprovalStatus.Publishing, Decision = decision,
                 DecidedAt = current.DecidedAt ?? now, PublishError = null
             };
-            _approvals[(current.SagaInstanceId, current.StepId)] = claimed;
+            _approvals[current.ApprovalId] = claimed;
             return claimed;
         }
     }
@@ -61,7 +60,7 @@ public sealed class InMemoryApprovalRepository
     {
         lock (_gate)
         {
-            var key = (claim.SagaInstanceId, claim.StepId);
+            var key = claim.ApprovalId;
             var current = _approvals[key];
             if (current.Status != ApprovalStatus.Publishing || current.Decision != claim.Decision)
                 throw new InvalidOperationException("Approval publication is not active.");

@@ -17,6 +17,7 @@ public sealed partial class ProcessDefinitionValidator
         Check(definition.Steps is { Count: > 0 }, "steps must contain at least one step.");
         Check(definition.Steps is null || definition.Steps.Count <= 256, "steps exceeds the PoC limit of 256.");
         var names = new HashSet<string>(StringComparer.Ordinal);
+        var externalSteps = (definition.Steps ?? []).Where(s => s is { External: true }).Select(s => s.Name).ToHashSet(StringComparer.Ordinal);
         foreach (var step in definition.Steps ?? [])
         {
             if (step is null) { Check(false, "steps cannot contain null entries."); continue; }
@@ -45,7 +46,11 @@ public sealed partial class ProcessDefinitionValidator
                 Check(transition.When is null || transition.Condition is null, $"{prefix}, event '{transition.Event}': supply either a legacy when expression or a structured condition, not both.");
                 if (transition.Condition is not null)
                 {
-                    try { ConditionParser.Validate(transition.Condition, names); }
+                    try
+                    {
+                        ConditionParser.Validate(transition.Condition, names);
+                        ConditionParser.ValidateBusinessResultReference(transition.Condition.Path, step.Name, externalSteps);
+                    }
                     catch (FormatException ex) { Check(false, $"{prefix}, event '{transition.Event}': invalid condition '{transition.Condition.Path}'; {ex.Message}"); }
                 }
                 BooleanCondition? condition = null;
@@ -54,6 +59,7 @@ public sealed partial class ProcessDefinitionValidator
                     try
                     {
                         condition = ConditionParser.Parse(transition.When);
+                        ConditionParser.ValidateBusinessResultReference(condition.PropertyPath, step.Name, externalSteps);
                         Check(condition.PropertyPath.StartsWith("result.", StringComparison.Ordinal),
                             $"{prefix}, event '{transition.Event}': invalid condition '{transition.When}'; property path must start with 'result.'.");
                     }

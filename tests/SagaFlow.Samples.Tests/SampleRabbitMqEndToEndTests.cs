@@ -129,8 +129,9 @@ public sealed class SampleRabbitMqEndToEndTests
             {
                 using var record = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
                 Assert.Equal("Pending", record.RootElement.GetProperty("status").GetString());
-                Assert.Equal(result.SagaInstanceId.ToString("N"), record.RootElement.GetProperty("sagaInstanceId").GetString());
-                Assert.Equal("order.outcomes", record.RootElement.GetProperty("replyTo").GetString());
+                Assert.Equal(result.OrderId, record.RootElement.GetProperty("orderId").GetGuid());
+                Assert.False(record.RootElement.TryGetProperty("sagaInstanceId", out _));
+                Assert.False(record.RootElement.TryGetProperty("replyTo", out _));
                 var state = (await services.GetRequiredService<ISagaStateStore>().FindAsync(result.SagaInstanceId))!;
                 Assert.Equal(SagaStatus.Running, state.Status);
                 Assert.Equal("managerApproval", state.CurrentStep);
@@ -257,7 +258,7 @@ public sealed class SampleRabbitMqEndToEndTests
         Assert.Null(step.CompletedAt);
     }
 
-    private static List<Process> StartWorkers() =>
+    internal static List<Process> StartWorkers() =>
     [
         StartWorker("SagaFlow.Payment"),
         StartWorker("SagaFlow.Inventory"),
@@ -285,7 +286,7 @@ public sealed class SampleRabbitMqEndToEndTests
             ?? throw new InvalidOperationException($"Could not start {projectName}.");
     }
 
-    private static async Task StopWorkersAsync(IEnumerable<Process> workers)
+    internal static async Task StopWorkersAsync(IEnumerable<Process> workers)
     {
         foreach (var worker in workers)
         {
@@ -295,7 +296,7 @@ public sealed class SampleRabbitMqEndToEndTests
         }
     }
 
-    private static async Task<IConnection> CreateConnectionAsync()
+    internal static async Task<IConnection> CreateConnectionAsync()
     {
         var factory = new ConnectionFactory
         {
@@ -310,7 +311,7 @@ public sealed class SampleRabbitMqEndToEndTests
     }
 
 
-    private static async Task WaitForConsumersAsync(IConnection connection, bool includeApproval = false)
+    internal static async Task WaitForConsumersAsync(IConnection connection, bool includeApproval = false)
     {
         var queues = new[] { "payment", "inventory", "managerNotification", "shipment", "notification", "order.outcomes" }
             .Concat(includeApproval ? new[] { "managerApproval" } : []).ToArray();

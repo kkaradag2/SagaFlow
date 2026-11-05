@@ -302,7 +302,7 @@ public sealed class CompensationExecutionTests
         var invalid = new SagaOutcomeEvent
         {
             IsSuccess = true,
-            Headers = new()
+            Headers = command.Headers with
             {
                 SagaInstanceId = command.Headers.SagaInstanceId,
                 CorrelationId = mismatch == "correlation" ? "wrong" : command.Headers.CorrelationId,

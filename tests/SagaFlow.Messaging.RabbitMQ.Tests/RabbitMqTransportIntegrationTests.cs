@@ -15,7 +15,7 @@ using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
 namespace SagaFlow.Messaging.RabbitMQ.Tests;
 
 [Collection(RabbitMqIntegrationCollection.Name)]
-public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture broker)
+public sealed partial class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture broker)
 {
     [RabbitMqFact]
     public async Task ShutdownAfterConsumerChannelClosedIsIdempotent()
@@ -102,10 +102,10 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
 
         var sagaId = await StartSagaAsync(runtime.Host, new { orderId = 42 });
         var delivery = await GetMessageAsync(runtime.Topology.CommandQueue);
-        var command = RabbitMqMessageSerializer.DeserializeCommand(delivery.Body.Span);
+        var command = RabbitMqMessageSerializer.DeserializeCommand(delivery);
 
         Assert.Equal("application/json", delivery.BasicProperties.ContentType);
-        Assert.Equal(nameof(SagaCommand), delivery.BasicProperties.Type);
+        Assert.Equal("DoWork", delivery.BasicProperties.Type);
         Assert.Equal("DoWork", command.Name);
         Assert.Equal(42, command.Payload.GetProperty("orderId").GetInt32());
         Assert.Equal(sagaId.ToString("N"), command.Headers.SagaInstanceId);
@@ -120,7 +120,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
 
         await StartSagaAsync(runtime.Host, new { orderId = 5 });
         var delivery = await GetMessageAsync(runtime.Topology.CommandQueue);
-        var command = RabbitMqMessageSerializer.DeserializeCommand(delivery.Body.Span);
+        var command = RabbitMqMessageSerializer.DeserializeCommand(delivery);
 
         Assert.Equal(TimeSpan.FromSeconds(5), command.TimeToLive);
         Assert.Equal("5000", delivery.BasicProperties.Expiration);
@@ -146,8 +146,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
     {
         await using var runtime = await StartExternalAsync(definitionYaml: DefinitionWithTimeout("5s"));
         var sagaId = await StartSagaAsync(runtime.Host, new { id = 2 });
-        var command = RabbitMqMessageSerializer.DeserializeCommand(
-            (await GetMessageAsync(runtime.Topology.CommandQueue)).Body.Span);
+        var command = RabbitMqMessageSerializer.DeserializeCommand((await GetMessageAsync(runtime.Topology.CommandQueue)));
 
         await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, SuccessfulOutcome(command.Headers));
 
@@ -233,10 +232,8 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         await bus.PublishAsync(CreateCommand("SharedCommand", 1, topology.CommandQueue));
         await bus.PublishAsync(CreateCommand("SharedCommand", 2, secondQueue));
 
-        Assert.Equal(topology.CommandQueue, RabbitMqMessageSerializer.DeserializeCommand(
-            (await GetMessageAsync(topology.CommandQueue)).Body.Span).Headers.StepId);
-        Assert.Equal(secondQueue, RabbitMqMessageSerializer.DeserializeCommand(
-            (await GetMessageAsync(secondQueue)).Body.Span).Headers.StepId);
+        Assert.Equal(topology.CommandQueue, RabbitMqMessageSerializer.DeserializeCommand((await GetMessageAsync(topology.CommandQueue))).Headers.StepId);
+        Assert.Equal(secondQueue, RabbitMqMessageSerializer.DeserializeCommand((await GetMessageAsync(secondQueue))).Headers.StepId);
         await using var channel = await broker.Connection.CreateChannelAsync();
         await channel.QueueDeleteAsync(secondQueue);
     }
@@ -281,10 +278,10 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
             }
 
             var bus = runtime.Host.Services.GetRequiredService<ISagaMessageBus>();
-            await bus.PublishAsync(CreateCommand("SharedCommand", 1, "payment"));
+            await bus.PublishAsync(CreateCommand("SharedCommand", 1, "payment", "collision"));
 
             var delivery = await GetMessageAsync(topology.CommandQueue);
-            var command = RabbitMqMessageSerializer.DeserializeCommand(delivery.Body.Span);
+            var command = RabbitMqMessageSerializer.DeserializeCommand(delivery);
             Assert.Equal("SharedCommand", command.Name);
             Assert.Equal("payment", command.Headers.StepId);
             Assert.Equal("payment", delivery.RoutingKey);
@@ -332,8 +329,8 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
 
         var commands = new[]
         {
-            RabbitMqMessageSerializer.DeserializeCommand((await GetMessageAsync("payment")).Body.Span),
-            RabbitMqMessageSerializer.DeserializeCommand((await GetMessageAsync("payment")).Body.Span)
+            RabbitMqMessageSerializer.DeserializeCommand((await GetMessageAsync("payment"))),
+            RabbitMqMessageSerializer.DeserializeCommand((await GetMessageAsync("payment")))
         };
         Assert.Equal(
             new[] { "AuthorizePayment", "RefundPayment" },
@@ -347,7 +344,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         await using var runtime = await StartExternalAsync();
         var sagaId = await StartSagaAsync(runtime.Host, new { id = 1 });
         var delivery = await GetMessageAsync(runtime.Topology.CommandQueue);
-        var command = RabbitMqMessageSerializer.DeserializeCommand(delivery.Body.Span);
+        var command = RabbitMqMessageSerializer.DeserializeCommand(delivery);
 
         await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, new()
         {
@@ -366,7 +363,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         await using var runtime = await StartExternalAsync();
         var sagaId = await StartSagaAsync(runtime.Host, new { id = 1 });
         var delivery = await GetMessageAsync(runtime.Topology.CommandQueue);
-        var command = RabbitMqMessageSerializer.DeserializeCommand(delivery.Body.Span);
+        var command = RabbitMqMessageSerializer.DeserializeCommand(delivery);
 
         Assert.Equal(sagaId.ToString("N"), command.Headers.SagaInstanceId);
         Assert.Equal("work", command.Headers.StepId);
@@ -424,14 +421,16 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
     }
 
     [RabbitMqFact]
-    public async Task MalformedOutcomeIsDiscardedAndConsumerContinues()
+    public async Task UnversionedMalformedOutcomeIsQuarantinedAndConsumerContinues()
     {
         await using var runtime = await StartExternalAsync();
         var sagaId = await StartSagaAsync(runtime.Host, new { id = 1 });
         var delivery = await GetMessageAsync(runtime.Topology.CommandQueue);
-        var command = RabbitMqMessageSerializer.DeserializeCommand(delivery.Body.Span);
+        var command = RabbitMqMessageSerializer.DeserializeCommand(delivery);
 
         await PublishRawAsync(runtime.Topology.OutcomeQueue, "{not-json");
+        await WaitUntilAsync(async () => await MessageCountAsync(runtime.Topology.OutcomeQueue + ".quarantine") == 1);
+        Assert.Equal("{not-json", Encoding.UTF8.GetString((await GetMessageAsync(runtime.Topology.OutcomeQueue + ".quarantine")).Body.Span));
         await WaitUntilAsync(async () => await MessageCountAsync(runtime.Topology.OutcomeQueue) == 0);
 
         await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, new()
@@ -463,8 +462,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
             """;
         await using var runtime = await StartExternalAsync(definitionYaml: definition);
         var sagaId = await StartSagaAsync(runtime.Host, new { id = 1 });
-        var command = RabbitMqMessageSerializer.DeserializeCommand(
-            (await GetMessageAsync(runtime.Topology.CommandQueue)).Body.Span);
+        var command = RabbitMqMessageSerializer.DeserializeCommand((await GetMessageAsync(runtime.Topology.CommandQueue)));
         var before = (await FindSagaAsync(runtime.Host, sagaId))!;
 
         foreach (var malformed in new[] { "{}", "{\"flag\":null}", "{\"flag\":\"true\"}",
@@ -517,7 +515,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         {
             instances.Add(await StartSagaAsync(runtime.Host, new { id = index }));
             var delivery = await GetMessageAsync(runtime.Topology.CommandQueue);
-            var command = RabbitMqMessageSerializer.DeserializeCommand(delivery.Body.Span);
+            var command = RabbitMqMessageSerializer.DeserializeCommand(delivery);
             await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, new()
             {
                 IsSuccess = true,
@@ -539,10 +537,10 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
     {
         await using var runtime = await StartExternalAsync();
         var sagaId = await StartSagaAsync(runtime.Host, new { id = 1 });
-        var command = RabbitMqMessageSerializer.DeserializeCommand(
-            (await GetMessageAsync(runtime.Topology.CommandQueue)).Body.Span);
+        var command = RabbitMqMessageSerializer.DeserializeCommand((await GetMessageAsync(runtime.Topology.CommandQueue)));
         var outcome = SuccessfulOutcome(command.Headers);
 
+        var transport = runtime.Host.Services.GetRequiredService<RabbitMqTransport>();
         await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, outcome);
         await WaitUntilAsync(async () => (await FindSagaAsync(runtime.Host, sagaId))?.Status == SagaStatus.Completed);
         var completed = await FindSagaAsync(runtime.Host, sagaId);
@@ -550,6 +548,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, outcome);
         await WaitForConsumerAsync(runtime.Topology.OutcomeQueue);
 
+        await WaitUntilAsync(() => Task.FromResult(transport.DuplicateAcknowledgementCount == 1));
         var afterDuplicate = await FindSagaAsync(runtime.Host, sagaId);
         Assert.Equal(completed!.Revision, afterDuplicate!.Revision);
         Assert.Equal(SagaStatus.Completed, afterDuplicate.Status);
@@ -581,8 +580,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
             """;
         await using var runtime = await StartExternalAsync(definitionYaml: definition);
         var sagaId = await StartSagaAsync(runtime.Host, new { id = 1 });
-        var firstCommand = RabbitMqMessageSerializer.DeserializeCommand(
-            (await GetMessageAsync(runtime.Topology.CommandQueue)).Body.Span);
+        var firstCommand = RabbitMqMessageSerializer.DeserializeCommand((await GetMessageAsync(runtime.Topology.CommandQueue)));
         await using (var channel = await broker.Connection.CreateChannelAsync())
             await channel.QueueDeleteAsync("unroutable");
 
@@ -594,12 +592,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         Assert.Equal(SagaStepStatus.Failed, failedStep.Status);
         Assert.Null(failedStep.Result);
 
-        await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, SuccessfulOutcome(new()
-        {
-            SagaInstanceId = failed.Id,
-            CorrelationId = failed.CorrelationId,
-            StepId = failedStep.StepId
-        }));
+        await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, SuccessfulOutcome(failedStep.Execution!));
         await Task.Delay(250);
         await runtime.StopAsync();
 
@@ -616,24 +609,13 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
     {
         await using var runtime = await StartExternalAsync();
         var sagaId = await StartSagaAsync(runtime.Host, new { id = 1 });
-        var command = RabbitMqMessageSerializer.DeserializeCommand(
-            (await GetMessageAsync(runtime.Topology.CommandQueue)).Body.Span);
+        var command = RabbitMqMessageSerializer.DeserializeCommand((await GetMessageAsync(runtime.Topology.CommandQueue)));
         var before = await FindSagaAsync(runtime.Host, sagaId);
 
-        await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, SuccessfulOutcome(new()
-        {
-            SagaInstanceId = command.Headers.SagaInstanceId,
-            CorrelationId = "invalid-correlation",
-            StepId = command.Headers.StepId
-        }));
+        await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, SuccessfulOutcome(command.Headers with { CorrelationId = "invalid-correlation" }));
         await WaitForConsumerAsync(runtime.Topology.OutcomeQueue);
 
-        await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, SuccessfulOutcome(new()
-        {
-            SagaInstanceId = command.Headers.SagaInstanceId,
-            CorrelationId = command.Headers.CorrelationId,
-            StepId = "unknown-step"
-        }));
+        await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, SuccessfulOutcome(command.Headers with { StepId = "unknown-step" }));
         await WaitForConsumerAsync(runtime.Topology.OutcomeQueue);
 
         var after = await FindSagaAsync(runtime.Host, sagaId);
@@ -648,8 +630,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         var store = new FaultInjectingStateStore();
         await using var runtime = await StartExternalAsync(store: store);
         var sagaId = await StartSagaAsync(runtime.Host, new { id = 1 });
-        var command = RabbitMqMessageSerializer.DeserializeCommand(
-            (await GetMessageAsync(runtime.Topology.CommandQueue)).Body.Span);
+        var command = RabbitMqMessageSerializer.DeserializeCommand((await GetMessageAsync(runtime.Topology.CommandQueue)));
         store.FailNextUpdates(1);
 
         await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, SuccessfulOutcome(command.Headers));
@@ -664,8 +645,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         var store = new FaultInjectingStateStore();
         await using var runtime = await StartExternalAsync(store: store);
         var sagaId = await StartSagaAsync(runtime.Host, new { id = 1 });
-        var command = RabbitMqMessageSerializer.DeserializeCommand(
-            (await GetMessageAsync(runtime.Topology.CommandQueue)).Body.Span);
+        var command = RabbitMqMessageSerializer.DeserializeCommand((await GetMessageAsync(runtime.Topology.CommandQueue)));
         store.FailNextUpdates(2);
 
         await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, SuccessfulOutcome(command.Headers));
@@ -704,7 +684,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         {
             await using var channel = await broker.Connection.CreateChannelAsync();
             while (await channel.BasicGetAsync(runtime.Topology.CommandQueue, autoAck: true) is { } delivery)
-                received.Add(RabbitMqMessageSerializer.DeserializeCommand(delivery.Body.Span));
+                received.Add(RabbitMqMessageSerializer.DeserializeCommand(delivery));
             return received.Count == messageCount;
         });
 
@@ -720,7 +700,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         Action<RabbitMqOptions>? configure = null,
         IConnection? connection = null,
         ISagaStateStore? store = null,
-        string? definitionYaml = null)
+        string? definitionYaml = null, bool cleanupTopology = true)
     {
         topology ??= RabbitTopology.Create();
         var definitionPath = await WriteDefinitionAsync(definitionYaml);
@@ -736,7 +716,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         });
         var host = builder.Build();
         await host.StartAsync();
-        return new(host, topology, definitionPath, broker.Connection);
+        return new(host, topology, definitionPath, broker.Connection, cleanupTopology);
     }
 
     private async Task<TestRuntime> StartManagedAsync()
@@ -788,7 +768,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
     }
 
     private async Task PublishOutcomeAsync(string queue, SagaOutcomeEvent outcome) =>
-        await PublishRawAsync(queue, RabbitMqMessageSerializer.Serialize(outcome));
+        await PublishRawAsync(queue, RabbitMqMessageSerializer.Serialize(outcome), RabbitMqMessageSerializer.OutcomeProperties(outcome));
 
     private static SagaOutcomeEvent SuccessfulOutcome(SagaMessageHeaders headers) => new()
     {
@@ -798,7 +778,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         Result = JsonSerializer.SerializeToElement(new { accepted = true })
     };
 
-    private static SagaCommand CreateCommand(string name, int index, string stepId = "work") => new()
+    private static SagaCommand CreateCommand(string name, int index, string stepId = "work", string domain = "test") => new()
     {
         Name = name,
         Payload = JsonSerializer.SerializeToElement(new { index }),
@@ -806,21 +786,23 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         {
             SagaInstanceId = Guid.NewGuid().ToString("N"),
             CorrelationId = Guid.NewGuid().ToString("N"),
-            StepId = stepId
+            StepId = stepId, ProtocolVersion = 1, ProcessDomain = domain, ProcessName = "test-process", ProcessVersion = "1.0",
+            ExecutionId = Guid.NewGuid().ToString("N"), CommandId = Guid.NewGuid().ToString("N"), CommandName = name,
+            CreatedAt = DateTimeOffset.UtcNow, ReplyDestination = domain + ".outcomes"
         }
     };
 
     private async Task PublishRawAsync(string queue, string body) =>
         await PublishRawAsync(queue, Encoding.UTF8.GetBytes(body));
 
-    private async Task PublishRawAsync(string queue, byte[] body)
+    private async Task PublishRawAsync(string queue, byte[] body, BasicProperties? properties = null)
     {
         await using var channel = await broker.Connection.CreateChannelAsync(new CreateChannelOptions(true, true));
         await channel.BasicPublishAsync(
             exchange: string.Empty,
             routingKey: queue,
             mandatory: true,
-            basicProperties: new BasicProperties { ContentType = "application/json", DeliveryMode = DeliveryModes.Persistent },
+            basicProperties: properties ?? new BasicProperties { ContentType = "application/json", DeliveryMode = DeliveryModes.Persistent },
             body);
     }
 
@@ -935,7 +917,7 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
         }
     }
 
-    private sealed class TestRuntime(IHost host, RabbitTopology topology, string definitionPath, IConnection cleanupConnection) : IAsyncDisposable
+    private sealed class TestRuntime(IHost host, RabbitTopology topology, string definitionPath, IConnection cleanupConnection, bool cleanupTopology = true) : IAsyncDisposable
     {
         private bool _disposed;
         public IHost Host { get; } = host;
@@ -952,10 +934,11 @@ public sealed class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixture brok
             else Host.Dispose();
             File.Delete(definitionPath);
 
-            if (!cleanupConnection.IsOpen) return;
+            if (!cleanupTopology || !cleanupConnection.IsOpen) return;
             await using var channel = await cleanupConnection.CreateChannelAsync();
             await channel.QueueDeleteAsync(Topology.CommandQueue);
             await channel.QueueDeleteAsync(Topology.OutcomeQueue);
+            await channel.QueueDeleteAsync(Topology.OutcomeQueue + ".quarantine");
             await channel.ExchangeDeleteAsync(Topology.CommandExchange);
         }
     }

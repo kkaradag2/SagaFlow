@@ -2,9 +2,9 @@ namespace SagaFlow.Warehouse;
 
 public enum InspectionStatus { Pending, Publishing, Accepted, Rejected, PublishNotSent, PublishFailed }
 
-public sealed record InspectionRecord(Guid ReturnId, Guid OrderId, string SagaInstanceId,
-    string CorrelationId, string StepId, string ReplyTo, DateTimeOffset RequestedAt)
+public sealed record InspectionRecord(Guid ReturnId, Guid OrderId, DateTimeOffset RequestedAt)
 {
+    public Guid InspectionId { get; init; } = Guid.NewGuid();
     public InspectionStatus Status { get; init; } = InspectionStatus.Pending;
     public bool? Accepted { get; init; }
     public DateTimeOffset? DecidedAt { get; init; }
@@ -15,18 +15,17 @@ public sealed record InspectionRecord(Guid ReturnId, Guid OrderId, string SagaIn
 public sealed class WarehouseRepository
 {
     private readonly object _gate = new();
-    private readonly Dictionary<(string Saga, string Step), InspectionRecord> _records = [];
+    private readonly Dictionary<Guid, InspectionRecord> _records = [];
 
     public InspectionRecord Register(InspectionRecord record)
     {
         lock (_gate)
         {
-            var key = (record.SagaInstanceId, record.StepId);
+            var key = record.InspectionId;
             if (_records.TryGetValue(key, out var current))
             {
-                if (current.ReturnId != record.ReturnId || current.OrderId != record.OrderId ||
-                    current.CorrelationId != record.CorrelationId || current.ReplyTo != record.ReplyTo)
-                    throw new InvalidOperationException("Duplicate inspection has conflicting metadata.");
+                if (current.ReturnId != record.ReturnId || current.OrderId != record.OrderId)
+                    throw new InvalidOperationException("Inspection business ID has conflicting input.");
                 return current;
             }
             if (_records.Values.Any(x => x.ReturnId == record.ReturnId))
@@ -58,7 +57,7 @@ public sealed class WarehouseRepository
                 throw new InvalidOperationException("Inspection decision is already in progress or completed.");
             var claim = current with { Status = InspectionStatus.Publishing, Accepted = accepted,
                 DecidedAt = current.DecidedAt ?? now, PublishError = null };
-            _records[(current.SagaInstanceId, current.StepId)] = claim;
+            _records[current.InspectionId] = claim;
             return claim;
         }
     }
@@ -67,7 +66,7 @@ public sealed class WarehouseRepository
     {
         lock (_gate)
         {
-            var key = (claim.SagaInstanceId, claim.StepId);
+            var key = claim.InspectionId;
             var current = _records[key];
             if (current.Status != InspectionStatus.Publishing || current.Accepted != claim.Accepted)
                 throw new InvalidOperationException("Inspection publication is not active.");

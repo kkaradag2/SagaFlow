@@ -19,6 +19,7 @@ src/
   SagaFlow.Dashboard.Client/
 samples/
   OrderProcess/SagaFlow.Order/
+  ProcurementProcess/SagaFlow.Procurement/
   Participants/SagaFlow.Payment/
   Participants/SagaFlow.Inventory/
   Participants/SagaFlow.Shipment/
@@ -40,7 +41,8 @@ docs/
 - `SagaFlow.Dashboard`: embedded dashboard asset host.
 - `SagaFlow.Dashboard.Client`: React/Vite dashboard source.
 - `SagaFlow.Order`: OrderProcess Domain Starter and `POST /orders` API.
-- `SagaFlow.Payment`, `SagaFlow.Inventory`, `SagaFlow.Shipment`, `SagaFlow.Notification`: independent participant Worker Services prepared for the later messaging phase.
+- `SagaFlow.Procurement`: purchase-request Domain Starter; reuses ManagerApproval, then invokes Order through RabbitMQ. [Run instructions and boundaries](docs/06-manager-approval-sample.md#s2-7a-procurement--order-poc).
+- `SagaFlow.Payment`, `SagaFlow.Inventory`, `SagaFlow.Shipment`, `SagaFlow.Notification`: independent participant Worker Services using business-only JSON and AMQP execution metadata, without a SagaFlow runtime/SDK dependency. [BPI-1A wire contract](docs/04-local-saga-coordination.md#bpi-1a-dil-bağımsız-participant-wire-sözleşmesi).
 
 ## Feature Model Alignment
 

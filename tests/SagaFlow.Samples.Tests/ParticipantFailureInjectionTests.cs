@@ -1,5 +1,6 @@
 using System.Text.Json;
-using SagaFlow.Core.Messages;
+using SagaCommand = SagaFlow.Participants.Messaging.ParticipantCommand;
+using SagaOutcomeEvent = SagaFlow.Participants.Messaging.ParticipantOutcome;
 using SagaFlow.Inventory.Messaging;
 using SagaFlow.Inventory.Repositories;
 using SagaFlow.Inventory.Services;
