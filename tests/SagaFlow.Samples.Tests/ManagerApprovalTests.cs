@@ -1,3 +1,4 @@
+using SagaFlow.Participants.Messaging;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
@@ -6,7 +7,8 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
-using SagaFlow.Core.Messages;
+using SagaCommand = SagaFlow.Participants.Messaging.ParticipantCommand;
+using SagaOutcomeEvent = SagaFlow.Participants.Messaging.ParticipantOutcome;
 using SagaFlow.ManagerApproval;
 using SagaFlow.ManagerApproval.Domain;
 using SagaFlow.ManagerApproval.Messaging;
@@ -18,14 +20,18 @@ public sealed class ManagerApprovalTests
 {
     private sealed class RecordingPublisher : IApprovalOutcomePublisher
     {
+        public DeferredReplies Replies { get; } = new();
         public ConcurrentQueue<(SagaOutcomeEvent Outcome, string ReplyTo)> Attempts { get; } = new();
         public ConcurrentQueue<(SagaOutcomeEvent Outcome, string ReplyTo)> Sent { get; } = new();
         public ConcurrentQueue<(SagaOutcomeEvent Outcome, string ReplyTo)> Confirmed { get; } = new();
         public Func<Task>? OnConnect { get; init; }
         public Func<Task>? OnCreateChannel { get; init; }
         public Func<Task>? OnPublish { get; init; }
-        public async Task PublishAsync(SagaOutcomeEvent outcome, string replyTo, CancellationToken cancellationToken)
+        public async Task PublishAsync(Guid approvalId, bool approved, CancellationToken cancellationToken)
         {
+            var publication = Replies.Prepare(Replies.ForBusinessRecord(approvalId), "RequestManagerApprovalCompleted", new { approved });
+            var outcome = publication.Outcome;
+            var replyTo = publication.ReplyTo;
             Assert.False(cancellationToken.CanBeCanceled);
             Attempts.Enqueue((outcome, replyTo));
             try
@@ -47,6 +53,8 @@ public sealed class ManagerApprovalTests
             services.RemoveAll<IHostedService>();
             services.RemoveAll<IApprovalOutcomePublisher>();
             services.AddSingleton<IApprovalOutcomePublisher>(publisher);
+            services.RemoveAll<DeferredReplies>();
+            services.AddSingleton(publisher.Replies);
         }));
 
     private static SagaCommand Command(Guid orderId, string sagaId = "saga-1") => new()
@@ -57,7 +65,7 @@ public sealed class ManagerApprovalTests
     };
 
     private static ApprovalCommandHandler Handler(WebApplicationFactory<ManagerApprovalProgram> factory) =>
-        new(factory.Services.GetRequiredService<InMemoryApprovalRepository>(), TimeProvider.System);
+        new(factory.Services.GetRequiredService<InMemoryApprovalRepository>(), TimeProvider.System, factory.Services.GetRequiredService<DeferredReplies>());
 
     [Fact]
     public async Task CommandAndRedeliveryCreateOnePendingApprovalWithoutPublishingAnOutcome()
@@ -73,10 +81,10 @@ public sealed class ManagerApprovalTests
         var record = Assert.Single(pending.RootElement.EnumerateArray());
         Assert.Equal("Pending", record.GetProperty("status").GetString());
         Assert.Equal(1001, record.GetProperty("totalQuantity").GetInt64());
-        Assert.Equal(command.Headers.SagaInstanceId, record.GetProperty("sagaInstanceId").GetString());
-        Assert.Equal(command.Headers.CorrelationId, record.GetProperty("correlationId").GetString());
-        Assert.Equal("managerApproval", record.GetProperty("stepId").GetString());
-        Assert.Equal("order.outcomes", record.GetProperty("replyTo").GetString());
+        Assert.Equal(command.Payload.GetProperty("id").GetGuid(), record.GetProperty("orderId").GetGuid());
+        Assert.True(record.GetProperty("approvalId").GetGuid() != Guid.Empty);
+        foreach (var field in new[] { "sagaInstanceId", "correlationId", "stepId", "replyTo", "transportContext" })
+            Assert.False(record.TryGetProperty(field, out _));
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync($"/approvals/{command.Payload.GetProperty("id").GetGuid()}" )).StatusCode);
         Assert.Empty(publisher.Sent);
     }
@@ -126,11 +134,13 @@ public sealed class ManagerApprovalTests
     public void ConflictingRedeliveryCannotOverwriteOriginalSagaMetadata()
     {
         var repository = new InMemoryApprovalRepository();
-        var handler = new ApprovalCommandHandler(repository, TimeProvider.System);
+        var replies = new DeferredReplies();
+        var handler = new ApprovalCommandHandler(repository, TimeProvider.System, replies);
         var id = Guid.NewGuid();
         handler.Handle(Command(id), "original.outcomes");
         Assert.Throws<InvalidOperationException>(() => handler.Handle(Command(id), "different.outcomes"));
-        Assert.Equal("original.outcomes", Assert.Single(repository.Pending()).ReplyTo);
+        var original = Assert.Single(repository.Pending());
+        Assert.Equal("original.outcomes", replies.Prepare(replies.ForBusinessRecord(original.ApprovalId), "result", new { }).ReplyTo);
     }
 
     [Fact]
@@ -320,11 +330,12 @@ public sealed class ManagerApprovalTests
         var id = Guid.NewGuid();
         Handler(factory).Handle(Command(id, "saga-a"), "a.outcomes");
         Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.PostAsJsonAsync($"/approvals/{id}/decision", new { decision = "approve" })).StatusCode);
+        var firstApprovalId = Assert.Single(factory.Services.GetRequiredService<InMemoryApprovalRepository>().Find(id)).ApprovalId;
         Handler(factory).Handle(Command(id, "saga-b"), "b.outcomes");
         Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync($"/approvals/{id}/decision", new { decision = "approve" })).StatusCode);
         var records = factory.Services.GetRequiredService<InMemoryApprovalRepository>().Find(id);
-        Assert.Equal(ApprovalStatus.PublishNotSent, records.Single(record => record.SagaInstanceId == "saga-a").Status);
-        Assert.Equal(ApprovalStatus.Pending, records.Single(record => record.SagaInstanceId == "saga-b").Status);
+        Assert.Equal(ApprovalStatus.PublishNotSent, records.Single(record => record.ApprovalId == firstApprovalId).Status);
+        Assert.Equal(ApprovalStatus.Pending, records.Single(record => record.ApprovalId != firstApprovalId).Status);
         Assert.Single(publisher.Attempts);
         Assert.Empty(publisher.Sent);
     }

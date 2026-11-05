@@ -6,6 +6,7 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\samples\ProcurementProcess\SagaFlow.Procurement\SagaFlow.Procurement.csproj" />
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.0" />
@@ -31,5 +32,6 @@
   <ItemGroup>
     <None Include="..\..\samples\OrderProcess\SagaFlow.Order\saga\order-process.yaml" Link="order-process.yaml" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\samples\ReturnProcess\SagaFlow.Return\saga\return-process.yaml" Link="return-process.yaml" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\samples\ProcurementProcess\SagaFlow.Procurement\saga\procurement-process.yaml" Link="procurement-process.yaml" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

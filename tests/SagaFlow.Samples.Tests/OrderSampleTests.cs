@@ -61,9 +61,10 @@ public sealed class OrderSampleTests
 
         Assert.Equal(("order", "order-process", "1.0"), (definition.Domain, definition.Name, definition.Version));
         Assert.Equal(new[] { "payment", "inventory", "managerNotification", "managerApproval", "shipment", "notification" }, definition.Steps.Select(step => step.Name));
+        // Manual S2-7B sample steps deliberately wait without a deadline; Engine timeout fixtures remain independent.
+        Assert.All(definition.Steps, step => Assert.Null(step.TimeoutLimit));
         Assert.All(definition.Steps.Where(step => step.Name is "payment" or "inventory" or "shipment" or "notification"), step =>
         {
-            Assert.Equal("10s", step.TimeoutLimit);
             Assert.Equal(3, step.MaxAttempts);
             Assert.Contains(step.Transitions, transition => transition.Event == "timeout" && transition.NextStep == "compensation");
         });

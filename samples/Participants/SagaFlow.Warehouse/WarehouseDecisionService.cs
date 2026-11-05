@@ -1,6 +1,6 @@
 using System.Text.Json;
 using RabbitMQ.Client;
-using SagaFlow.Core.Messages;
+using SagaFlow.Participants.Messaging;
 
 namespace SagaFlow.Warehouse;
 
@@ -9,13 +9,13 @@ public sealed class WarehouseOutcomeNotSentException(Exception inner)
 
 public interface IWarehouseOutcomePublisher
 {
-    Task PublishAsync(SagaOutcomeEvent outcome, string replyTo);
+    Task PublishAsync(Guid inspectionId, bool accepted);
 }
 
-public sealed class WarehouseOutcomePublisher(IConfiguration configuration) : IWarehouseOutcomePublisher
+public sealed class WarehouseOutcomePublisher(IConfiguration configuration, DeferredReplies replies) : IWarehouseOutcomePublisher
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-    public async Task PublishAsync(SagaOutcomeEvent outcome, string replyTo)
+    public async Task PublishAsync(Guid inspectionId, bool accepted)
     {
         var publishStarted = false;
         try
@@ -32,15 +32,13 @@ public sealed class WarehouseOutcomePublisher(IConfiguration configuration) : IW
             };
             await using var connection = await factory.CreateConnectionAsync(deadline.Token);
             await using var channel = await connection.CreateChannelAsync(new CreateChannelOptions(true, true), deadline.Token);
-            var properties = new BasicProperties {
-                ContentType = "application/json", DeliveryMode = DeliveryModes.Persistent,
-                Type = nameof(SagaOutcomeEvent),
-                MessageId = $"{outcome.Headers.SagaInstanceId}:{outcome.Headers.StepId}:outcome",
-                CorrelationId = outcome.Headers.CorrelationId
-            };
+            var publication = replies.Prepare(replies.ForBusinessRecord(inspectionId), "InspectReturnCompleted", new { accepted });
+            var outcome = publication.Outcome;
+            var replyTo = publication.ReplyTo;
+            var properties = ParticipantProtocol.OutcomeProperties(outcome);
             publishStarted = true;
             await channel.BasicPublishAsync(exchange: string.Empty, routingKey: replyTo, mandatory: true,
-                basicProperties: properties, body: JsonSerializer.SerializeToUtf8Bytes(outcome, JsonOptions),
+                basicProperties: properties, body: JsonSerializer.SerializeToUtf8Bytes(outcome.Result, JsonOptions),
                 cancellationToken: deadline.Token);
         }
         catch (Exception error) when (!publishStarted) { throw new WarehouseOutcomeNotSentException(error); }
@@ -56,12 +54,7 @@ public sealed class WarehouseDecisionService(WarehouseRepository repository, IWa
     {
         cancellationToken.ThrowIfCancellationRequested();
         var claim = repository.BeginDecision(returnId, accepted, timeProvider.GetUtcNow());
-        var outcome = new SagaOutcomeEvent {
-            Name = "InspectReturnCompleted", IsSuccess = true,
-            Headers = new() { SagaInstanceId = claim.SagaInstanceId, CorrelationId = claim.CorrelationId, StepId = claim.StepId },
-            Result = JsonSerializer.SerializeToElement(new { accepted })
-        };
-        try { await publisher.PublishAsync(outcome, claim.ReplyTo); }
+        try { await publisher.PublishAsync(claim.InspectionId, accepted); }
         catch (WarehouseOutcomeNotSentException error)
         {
             logger.LogError(error, "Warehouse outcome not sent for return {ReturnId}", returnId);

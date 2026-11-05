@@ -2,6 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import definitions from "./fixtures/order-definition.json";
+import type { SagaDefinition } from "../src/api/sagaflowApi";
 import WorkflowGraph from "../src/components/Workflow/WorkflowGraph";
 import { layoutWorkflow } from "../src/components/Workflow/workflowLayout";
 import { createWorkflowGraph, type WorkflowEdge, type WorkflowNode } from "../src/components/Workflow/workflowMapping";
@@ -29,7 +30,7 @@ beforeEach(() => {
   vi.mocked(layoutWorkflow).mockImplementation(async graph => graph);
 });
 
-async function openGraph(definition = definitions[0]) {
+async function openGraph(definition: SagaDefinition = definitions[0]) {
   const result = render(<ThemeProvider><WorkflowGraph definition={definition} /></ThemeProvider>);
   await screen.findByRole("button", { name: "Select step:payment" });
   return result;
@@ -49,7 +50,9 @@ describe("workflow details drawer", () => {
 
   it("opens on a step and closes with X without remounting the canvas or repeating layout", async () => {
     const user = userEvent.setup();
-    await openGraph();
+    // Keep positive timeout rendering coverage independent of the manual sample's disabled deadlines.
+    await openGraph({ ...definitions[0], steps: definitions[0].steps.map(step =>
+      step.name === "payment" ? { ...step, timeoutLimit: "10s" } : step) });
     const canvas = screen.getByTestId("flow");
     await user.click(screen.getByRole("button", { name: "Zoom canvas" }));
     await user.click(screen.getByRole("button", { name: "Select step:payment" }));

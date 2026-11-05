@@ -59,8 +59,7 @@ public sealed class ReturnRabbitMqEndToEndTests
                         await Assert.ThrowsAsync<InvalidSagaOutcomeException>(() =>
                             scope.ServiceProvider.GetRequiredService<OutcomeEventReceiver>().ReceiveAsync(new SagaOutcomeEvent {
                                 Name = "InspectReturnCompleted", IsSuccess = true,
-                                Headers = new() { SagaInstanceId = created.SagaInstanceId.ToString("N"),
-                                    CorrelationId = before.CorrelationId, StepId = "warehouse" },
+                                Headers = before.Steps.Single(step => step.StepId == "warehouse").Execution!,
                                 Result = result.RootElement.Clone() }));
                         Assert.Equal(before.Revision,
                             (await returns.Services.GetRequiredService<ISagaStateStore>().FindAsync(created.SagaInstanceId))!.Revision);

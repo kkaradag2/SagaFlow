@@ -4,6 +4,7 @@ namespace SagaFlow.Core.State;
 
 public sealed class SagaStepState
 {
+    public SagaFlow.Core.Messages.SagaMessageHeaders? Execution { get; set; }
     public SagaFlow.Core.Messages.ProcessInvocationRequest? Invocation { get; set; }
     public IReadOnlyList<InvocationObservedMessage> ObservedMessages { get; set; } = [];
     public InvocationReconciliation? Reconciliation { get; set; }

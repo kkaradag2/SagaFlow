@@ -193,7 +193,7 @@ public sealed class LocalSagaCoordinationTests
         var header = fixture.Bus.Commands.Single().Headers;
         var invalid = new SagaOutcomeEvent
         {
-            IsSuccess = true, Headers = new()
+            IsSuccess = true, Headers = header with
             {
                 SagaInstanceId = mismatch == "instance" ? Guid.NewGuid().ToString("N") : header.SagaInstanceId,
                 CorrelationId = mismatch == "correlation" ? "wrong" : header.CorrelationId,
@@ -261,12 +261,7 @@ public sealed class LocalSagaCoordinationTests
         var outcome = new SagaOutcomeEvent
         {
             IsSuccess = true,
-            Headers = new()
-            {
-                SagaInstanceId = before.Id,
-                CorrelationId = before.CorrelationId,
-                StepId = dispatchError.StepId
-            },
+            Headers = before.Steps.Single(step => step.StepId == dispatchError.StepId).Execution!,
             Result = System.Text.Json.JsonSerializer.SerializeToElement(new { accepted = true })
         };
 

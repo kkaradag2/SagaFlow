@@ -7,7 +7,7 @@
       {
         "name": "payment",
         "command": "AuthorizePayment",
-        "timeoutLimit": "10s",
+        "timeoutLimit": null,
         "maxAttempts": 3,
         "compensation": {
           "command": "RefundPayment"
@@ -39,7 +39,7 @@
       {
         "name": "inventory",
         "command": "ReserveInventory",
-        "timeoutLimit": "10s",
+        "timeoutLimit": null,
         "maxAttempts": 3,
         "compensation": {
           "command": "ReleaseInventory"
@@ -83,7 +83,7 @@
       {
         "name": "managerNotification",
         "command": "NotifyManager",
-        "timeoutLimit": "10s",
+        "timeoutLimit": null,
         "maxAttempts": 1,
         "compensation": null,
         "transitions": [
@@ -148,7 +148,7 @@
       {
         "name": "shipment",
         "command": "CreateShipment",
-        "timeoutLimit": "10s",
+        "timeoutLimit": null,
         "maxAttempts": 3,
         "compensation": {
           "command": "CancelShipment"
@@ -180,7 +180,7 @@
       {
         "name": "notification",
         "command": "SendOrderNotification",
-        "timeoutLimit": "10s",
+        "timeoutLimit": null,
         "maxAttempts": 3,
         "compensation": null,
         "transitions": [

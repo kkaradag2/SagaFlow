@@ -16,17 +16,7 @@ public sealed class OrderService(
 
     public async Task<CreateOrderResult> CreateAsync(CreateOrderRequest request, CancellationToken cancellationToken = default)
     {
-        var items = request.Items
-            .Select(item => new OrderItem(item.ProductId.Trim(), item.Quantity, item.UnitPrice))
-            .ToArray();
-
-        var order = new Domain.Order(
-            Guid.NewGuid(),
-            request.CustomerId.Trim(),
-            Array.AsReadOnly(items),
-            items.Sum(item => item.LineTotal),
-            timeProvider.GetUtcNow(),
-            request.FailureAt);
+        var order = OrderCreation.Create(request, timeProvider.GetUtcNow());
 
         await repository.AddAsync(order, cancellationToken);
 
