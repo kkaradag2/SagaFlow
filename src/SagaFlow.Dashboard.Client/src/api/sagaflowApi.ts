@@ -13,9 +13,22 @@ export async function getMetadata(): Promise<SagaFlowMetadata> {
   return response.json() as Promise<SagaFlowMetadata>;
 }
 
+export type ProcessIdentity = { domain: string; process: string; version: string };
+export type InvocationView = {
+  invocationId: string; target: ProcessIdentity; targetSagaInstanceId: string | null;
+  lastKnownStatus: string | null; createdAt: string | null; updatedAt: string | null; lastObservedAt: string | null;
+  reconciliation: { reason: string; requiredAt: string } | null;
+};
+export type IncomingInvocationView = {
+  invocationId: string; source: ProcessIdentity; sourceSagaInstanceId: string; sourceStep: string;
+  sourceCorrelationId: string; sourceRequestCreatedAt: string; acceptedAt: string;
+};
 export type SagaInstanceSummary = {
   id: string;
   processName: string;
+  definitionDomain?: string;
+  definitionVersion?: string;
+  origin?: "Local" | "External";
   correlationId: string;
   status: string;
   currentStep: string | null;
@@ -25,6 +38,8 @@ export type SagaInstanceSummary = {
 
 export type SagaStep = {
   stepName: string;
+  external?: boolean;
+  invocation?: InvocationView | null;
   command: string;
   status: string;
   executionOrder: number | null;
@@ -67,6 +82,7 @@ export type SagaInstanceDetail = SagaInstanceSummary & {
   definitionDomain: string;
   definitionVersion: string;
   failureReason: string | null;
+  incomingInvocation?: IncomingInvocationView | null;
   steps: SagaStep[];
   compensations: SagaCompensation[];
   domainRollback: SagaDomainRollback | null;

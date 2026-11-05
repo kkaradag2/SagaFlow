@@ -2,6 +2,7 @@ using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.Messages;
 using SagaFlow.Core.State;
 using SagaFlow.Engine.ProcessDefinition;
+using SagaFlow.Engine.Notifications;
 namespace SagaFlow.Engine.Messaging;
 
 public sealed class ProcessInvocationPublishException(string sourceInstanceId, string invocationId, Exception inner)
@@ -11,7 +12,7 @@ public sealed class ProcessInvocationPublishException(string sourceInstanceId, s
     public string InvocationId { get; } = invocationId;
 }
 
-public sealed class ProcessInvocationPublisher(ISagaStateStore store, IProcessInvocationBus bus, ProcessDefinitionRegistry definitions, ISagaClock clock)
+public sealed class ProcessInvocationPublisher(ISagaStateStore store, IProcessInvocationBus bus, ProcessDefinitionRegistry definitions, ISagaClock clock, SagaStateChangePublisher? changes = null)
 {
     public async Task PublishForStepAsync(string instanceId, string stepId, CancellationToken cancellationToken = default)
     {
@@ -42,6 +43,7 @@ public sealed class ProcessInvocationPublisher(ISagaStateStore store, IProcessIn
             step.Publication = new(attempt, clock.UtcNow, null);
             return step.Invocation;
         }, cancellationToken);
+        if (changes is not null) await changes.PublishAsync(instanceId);
         Exception? failure = null;
         try { await bus.PublishAsync(request, cancellationToken); }
         catch (Exception error) { failure = error; }
@@ -61,6 +63,7 @@ public sealed class ProcessInvocationPublisher(ISagaStateStore store, IProcessIn
             throw new ProcessInvocationPublishException(instanceId, invocationId,
                 failure is null ? bookkeepingFailure : new AggregateException(failure, bookkeepingFailure));
         }
+        if (changes is not null) await changes.PublishAsync(instanceId);
         if (failure is not null) throw new ProcessInvocationPublishException(instanceId, invocationId, failure);
     }
 
@@ -85,6 +88,7 @@ public sealed class ProcessInvocationPublisher(ISagaStateStore store, IProcessIn
                 throw new InvalidOperationException("Conflicting terminal outcome.");
             return instance.InvocationTerminalOutcome ??= new(new(incoming.Identity, Guid.NewGuid().ToString("N"), clock.UtcNow), instance.Id, status);
         }, cancellationToken);
+        if (changes is not null) await changes.PublishAsync(targetInstanceId);
         await bus.PublishAsync(outcome, cancellationToken);
     }
 }

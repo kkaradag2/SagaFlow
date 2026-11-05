@@ -1,6 +1,6 @@
 namespace SagaFlow.Engine.Notifications;
 
-/// <summary>Best-effort, process-local notification fan-out after durable state mutations.</summary>
+/// <summary>Best-effort, process-local notification fan-out after committed local state mutations.</summary>
 public sealed class SagaStateChangePublisher(IEnumerable<ISagaStateChangeListener>? listeners = null)
 {
     private readonly ISagaStateChangeListener[] _listeners = listeners?.ToArray() ?? [];
