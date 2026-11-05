@@ -2,34 +2,50 @@ import { Background, BackgroundVariant, Controls, ReactFlow } from "@xyflow/reac
 import { ArrowLeft, X } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { DefinitionGraph, SagaDefinition } from "../../api/sagaflowApi";
+import type { DefinitionGraph, SagaDefinition, InstanceRelationship, InstanceContext } from "../../api/sagaflowApi";
 import type { WorkflowIdentity } from "../../layout/bigPictureRoute";
 import { useTheme } from "../../theme/ThemeProvider";
-import { mapBigPicture, type ProcessEdge, type ProcessNode, type ProcessNodeData, type ProcessEdgeData } from "./bigPictureMapping";
+import { mapBigPicture, processKey, relationshipMatches, type ProcessEdge, type ProcessNode, type ProcessNodeData, type ProcessEdgeData } from "./bigPictureMapping";
+import { RuntimeRelationshipDetails } from "./RuntimeRelationshipDetails";
+import { CopyIdentity } from "../InstanceTraceability";
 import { ProcessNodeCard } from "./ProcessNodeCard";
+import { ProcessRelationshipEdge } from "./ProcessRelationshipEdge";
 import "@xyflow/react/dist/style.css";
 import "../Workflow/workflow.css";
 import "./bigpicture.css";
 
 type Selection = { kind: "node"; id: string; domain: string; process: string; version: string | null }
-  | { kind: "edge"; id: string };
-type SelectedData = { kind: "node"; data: ProcessNodeData } | { kind: "edge"; data: ProcessEdgeData };
+  | { kind: "edge"; id: string } | { kind: "runtime"; id: string };
+type SelectedData = { kind: "node"; data: ProcessNodeData } | { kind: "edge"; data: ProcessEdgeData }
+  | { kind: "runtime"; data: InstanceRelationship } | { kind: "unloaded"; data: { invocationId: string; perspective: string } };
 const nodeTypes = { process: ProcessNodeCard };
+const edgeTypes = { relationship: ProcessRelationshipEdge };
 const WorkflowGraph = lazy(() => import("../Workflow/WorkflowGraph"));
 
-export default function BigPictureGraph({ graph, definitions = [], workflow = null, onWorkflowOpen, onWorkflowBack }: {
+const noRuntime: InstanceRelationship[] = [];
+export default function BigPictureGraph({ graph, definitions = [], workflow = null, onWorkflowOpen, onWorkflowBack,
+  runtime = noRuntime, partial = false, instanceContext = null, onLocalInstanceOpen }: {
   graph: DefinitionGraph; definitions?: SagaDefinition[]; workflow?: WorkflowIdentity | null;
   onWorkflowOpen?: (workflow: WorkflowIdentity) => void; onWorkflowBack?: () => void;
+  runtime?: InstanceRelationship[]; partial?: boolean; instanceContext?: InstanceContext | null;
+  onLocalInstanceOpen?: (id: string) => void;
 }) {
   const { theme } = useTheme();
-  const mapped = useMemo(() => mapBigPicture(graph, definitions), [graph, definitions]);
+  const mapped = useMemo(() => mapBigPicture(graph, definitions, runtime, partial), [graph, definitions, runtime, partial]);
   const [selection, setSelection] = useState<Selection | null>(null);
+  const interactiveEdges = useMemo(() => mapped.edges.map(edge => ({ ...edge,
+    data: edge.data ? { ...edge.data, onInspect: () => setSelection({ kind: "edge", id: edge.id }) } : undefined })), [mapped]);
   const workflowDefinition = workflow ? graph.nodes.find(node => node.domain === workflow.domain
     && node.process === workflow.process && node.version === workflow.version)?.definition
     ?? definitions.find(definition => definition.domain === workflow.domain && definition.name === workflow.process
       && definition.version === workflow.version) : null;
   const selectedData = useMemo(() => {
     if (!selection) return null;
+    if (selection.kind === "runtime") {
+      const data = runtime.find(row => `${row.perspective}:${row.invocationId}` === selection.id);
+      return data ? { kind: "runtime" as const, data } : { kind: "unloaded" as const,
+        data: { invocationId: selection.id.slice(selection.id.indexOf(":") + 1), perspective: selection.id.split(":")[0] } };
+    }
     if (selection.kind === "edge") {
       const data = mapped.edges.find(edge => edge.id === selection.id)?.data;
       return data ? { kind: "edge" as const, data } : null;
@@ -38,7 +54,7 @@ export default function BigPictureGraph({ graph, definitions = [], workflow = nu
       ?? mapped.nodes.find(node => node.data.domain === selection.domain && node.data.process === selection.process
         && node.data.version === selection.version))?.data;
     return data ? { kind: "node" as const, data } : null;
-  }, [mapped, selection]);
+  }, [mapped, selection, runtime]);
   const close = useCallback(() => setSelection(null), []);
   const remoteCount = mapped.nodes.filter(node => node.data.origin === "Remote").length;
   const localCount = mapped.nodes.length - remoteCount;
@@ -62,7 +78,7 @@ export default function BigPictureGraph({ graph, definitions = [], workflow = nu
   return <section aria-label="BigPicture process relationships" className="min-w-0">
     <div data-testid="bigpicture-canvas" className="bigpicture-canvas workflow-canvas relative overflow-hidden rounded-2xl border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"
       style={{ height }}>
-      <ReactFlow<ProcessNode, ProcessEdge> nodes={mapped.nodes} edges={mapped.edges} nodeTypes={nodeTypes}
+      <ReactFlow<ProcessNode, ProcessEdge> nodes={mapped.nodes} edges={interactiveEdges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         colorMode={theme} fitView fitViewOptions={{ padding: 0.18, minZoom: 0.6, maxZoom: 1 }}
         nodesDraggable={false} nodesConnectable={false} edgesReconnectable={false} deleteKeyCode={null}
         minZoom={0.25} maxZoom={1.6} onPaneClick={close}
@@ -71,7 +87,7 @@ export default function BigPictureGraph({ graph, definitions = [], workflow = nu
             && entry.process === node.data.process && entry.version === node.data.version)?.definition
             ?? definitions.find(entry => entry.domain === node.data.domain && entry.name === node.data.process
               && entry.version === node.data.version);
-          if (node.data.status === "Resolved" && definition) {
+          if (!instanceContext && node.data.status === "Resolved" && definition) {
             setSelection(null);
             onWorkflowOpen?.({ domain: node.data.domain, process: node.data.process, version: definition.version });
           } else setSelection({ kind: "node", id: node.id,
@@ -84,15 +100,31 @@ export default function BigPictureGraph({ graph, definitions = [], workflow = nu
         <Controls showInteractive={false} />
       </ReactFlow>
     </div>
-    <BigPictureDrawer selection={selectedData} onClose={close} />
+    {instanceContext && <section aria-label="Loaded runtime relationships" className="mt-4 space-y-2 text-sm">
+      <h3 className="font-semibold">Selected instance relationships · {runtime.length}{partial ? "+" : ""} loaded</h3>
+      {runtime.map(row => <button type="button" key={`${row.perspective}:${row.invocationId}`}
+        className="block w-full break-all rounded-lg border border-zinc-200 px-3 py-2 text-left hover:bg-violet-50 dark:border-zinc-800 dark:hover:bg-violet-950/30"
+        onClick={() => setSelection({ kind: "runtime", id: `${row.perspective}:${row.invocationId}` })}>
+        {row.perspective} · {row.invocationId.slice(0, 8)} · {row.source.process} → {row.target.process}
+        {!graph.edges.some(edge => relationshipMatches(edge, row)) && <span className="ml-2 text-amber-700 dark:text-amber-300">No matching declared invokes edge</span>}
+      </button>)}
+    </section>}
+    <BigPictureDrawer selection={selectedData} onClose={close} runtime={runtime} instanceContext={instanceContext}
+      onWorkflowOpen={onWorkflowOpen} onLocalInstanceOpen={onLocalInstanceOpen} />
   </section>;
 }
 
-function BigPictureDrawer({ selection, onClose }: { selection: SelectedData | null; onClose: () => void }) {
+function BigPictureDrawer({ selection, onClose, runtime, instanceContext, onWorkflowOpen, onLocalInstanceOpen }: {
+  selection: SelectedData | null; onClose: () => void; runtime: InstanceRelationship[]; instanceContext: InstanceContext | null;
+  onWorkflowOpen?: (workflow: WorkflowIdentity) => void; onLocalInstanceOpen?: (id: string) => void;
+}) {
   const drawer = useRef<HTMLElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
+  const selectionKey = selection?.kind === "runtime" || selection?.kind === "unloaded" ? `${selection.data.perspective}:${selection.data.invocationId}`
+    : selection?.kind === "node" ? `node:${selection.data.domain}/${selection.data.process}@${selection.data.version}`
+      : selection ? `edge:${selection.data.source}:${selection.data.target}:${selection.data.relationship}` : null;
   useEffect(() => {
-    if (!selection) return;
+    if (!selectionKey) return;
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const panel = drawer.current;
     closeButton.current?.focus({ preventScroll: true });
@@ -105,33 +137,49 @@ function BigPictureDrawer({ selection, onClose }: { selection: SelectedData | nu
       if (previousFocus?.isConnected && (document.activeElement === document.body || panel?.contains(document.activeElement)))
         previousFocus.focus({ preventScroll: true });
     };
-  }, [selection, onClose]);
+  }, [selectionKey, onClose]);
   if (!selection) return null;
   const node = selection.kind === "node" ? selection.data : null;
   const edge = selection.kind === "edge" ? selection.data : null;
+  const related = selection.kind === "runtime" ? [selection.data] : edge ? edge.runtime ?? [] : node
+    ? runtime.filter(row => [processKey(row.source), processKey(row.target)].includes(`${node.domain}/${node.process}@${node.version}`)) : [];
   return createPortal(<aside ref={drawer} role="dialog" aria-modal={false} aria-label="BigPicture details"
     className="workflow-details-drawer fixed inset-y-0 right-0 z-[70] flex w-[min(400px,100vw)] flex-col border-l border-zinc-200 bg-white shadow-2xl dark:border-zinc-800 dark:bg-zinc-950">
     <header className="flex items-start justify-between gap-3 border-b border-zinc-200 px-5 py-4 dark:border-zinc-800">
-      <div><h2 className="text-sm font-semibold text-zinc-950 dark:text-zinc-50">{node ? "Process definition" : "Declared reference"}</h2>
-        <p className="mt-1 text-xs text-zinc-500">{node ? `${node.domain} / ${node.process}` : edge?.relationship ?? "Legacy reference"}</p></div>
+      <div className="min-w-0"><h2 className="text-sm font-semibold text-zinc-950 dark:text-zinc-50">{node ? "Process definition" : edge ? "Declared reference" : "Runtime invocation"}</h2>
+        <p className="mt-1 text-xs text-zinc-500">{node ? `${node.domain} / ${node.process}` : edge ? edge.relationship ?? "Legacy reference" : "Runtime relationship"}</p></div>
       <button ref={closeButton} type="button" onClick={onClose} aria-label="Close BigPicture details" title="Close (Escape)"
         className="rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-500 dark:hover:bg-zinc-800"><X size={16} /></button>
     </header>
-    <dl className="space-y-4 overflow-y-auto p-5 text-sm">
+    <div className="min-h-0 overflow-y-auto">
+    {instanceContext && <p className="break-all border-b border-zinc-200 p-5 text-xs dark:border-zinc-800">Selected local instance: {instanceContext.instanceId}<br />
+      {processKey(instanceContext)}</p>}
+    <dl className="space-y-4 p-5 text-sm">
       {node ? <>
         <Detail label="Domain" value={node.domain} /><Detail label="Process" value={node.process} />
         <Detail label="Version" value={node.version ?? "Unspecified"} />
         <Detail label="Ownership" value={node.origin} /><Detail label="Discovery status" value={node.status} />
         {node.steps ? <Detail label="YAML steps" value={node.steps.join(", ") || "None"} /> : null}
         {node.failure ? <Detail label="Discovery reason" value={node.failure} /> : null}
+        {node.status === "Resolved" && node.version && onWorkflowOpen && <button type="button" className="rounded-lg border px-3 py-2"
+          onClick={() => { onClose(); onWorkflowOpen({ domain: node.domain, process: node.process, version: node.version! }); }}>Open workflow definition</button>}
       </> : edge ? <>
         <Detail label="Source process" value={edge.source} /><Detail label="Target process" value={edge.target} />
         <Detail label="Declared relationship" value={edge.relationship ?? "None (legacy reference)"} />
         <Detail label="Direction of declaration" value="Source → target" />
         <Detail label="Resolution status" value={edge.status} />
+        <Detail label="Source ownership" value={edge.sourceOrigin ?? "Unknown"} /><Detail label="Target ownership" value={edge.targetOrigin ?? "Unknown"} />
+        <p className="text-xs text-zinc-500">Static declaration only. An invokes reference does not prove an invocation occurred.</p>
         {edge.failure ? <Detail label="Discovery reason" value={edge.failure} /> : null}
       </> : null}
     </dl>
+    {related.map(row => <RuntimeRelationshipDetails key={`${row.perspective}:${row.invocationId}`} row={row} onLocalInstanceOpen={onLocalInstanceOpen} />)}
+    {selection.kind === "unloaded" && <section className="space-y-3 p-5 text-sm" aria-label="Unloaded selected invocation">
+      <CopyIdentity label="Invocation ID" value={selection.data.invocationId} />
+      <p>This selected invocation is not in the currently loaded results. Load more relationships or refresh to locate it. Previous status is not displayed.</p>
+    </section>}
+    {instanceContext && related.length === 0 && <p className="p-5 text-sm text-zinc-500">No loaded runtime records for this selection.</p>}
+    </div>
   </aside>, document.body);
 }
 

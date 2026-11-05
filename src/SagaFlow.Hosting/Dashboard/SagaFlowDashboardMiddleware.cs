@@ -67,6 +67,13 @@ public sealed class SagaFlowDashboardMiddleware
         if (requestPath.StartsWith($"{apiPath}/", StringComparison.OrdinalIgnoreCase))
         {
             var instanceId = requestPath[(apiPath.Length + 1)..];
+            const string relationshipSuffix = "/relationships";
+            if (instanceId.EndsWith(relationshipSuffix, StringComparison.OrdinalIgnoreCase))
+            {
+                var relationships = await InstanceRelationshipView.ReadAsync(instanceId[..^relationshipSuffix.Length], context, store);
+                await relationships.ExecuteAsync(context);
+                return;
+            }
             var instance = await store.FindAsync(instanceId, context.RequestAborted);
             var result = instance is null
                 ? Results.NotFound()

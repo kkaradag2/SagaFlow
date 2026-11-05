@@ -36,6 +36,9 @@ public static class SagaFlowDashboardEndpoints
             var instance = await store.FindAsync(instanceId, cancellationToken);
             return instance is null ? Results.NotFound() : Results.Ok(ToDetail(instance, options.Dashboard.DescribeDomainStarter));
         });
+        endpoints.MapGet("/sagaflow/api/instances/{instanceId}/relationships",
+            (string instanceId, HttpContext context, ISagaStateStore store) =>
+                InstanceRelationshipView.ReadAsync(instanceId, context, store));
         return endpoints;
     }
 

@@ -66,11 +66,38 @@ public sealed class InstanceTraceabilityApiTests
     private static async Task<JsonElement> Detail(HttpClient client, string id)
     {
         using var doc = await JsonDocument.ParseAsync(await client.GetStreamAsync("/sagaflow/api/instances/" + id));
+        using var relationships = await JsonDocument.ParseAsync(await client.GetStreamAsync($"/sagaflow/api/instances/{id}/relationships"));
+        var rows = relationships.RootElement.GetProperty("items").EnumerateArray().ToArray();
+        var detail = doc.RootElement;
+        if (detail.GetProperty("incomingInvocation").ValueKind != JsonValueKind.Null)
+        {
+            var row = Assert.Single(rows, r => r.GetProperty("perspective").GetString() == "Target");
+            Assert.Equal(detail.GetProperty("correlationId").GetString(), row.GetProperty("targetCorrelationId").GetString());
+            Assert.Equal(detail.GetProperty("status").GetString(), row.GetProperty("targetLocalStatus").GetString());
+            Assert.Equal(JsonValueKind.Null, row.GetProperty("lastKnownStatus").ValueKind);
+        }
+        foreach (var step in detail.GetProperty("steps").EnumerateArray())
+        {
+            var invocation = step.GetProperty("invocation");
+            if (invocation.ValueKind == JsonValueKind.Null) continue;
+            var row = Assert.Single(rows, r => r.GetProperty("perspective").GetString() == "Source"
+                && r.GetProperty("invocationId").GetString() == invocation.GetProperty("invocationId").GetString());
+            foreach (var property in new[] { "lastKnownStatus", "targetSagaInstanceId", "createdAt", "updatedAt", "lastObservedAt", "reconciliation" })
+                Assert.Equal(invocation.GetProperty(property).GetRawText(), row.GetProperty(property).GetRawText());
+            Assert.Equal(detail.GetProperty("correlationId").GetString(), row.GetProperty("sourceCorrelationId").GetString());
+            Assert.Equal(JsonValueKind.Null, row.GetProperty("targetCorrelationId").ValueKind);
+            Assert.Equal(JsonValueKind.Null, row.GetProperty("targetLocalStatus").ValueKind);
+        }
+        Assert.DoesNotContain("private-transport-detail", relationships.RootElement.GetRawText());
+        Assert.DoesNotContain("private-discovery", relationships.RootElement.GetRawText());
         return doc.RootElement.Clone();
     }
 
-    [Fact]
-    public async Task ActualEngineStateProjectsBothOriginsAndSignalRTracksLocalObservations()
+    [Theory]
+    [InlineData(ExternalProcessStatus.Completed)]
+    [InlineData(ExternalProcessStatus.Failed)]
+    [InlineData(ExternalProcessStatus.Compensated)]
+    public async Task ActualEngineStateProjectsBothOriginsAndSignalRTracksLocalObservations(ExternalProcessStatus terminal)
     {
         await using var source = await Host(true); await using var target = await Host(false);
         using var sourceClient = Client(source); using var targetClient = Client(target);
@@ -95,6 +122,8 @@ public sealed class InstanceTraceabilityApiTests
             var request = source.Services.GetRequiredService<Bus>().Request!;
             await using var targetScope = target.Services.CreateAsyncScope();
             var targetState = await targetScope.ServiceProvider.GetRequiredService<ProcessInvocationManager>().GetOrCreateTargetAsync(request);
+            var duplicateTarget = await targetScope.ServiceProvider.GetRequiredService<ProcessInvocationManager>().GetOrCreateTargetAsync(request);
+            Assert.Equal(targetState.Id, duplicateTarget.Id);
             var incoming = await Detail(targetClient, targetState.Id);
             Assert.Equal("External", incoming.GetProperty("origin").GetString());
             var origin = incoming.GetProperty("incomingInvocation");
@@ -104,7 +133,7 @@ public sealed class InstanceTraceabilityApiTests
             Assert.Equal(request.Message.OccurredAt, origin.GetProperty("sourceRequestCreatedAt").GetDateTimeOffset());
             Assert.Equal(targetState.IncomingInvocation!.AcceptedAt, origin.GetProperty("acceptedAt").GetDateTimeOffset());
             var manager = scope.ServiceProvider.GetRequiredService<ProcessInvocationManager>();
-            foreach (var status in new[] { ExternalProcessStatus.Accepted, ExternalProcessStatus.Running, ExternalProcessStatus.Completed })
+            foreach (var status in new[] { ExternalProcessStatus.Accepted, ExternalProcessStatus.Running, terminal })
             {
                 var before = changes.Count;
                 await manager.ObserveAsync(request.Identity, status, targetState.Id);
@@ -116,7 +145,7 @@ public sealed class InstanceTraceabilityApiTests
                 Assert.Equal("Running", current.GetProperty("status").GetString());
             }
             var beforeDuplicate = await Detail(sourceClient, id);
-            await manager.ObserveAsync(request.Identity, ExternalProcessStatus.Completed, targetState.Id);
+            await manager.ObserveAsync(request.Identity, terminal, targetState.Id);
             var duplicate = await Detail(sourceClient, id);
             Assert.Equal(beforeDuplicate.GetProperty("steps")[0].GetProperty("invocation").GetProperty("updatedAt").GetString(), duplicate.GetProperty("steps")[0].GetProperty("invocation").GetProperty("updatedAt").GetString());
             await source.Services.GetRequiredService<ISagaStateStore>().UpdateAsync(id, state =>
@@ -127,7 +156,7 @@ public sealed class InstanceTraceabilityApiTests
             });
             var failed = await Detail(sourceClient, id);
             Assert.Equal("Failed", failed.GetProperty("status").GetString());
-            Assert.Equal("Completed", failed.GetProperty("steps")[0].GetProperty("invocation").GetProperty("lastKnownStatus").GetString());
+            Assert.Equal(terminal.ToString(), failed.GetProperty("steps")[0].GetProperty("invocation").GetProperty("lastKnownStatus").GetString());
             Assert.Equal("Local forward publication failed", failed.GetProperty("steps")[0].GetProperty("invocation").GetProperty("reconciliation").GetProperty("reason").GetString());
             var json = failed.GetRawText() + incoming.GetRawText();
             Assert.DoesNotContain("private-transport-detail", json); Assert.DoesNotContain("private-discovery", json);

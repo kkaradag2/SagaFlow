@@ -528,6 +528,27 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
     private static async Task<JsonElement> ApiDetail(HttpClient client, string id)
     {
         using var json = JsonDocument.Parse(await client.GetStringAsync("/sagaflow/api/instances/" + id));
+        using var relationships = JsonDocument.Parse(await client.GetStringAsync($"/sagaflow/api/instances/{id}/relationships"));
+        var items = relationships.RootElement.GetProperty("items").EnumerateArray().ToArray();
+        var detail = json.RootElement;
+        var incoming = detail.GetProperty("incomingInvocation");
+        if (incoming.ValueKind != JsonValueKind.Null)
+        {
+            var target = Assert.Single(items, i => i.GetProperty("perspective").GetString() == "Target");
+            Assert.Equal(incoming.GetProperty("invocationId").GetString(), target.GetProperty("invocationId").GetString());
+            Assert.Equal(detail.GetProperty("correlationId").GetString(), target.GetProperty("targetCorrelationId").GetString());
+            Assert.Equal(JsonValueKind.Null, target.GetProperty("lastKnownStatus").ValueKind);
+        }
+        foreach (var step in detail.GetProperty("steps").EnumerateArray())
+        {
+            var invocation = step.GetProperty("invocation");
+            if (invocation.ValueKind == JsonValueKind.Null) continue;
+            var row = Assert.Single(items, i => i.GetProperty("perspective").GetString() == "Source"
+                && i.GetProperty("invocationId").GetString() == invocation.GetProperty("invocationId").GetString());
+            // Two HTTP calls can observe different revisions while broker outcomes are being processed.
+            // Compare immutable linkage here; stable status/record isolation is checked at checkpoints.
+            Assert.Equal(detail.GetProperty("correlationId").GetString(), row.GetProperty("sourceCorrelationId").GetString());
+        }
         return json.RootElement.Clone();
     }
 

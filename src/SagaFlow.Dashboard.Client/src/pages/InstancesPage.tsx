@@ -21,9 +21,13 @@ import {
   type SagaInstanceDetail,
   type SagaInstanceSummary,
   type SagaStep,
+  type InstanceContext,
 } from "../api/sagaflowApi";
 
-export function InstancesPage() {
+export function InstancesPage({ initialInstanceId = null, onInstanceNavigate, onBigPictureOpen }: {
+  initialInstanceId?: string | null; onInstanceNavigate?: (id: string | null) => void;
+  onBigPictureOpen?: (context: InstanceContext) => void;
+} = {}) {
   const [instances, setInstances] = useState<SagaInstanceSummary[]>([]);
   const [selected, setSelected] = useState<SagaInstanceDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -44,6 +48,13 @@ export function InstancesPage() {
   }, []);
 
   useEffect(() => { void loadInstances(); }, [loadInstances]);
+  useEffect(() => {
+    if (!initialInstanceId) return;
+    let disposed = false;
+    void getInstance(initialInstanceId).then(detail => { if (!disposed) setSelected(detail); })
+      .catch(error => { if (!disposed) setError(error instanceof Error ? error.message : "Unable to load instance."); });
+    return () => { disposed = true; };
+  }, [initialInstanceId]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -86,6 +97,7 @@ export function InstancesPage() {
   };
 
   const openInstance = async (instanceId: string) => {
+    if (onInstanceNavigate) { onInstanceNavigate(instanceId); return; }
     setLoading(true);
     setError(null);
     try {
@@ -99,6 +111,7 @@ export function InstancesPage() {
   };
 
   const closeInstance = () => {
+    onInstanceNavigate?.(null);
     setSelected(null);
     scrollToTop();
   };
@@ -106,7 +119,7 @@ export function InstancesPage() {
   return <div className="space-y-5">
     {error ? <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">{error}</div> : null}
     {selected ? (
-      <InstanceDetail instance={selected} loading={loading} onBack={closeInstance} onRefresh={refresh} />
+      <InstanceDetail instance={selected} loading={loading} onBack={closeInstance} onRefresh={refresh} onBigPictureOpen={onBigPictureOpen} />
     ) : (
       <InstanceList instances={instances} loading={loading} onOpen={openInstance} onRefresh={refresh} />
     )}
@@ -152,11 +165,12 @@ function InstanceList({ instances, loading, onOpen, onRefresh }: {
   </>;
 }
 
-function InstanceDetail({ instance, loading, onBack, onRefresh }: {
+function InstanceDetail({ instance, loading, onBack, onRefresh, onBigPictureOpen }: {
   instance: SagaInstanceDetail;
   loading: boolean;
   onBack: () => void;
   onRefresh: () => Promise<void>;
+  onBigPictureOpen?: (context: InstanceContext) => void;
 }) {
   const completedSteps = instance.steps.filter(step => step.status === "Completed").length;
   const forwardEnded = ["Completed", "Failed", "Compensating", "Compensated", "CompensationRequested", "TimedOut"].includes(instance.status);
@@ -215,6 +229,11 @@ function InstanceDetail({ instance, loading, onBack, onRefresh }: {
     </section>
 
     <IncomingOrigin instance={instance} />
+    {onBigPictureOpen && instance.definitionDomain && instance.definitionVersion ? <button type="button"
+      className="rounded-xl border border-violet-300 px-4 py-2 text-sm text-violet-700 dark:border-violet-800 dark:text-violet-300"
+      onClick={() => onBigPictureOpen({ instanceId: instance.id, domain: instance.definitionDomain, process: instance.processName, version: instance.definitionVersion })}>
+      View instance in BigPicture
+    </button> : null}
 
     <section aria-labelledby="steps-heading">
       <div className="mb-4 flex items-end justify-between gap-4"><div><h3 id="steps-heading" className="text-base font-bold">Execution flow</h3><p className="mt-1 text-sm text-zinc-500">Local domain starter, participant steps and declared external process steps.</p></div><span className="text-xs text-zinc-500">1 starter · {instance.steps.length} steps</span></div>

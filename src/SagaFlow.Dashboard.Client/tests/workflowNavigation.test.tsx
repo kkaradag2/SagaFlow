@@ -2,22 +2,24 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import definitions from "./fixtures/order-definition.json";
-import { getDefinitionGraph, getDefinitions, getInstances, type SagaDefinition } from "../src/api/sagaflowApi";
+import { getDefinitionGraph, getDefinitions, getInstances, getInstance, getInstanceRelationships, type SagaDefinition, type SagaInstanceDetail } from "../src/api/sagaflowApi";
 import { DashboardLayout } from "../src/layout/DashboardLayout";
 import { ThemeProvider } from "../src/theme/ThemeProvider";
 import { WorkflowNodeDetails } from "../src/components/Workflow/WorkflowNodeDetails";
 
-vi.mock("../src/api/sagaflowApi", () => ({ getDefinitions: vi.fn(), getDefinitionGraph: vi.fn(), getInstances: vi.fn(), getInstance: vi.fn() }));
+vi.mock("../src/api/sagaflowApi", () => ({ getDefinitions: vi.fn(), getDefinitionGraph: vi.fn(), getInstances: vi.fn(), getInstance: vi.fn(), getInstanceRelationships: vi.fn() }));
 vi.mock("../src/live/useSagaFlowLiveUpdates", () => ({ useSagaFlowLiveUpdates: vi.fn() }));
 // Navigation tests exercise real page state; graph geometry is covered separately with the real ELK implementation.
 vi.mock("../src/components/Workflow/WorkflowGraph", () => ({ default: ({ definition }: { definition: SagaDefinition }) => <div role="img" aria-label={`${definition.name} workflow diagram`} /> }));
-vi.mock("../src/components/BigPicture/BigPictureGraph", () => ({ default: ({ workflow, onWorkflowOpen, onWorkflowBack }: {
+vi.mock("../src/components/BigPicture/BigPictureGraph", () => ({ default: ({ workflow, onWorkflowOpen, onWorkflowBack, instanceContext, onLocalInstanceOpen }: {
   workflow: { domain: string; process: string; version: string } | null;
   onWorkflowOpen: (workflow: { domain: string; process: string; version: string }) => void;
   onWorkflowBack: () => void;
+  instanceContext?: { instanceId: string }; onLocalInstanceOpen?: (id: string) => void;
 }) => workflow ? <div role="region" aria-label="BigPicture workflow">
   <button onClick={onWorkflowBack}>Back to BigPicture</button><span>{`${workflow.domain}/${workflow.process}@${workflow.version}`}</span>
   </div> : <div role="img" aria-label="BigPicture definition graph">
+    {instanceContext && <button onClick={() => onLocalInstanceOpen?.(instanceContext.instanceId)}>Open context local instance</button>}
     <button onClick={() => onWorkflowOpen({ domain: "order", process: "order-process", version: "1.0" })}>Open local process</button>
     <button onClick={() => onWorkflowOpen({ domain: "return", process: "return-process", version: "1.0" })}>Open remote process</button>
   </div> }));
@@ -36,6 +38,7 @@ beforeEach(() => {
   vi.mocked(getDefinitions).mockResolvedValue([withoutRelationship]);
   vi.mocked(getDefinitionGraph).mockResolvedValue(relatedGraph);
   vi.mocked(getInstances).mockResolvedValue([]);
+  vi.mocked(getInstanceRelationships).mockResolvedValue({ localInstanceId: "local-saga", items: [], nextOffset: null });
   vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: false })));
 });
 
@@ -46,6 +49,44 @@ function openDashboard() {
 }
 
 describe("workflow navigation", () => {
+  it("opens invokes-only BigPicture and preserves local instance context through workflow and history navigation", async () => {
+    const user = userEvent.setup();
+    const time = "2026-11-05T10:00:00Z";
+    const instance: SagaInstanceDetail = { id: "local-saga", processName: related.name, definitionDomain: related.domain,
+      definitionVersion: related.version, correlationId: "local-correlation", status: "Running", currentStep: null,
+      createdAt: time, updatedAt: time, failureReason: null, incomingInvocation: null, steps: [], compensations: [], domainRollback: null,
+      domainStarter: { operationName: "Start", rollbackOperationName: "Rollback", status: null, startedAt: null, completedAt: null, input: null, result: null } };
+    vi.mocked(getDefinitions).mockResolvedValue([{ ...related, bigPicture: [{ domain: "return", process: "return-process", version: "1.0", relationship: "invokes" }] }]);
+    vi.mocked(getInstance).mockResolvedValue(instance); vi.mocked(getInstances).mockResolvedValue([instance]);
+    window.history.replaceState(null, "", "/sagaflow/instances?instanceId=local-saga");
+    openDashboard();
+    await user.click(await screen.findByRole("button", { name: "View instance in BigPicture" }));
+    expect(await screen.findByRole("img", { name: "BigPicture definition graph" })).toBeTruthy();
+    const contextUrl = window.location.pathname + window.location.search;
+    expect(contextUrl).toContain("/bigpicture?instanceId=local-saga");
+    expect(window.location.search).toContain("process=order-process");
+    expect(getInstanceRelationships).toHaveBeenCalledWith(expect.objectContaining({ instanceId: "local-saga", domain: related.domain, version: related.version }), 0, expect.any(AbortSignal));
+    await user.click(screen.getByRole("button", { name: "Open remote process" }));
+    expect(window.location.pathname).toContain("/bigpicture/workflow/return/return-process/1.0");
+    expect(window.location.search).toContain("instanceId=local-saga");
+    await user.click(screen.getByRole("button", { name: "Back to BigPicture" }));
+    expect(window.location.pathname + window.location.search).toBe(contextUrl);
+    await user.click(screen.getByRole("button", { name: "Open context local instance" }));
+    expect(await screen.findByRole("button", { name: "View instance in BigPicture" })).toBeTruthy();
+    expect(window.location.pathname + window.location.search).toBe("/sagaflow/instances?instanceId=local-saga");
+    window.history.back();
+    expect(await screen.findByRole("region", { name: "Instance context" })).toBeTruthy();
+    window.history.forward();
+    expect(await screen.findByRole("button", { name: "View instance in BigPicture" })).toBeTruthy();
+  });
+  it("opens an instance-context deep link even when its local definition has no declared references", async () => {
+    vi.mocked(getDefinitions).mockResolvedValue([withoutRelationship]);
+    window.history.replaceState(null, "", "/sagaflow/bigpicture?instanceId=local-saga&domain=order&process=order-process&version=1.0");
+    openDashboard();
+    expect(await screen.findByRole("region", { name: "Instance context" })).toBeTruthy();
+    expect(await screen.findByText("No runtime relationships recorded for this local instance.")).toBeTruthy();
+    expect(window.location.pathname).toBe("/sagaflow/bigpicture");
+  });
   it("starts with one local workflow list, opens only the selected workflow, and returns via its breadcrumb", async () => {
     const user = userEvent.setup();
     const second: SagaDefinition = { ...definitions[0], name: "return-flow", domain: "returns", version: "2.0" };

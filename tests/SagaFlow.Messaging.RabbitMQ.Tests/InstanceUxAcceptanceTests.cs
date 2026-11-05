@@ -55,6 +55,8 @@ public sealed partial class ProcessInvocationIntegrationTests
         var outgoing = before.Select(d => d.GetProperty("steps")[0].GetProperty("invocation")).ToArray();
         var targetIds = outgoing.Select(d => d.GetProperty("targetSagaInstanceId").GetString()!).ToArray();
         var targets = new[] { await ApiDetail(targetClient, targetIds[0]), await ApiDetail(targetClient, targetIds[1]) };
+        var secondRelationshipBefore = await sourceClient.GetStringAsync($"/sagaflow/api/instances/{ids[1]}/relationships");
+        var secondTargetRelationshipBefore = await targetClient.GetStringAsync($"/sagaflow/api/instances/{targetIds[1]}/relationships");
         Assert.NotEqual(ids[0], ids[1]); Assert.NotEqual(targetIds[0], targetIds[1]);
         Assert.NotEqual(outgoing[0].GetProperty("invocationId").GetString(), outgoing[1].GetProperty("invocationId").GetString());
         Assert.NotEqual(before[0].GetProperty("correlationId").GetString(), before[1].GetProperty("correlationId").GetString());
@@ -120,6 +122,8 @@ public sealed partial class ProcessInvocationIntegrationTests
             var secondAfter = await ApiDetail(sourceClient, ids[1]); var secondTargetAfter = await ApiDetail(targetClient, targetIds[1]);
             Assert.Equal(before[1].GetRawText(), secondAfter.GetRawText());
             Assert.Equal(targets[1].GetRawText(), secondTargetAfter.GetRawText());
+            Assert.Equal(secondRelationshipBefore, await sourceClient.GetStringAsync($"/sagaflow/api/instances/{ids[1]}/relationships"));
+            Assert.Equal(secondTargetRelationshipBefore, await targetClient.GetStringAsync($"/sagaflow/api/instances/{targetIds[1]}/relationships"));
             await File.WriteAllTextAsync(Path.Combine(evidence, "isolation.json"), JsonSerializer.Serialize(new { before, targets, secondAfter, secondTargetAfter, missing }));
             if (browser is not null)
             {

@@ -3,12 +3,13 @@ import { useEffect, useRef } from "react";
 
 const eventName = "SagaInstanceChanged";
 
-export function useSagaFlowLiveUpdates(onInstanceChanged: (instanceId: string | null) => void | Promise<void>) {
+export function useSagaFlowLiveUpdates(onInstanceChanged: (instanceId: string | null) => void | Promise<void>, enabled = true) {
   const callback = useRef(onInstanceChanged);
 
   useEffect(() => { callback.current = onInstanceChanged; }, [onInstanceChanged]);
 
   useEffect(() => {
+    if (!enabled) return;
     let disposed = false;
     let initialRetry: number | undefined;
     const connection = new HubConnectionBuilder()
@@ -38,7 +39,7 @@ export function useSagaFlowLiveUpdates(onInstanceChanged: (instanceId: string | 
       connection.off(eventName, handleChange);
       void connection.stop();
     };
-  }, []);
+  }, [enabled]);
 }
 
 export function getHubPath() {
