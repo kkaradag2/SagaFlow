@@ -232,7 +232,7 @@ function InstanceDetail({ instance, loading, onBack, onRefresh, onBigPictureOpen
     {onBigPictureOpen && instance.definitionDomain && instance.definitionVersion ? <button type="button"
       className="rounded-xl border border-violet-300 px-4 py-2 text-sm text-violet-700 dark:border-violet-800 dark:text-violet-300"
       onClick={() => onBigPictureOpen({ instanceId: instance.id, domain: instance.definitionDomain, process: instance.processName, version: instance.definitionVersion })}>
-      View instance in BigPicture
+      View instance in Process Explorer
     </button> : null}
 
     <section aria-labelledby="steps-heading">

@@ -11,12 +11,14 @@ const definitionKey = (domain: string, process: string, version: string) =>
   JSON.stringify([domain, process, version]);
 
 export function aggregateDefinitionGraphs(graphs: DefinitionGraph[], localDefinitions: SagaDefinition[]): DefinitionGraph {
-  const localIds = new Set(localDefinitions.map(definition =>
-    definitionKey(definition.domain, definition.name, definition.version)));
   const nodes = new Map<string, DefinitionGraph["nodes"][number]>();
+  for (const definition of localDefinitions) {
+    const { domain, name: process, version } = definition;
+    nodes.set(definitionKey(domain, process, version), { domain, process, version, origin: "Local" });
+  }
   for (const node of graphs.flatMap(graph => graph.nodes)) {
     const key = definitionKey(node.domain, node.process, node.version);
-    nodes.set(key, { ...node, origin: localIds.has(key) ? "Local" : "Remote" });
+    if (nodes.get(key)?.origin !== "Local") nodes.set(key, { ...node, origin: "Remote" });
   }
   return { nodes: [...nodes.values()], edges: graphs.flatMap(graph => graph.edges),
     failures: graphs.flatMap(graph => graph.failures) };
@@ -45,6 +47,7 @@ export function BigPicturePage({ definitions, refreshIntervalMs = 15000, workflo
     let queued = false;
     let timer: number | undefined;
     let activeRequest: AbortController | undefined;
+    const lastSuccessfulGraphs = new Map<SagaDefinition, DefinitionGraph>();
     setGraph(null);
     setError(null);
     setLoading(true);
@@ -60,16 +63,30 @@ export function BigPicturePage({ definitions, refreshIntervalMs = 15000, workflo
       const abort = new AbortController();
       activeRequest = abort;
       try {
-        const graphs = await Promise.all(roots.map(definition => getDefinitionGraph(definition, abort.signal)));
+        const results = await Promise.allSettled(roots.map(async definition => getDefinitionGraph(definition, abort.signal)));
         if (disposed || abort.signal.aborted) return;
+        const failures: string[] = [];
+        const graphs = results.flatMap((result, index) => {
+          const root = roots[index];
+          if (result.status === "fulfilled") {
+            lastSuccessfulGraphs.set(root, result.value);
+            return [result.value];
+          }
+          const denied = result.reason instanceof Error && /\((401|403)\)/.test(result.reason.message);
+          if (denied) lastSuccessfulGraphs.delete(root);
+          const message = denied ? "Access to process relationships was denied" : "Unable to load or refresh process relationships";
+          failures.push(`${message} for ${root.domain}/${root.name}@${root.version}.`);
+          const previous = lastSuccessfulGraphs.get(root);
+          return previous ? [previous] : [];
+        });
         const next = aggregateDefinitionGraphs(graphs, definitions);
         setGraph(previous => previous && JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
-        setError(null);
-      } catch (failure) {
+        setError(failures.length ? failures.join(" ") : null);
+      } catch {
         if (disposed || abort.signal.aborted) return;
-        const denied = failure instanceof Error && /\((401|403)\)/.test(failure.message);
-        if (denied) setGraph(null);
-        setError(denied ? "Access to process relationships was denied." : "Unable to load or refresh process relationships. The last available graph remains visible when possible.");
+        lastSuccessfulGraphs.clear();
+        setGraph(aggregateDefinitionGraphs([], definitions));
+        setError("Unable to load or refresh process relationships.");
       } finally {
         inFlight = false;
         activeRequest = undefined;
@@ -93,7 +110,9 @@ export function BigPicturePage({ definitions, refreshIntervalMs = 15000, workflo
     };
   }, [identities, definitions, roots, refreshIntervalMs]);
 
-  return <section className="mx-auto flex min-h-full w-full max-w-[1280px] flex-col gap-5" aria-label="BigPicture page">
+  const showGraph = Boolean(graph?.nodes.length || instanceContext || workflow);
+
+  return <section className="mx-auto flex min-h-full w-full max-w-[1280px] flex-col gap-5" aria-label="Process Explorer page">
     <div className="flex flex-wrap items-start justify-between gap-4">
       <div><p className="text-sm text-zinc-600 dark:text-zinc-400">Process relationships across Domain Starters</p>
         <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Declared definition relationships. Arrows show the direction of declaration. Invokes is a static declaration, not proof of execution.</p>
@@ -112,16 +131,16 @@ export function BigPicturePage({ definitions, refreshIntervalMs = 15000, workflo
       {!runtime.loading && !runtime.error && runtime.items.length === 0 && <p>No runtime relationships recorded for this local instance.</p>}
       {runtime.nextOffset !== null && <div><p>Partial results: {runtime.items.length} loaded; more records are available.</p>
         <button type="button" disabled={runtime.loading} className="mt-2 rounded-lg border px-3 py-2" onClick={runtime.loadMore}>Load more relationships</button></div>}
-    </section> : <p className="text-xs text-zinc-500">Definition View. Open a local instance in BigPicture to inspect runtime observations.</p>}
+    </section> : <p className="text-xs text-zinc-500">Definition View. Open a local instance in Process Explorer to inspect runtime observations.</p>}
     {error && <div role="alert" className="rounded-xl border border-red-500/40 p-5 text-sm text-red-600 dark:text-red-400">{error}</div>}
     {loading ? <div role="status" className="rounded-xl border border-zinc-200 p-6 text-sm text-zinc-500 dark:border-zinc-800">Loading process relationships…</div>
-      : (graph && graph.edges.some(edge => edge.relationship === "related" || edge.relationship === "invokes")) || instanceContext ?
+      : showGraph ?
         <Suspense fallback={<div role="status" className="text-sm text-zinc-500">Preparing graph…</div>}>
           <BigPictureGraph key={instanceContext ? JSON.stringify([instanceContext.instanceId, instanceContext.domain, instanceContext.process, instanceContext.version]) : "definition"}
             graph={graph ?? { nodes: [], edges: [], failures: [] }} definitions={definitions} workflow={workflow}
             onWorkflowOpen={onWorkflowOpen} onWorkflowBack={onWorkflowBack} instanceContext={instanceContext}
             runtime={runtime.items} partial={runtime.nextOffset !== null} onLocalInstanceOpen={onLocalInstanceOpen} />
-        </Suspense> : !error && <EmptyPanel icon={<Network size={20} />} title="No process relationships available."
-          description="This Dashboard has no visible declared relationships." />}
+        </Suspense> : !error && <EmptyPanel icon={<Network size={20} />} title="No process definitions available."
+          description="Local workflows appear here after the host loads their definitions." />}
   </section>;
 }
