@@ -435,7 +435,10 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
             if (initialFailure) await AssertQueueCount(one, 0);
             await SendParticipantOutcome(source.Domain, continued, true);
             await Wait(async () => (await sourceStore.FindAsync(sourceId))!.Status == SagaStatus.Completed);
-            Assert.Equal(expected.ToString(), (await sourceStore.FindAsync(sourceId))!.Steps[0].Result!.Value.GetProperty("status").GetString());
+            var completedStep = (await sourceStore.FindAsync(sourceId))!.Steps[0];
+            Assert.Null(completedStep.Result);
+            Assert.Equal(expected, completedStep.InvocationProgress!.Status);
+            Assert.NotNull(completedStep.CompletedAt);
         }
         finally { await sourceHost.StopAsync(); await targetHost.StopAsync(); }
     }
@@ -449,14 +452,14 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
             delivery = await channel.BasicGetAsync(queue, true);
             return delivery is not null;
         });
-        return RabbitMqMessageSerializer.DeserializeCommand(delivery!.Body.Span);
+        return RabbitMqMessageSerializer.DeserializeCommand(delivery!);
     }
     private async Task SendParticipantOutcome(string domain, SagaCommand command, bool success)
     {
         await using var channel = await broker.Connection.CreateChannelAsync(new CreateChannelOptions(true, true));
+        var outcome = new SagaOutcomeEvent { Headers = command.Headers, IsSuccess = success, Result = JsonSerializer.SerializeToElement(new { success }) };
         await channel.BasicPublishAsync("", domain + ".outcomes", true,
-            new BasicProperties { ContentType = "application/json", DeliveryMode = DeliveryModes.Persistent, MessageId = Guid.NewGuid().ToString("N") },
-            RabbitMqMessageSerializer.Serialize(new SagaOutcomeEvent { Headers = command.Headers, IsSuccess = success, Result = JsonSerializer.SerializeToElement(new { success }) }));
+            RabbitMqMessageSerializer.OutcomeProperties(outcome), RabbitMqMessageSerializer.Serialize(outcome));
     }
     private async Task AssertQueueCount(string queue, uint expected)
     {

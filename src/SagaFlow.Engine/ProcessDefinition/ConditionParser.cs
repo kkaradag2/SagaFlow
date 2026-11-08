@@ -33,6 +33,16 @@ public static partial class ConditionParser
             throw new FormatException($"Operator '{condition.Operator}' requires a numeric value.");
     }
 
+    // Called only after parsing/validating the condition path; match path segments, never substrings.
+    internal static void ValidateBusinessResultReference(string path, string currentStep, IReadOnlySet<string> externalSteps)
+    {
+        var parts = path.Split('.');
+        var referencedStep = parts[0] == "result" ? currentStep
+            : parts.Length >= 3 && parts[0] == "steps" && parts[2] == "result" ? parts[1] : null;
+        if (referencedStep is not null && externalSteps.Contains(referencedStep))
+            throw new FormatException($"External step '{referencedStep}' business Result is null; condition '{path}' cannot read it. Use an existing business context or participant result, or an unconditional success/failure transition.");
+    }
+
     public static BooleanCondition Parse(string expression)
     {
         if (expression.Length > 512)

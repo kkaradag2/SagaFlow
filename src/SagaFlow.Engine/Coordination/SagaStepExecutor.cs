@@ -11,7 +11,7 @@ public sealed class SagaStepExecutor(ISagaStateStore store, CommandDispatcher di
 {
     public void EnsureTransport() => dispatcher.EnsureTransport();
 
-    internal SagaCommand Prepare(SagaInstance instance)
+    internal SagaCommand Prepare(SagaInstance instance, string? causationId = null)
     {
         if (instance.Status != SagaStatus.Running || instance.CurrentStep is null) throw new InvalidOperationException("Saga has no active forward step.");
         var step = instance.Steps.Single(step => step.StepId == instance.CurrentStep);
@@ -20,18 +20,20 @@ public sealed class SagaStepExecutor(ISagaStateStore store, CommandDispatcher di
         step.ExecutionOrder = instance.Steps.Max(s => s.ExecutionOrder ?? 0) + 1;
         step.Input = instance.Context.Clone();
         step.StartedAt = clock.UtcNow;
+        step.Execution = ExecutionMetadata.Create(instance, step.StepId, step.Command, step.StartedAt.Value,
+            dispatcher.ReplyDestination) with { CausationId = causationId };
         instance.UpdatedAt = step.StartedAt.Value;
         return new()
         {
             Name = step.Command, Payload = step.Input.Value.Clone(), TimeToLive = step.TimeoutLimit,
-            Headers = new() { SagaInstanceId = instance.Id, CorrelationId = instance.CorrelationId, StepId = step.StepId }
+            Headers = step.Execution
         };
     }
 
     public async Task ExecuteAsync(string instanceId, CancellationToken cancellationToken = default)
     {
         EnsureTransport();
-        var command = await store.UpdateAsync(instanceId, Prepare, cancellationToken);
+        var command = await store.UpdateAsync(instanceId, instance => Prepare(instance), cancellationToken);
         if (changes is not null) await changes.PublishAsync(instanceId);
         await PublishPreparedAsync(command, cancellationToken);
     }

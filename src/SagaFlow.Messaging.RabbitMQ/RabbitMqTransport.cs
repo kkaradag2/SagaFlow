@@ -1,3 +1,4 @@
+using SagaFlow.RabbitMq.Protocol;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -31,9 +32,18 @@ internal sealed class RabbitMqTransport(
     private string? _consumerTag;
     private bool _disposed;
     private bool _stopped;
+    private long _duplicateAcknowledgements;
+    private long _quarantineAcknowledgements;
+    private long _quarantineFailures;
+    private Task? _failureShutdown;
+
+    public string? ReplyDestination => _outcomeQueue;
 
     internal IChannel? PublisherChannel => _publisherChannel;
     internal IChannel? ConsumerChannel => _consumerChannel;
+    internal long QuarantineAcknowledgementCount => Interlocked.Read(ref _quarantineAcknowledgements);
+    internal long QuarantineFailureCount => Interlocked.Read(ref _quarantineFailures);
+    internal long DuplicateAcknowledgementCount => Interlocked.Read(ref _duplicateAcknowledgements);
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -66,18 +76,10 @@ internal sealed class RabbitMqTransport(
             ?? throw new InvalidOperationException("RabbitMQ transport has no outcome queue for the local process definition.");
 
         var body = RabbitMqMessageSerializer.Serialize(command);
-        var properties = new BasicProperties
-        {
-            ContentType = "application/json",
-            DeliveryMode = DeliveryModes.Persistent,
-            Type = nameof(SagaCommand),
-            MessageId = $"{command.Headers.SagaInstanceId}:{command.Headers.StepId}",
-            CorrelationId = command.Headers.CorrelationId,
-            ReplyTo = outcomeQueue,
-            Expiration = command.TimeToLive is { } timeToLive
-                ? ToExpirationMilliseconds(timeToLive)
-                : null
-        };
+        if (command.Headers.ReplyDestination != outcomeQueue)
+            throw new InvalidOperationException("Command reply destination does not match the local transport.");
+        var properties = RabbitMqMessageSerializer.CommandProperties(command);
+        properties.Expiration = command.TimeToLive is { } timeToLive ? ToExpirationMilliseconds(timeToLive) : null;
 
         await _publishGate.WaitAsync(cancellationToken);
         try
@@ -150,6 +152,7 @@ internal sealed class RabbitMqTransport(
         if (_disposed) return;
         _disposed = true;
         await StopAsync(CancellationToken.None);
+        if (_failureShutdown is { } shutdown) await shutdown;
         _publishGate.Dispose();
         _consumerCancellation.Dispose();
     }
@@ -197,6 +200,7 @@ internal sealed class RabbitMqTransport(
                 cancellationToken: cancellationToken);
         }
 
+        await RabbitMqQuarantine.DeclareAsync(channel, outcomeQueue, cancellationToken);
         await channel.QueueDeclareAsync(
             outcomeQueue,
             durable: true,
@@ -208,11 +212,18 @@ internal sealed class RabbitMqTransport(
     private async Task HandleOutcomeAsync(object sender, BasicDeliverEventArgs delivery)
     {
         var channel = _consumerChannel;
-        if (channel is null || !channel.IsOpen) return;
+        if (channel is null || !channel.IsOpen || _consumerCancellation.IsCancellationRequested) return;
 
         try
         {
-            var outcome = RabbitMqMessageSerializer.DeserializeOutcome(delivery.Body.Span);
+            if (!RabbitMqQuarantine.HasSupportedVersion(delivery.BasicProperties))
+            {
+                await QuarantineOutcomeAsync(channel, delivery);
+                return;
+            }
+            var outcome = RabbitMqMessageSerializer.DeserializeOutcome(delivery.Body.Span, delivery.BasicProperties);
+            if (outcome.Headers.ReplyDestination != _outcomeQueue)
+                throw new InvalidSagaOutcomeException("Outcome reply destination does not match the local owner.");
             await using var scope = scopeFactory.CreateAsyncScope();
             await scope.ServiceProvider.GetRequiredService<OutcomeEventReceiver>()
                 .ReceiveAsync(outcome, _consumerCancellation.Token);
@@ -227,6 +238,7 @@ internal sealed class RabbitMqTransport(
         {
             logger.LogInformation(error, "Acknowledging duplicate Saga outcome {MessageId}.", delivery.BasicProperties.MessageId);
             await channel.BasicAckAsync(delivery.DeliveryTag, multiple: false, CancellationToken.None);
+            Interlocked.Increment(ref _duplicateAcknowledgements);
         }
         catch (LateSagaOutcomeException error)
         {
@@ -251,6 +263,38 @@ internal sealed class RabbitMqTransport(
         {
             logger.LogError(error, "Saga outcome {MessageId} failed and will be requeued.", delivery.BasicProperties.MessageId);
             await channel.BasicNackAsync(delivery.DeliveryTag, multiple: false, requeue: true, CancellationToken.None);
+        }
+    }
+
+    private async Task QuarantineOutcomeAsync(IChannel consumer, BasicDeliverEventArgs delivery)
+    {
+        try
+        {
+            await _publishGate.WaitAsync(_consumerCancellation.Token);
+            try
+            {
+                await RabbitMqQuarantine.TransferAsync(_publisherChannel ?? throw new InvalidOperationException("Publisher is closed."),
+                    _outcomeQueue!, delivery, _consumerCancellation.Token);
+            }
+            finally { _publishGate.Release(); }
+            await consumer.BasicAckAsync(delivery.DeliveryTag, false, _consumerCancellation.Token);
+            Interlocked.Increment(ref _quarantineAcknowledgements);
+            logger.LogWarning("Preserved incompatible outcome {MessageId} in {Queue}; no Saga state was applied.",
+                delivery.BasicProperties.MessageId, RabbitMqQuarantine.Queue(_outcomeQueue!));
+        }
+        catch (OperationCanceledException) when (_consumerCancellation.IsCancellationRequested) { }
+        catch (Exception error)
+        {
+            Interlocked.Increment(ref _quarantineFailures);
+            _consumerCancellation.Cancel();
+            logger.LogCritical(error, "Quarantine transfer/ACK failed. Stopping outcome consumption; unacknowledged deliveries return to the source queue. Restore quarantine and restart this host. Duplicate quarantine copies are possible.");
+            // Channel shutdown waits for the consumer dispatcher. Schedule it outside this callback;
+            // awaiting it here would make the callback wait for its own completion.
+            _failureShutdown = Task.Run(async () =>
+            {
+                try { await StopAsync(CancellationToken.None); }
+                catch (Exception shutdownError) { logger.LogCritical(shutdownError, "Failed to shut down transport after quarantine failure."); }
+            });
         }
     }
 

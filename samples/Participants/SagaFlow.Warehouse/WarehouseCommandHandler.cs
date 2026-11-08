@@ -1,26 +1,20 @@
-using SagaFlow.Core.Messages;
 using SagaFlow.Participants.Messaging;
 
 namespace SagaFlow.Warehouse;
 
-public sealed class WarehouseCommandHandler(WarehouseRepository repository, TimeProvider timeProvider) : IParticipantCommandHandler
+public sealed class WarehouseCommandHandler(WarehouseRepository repository, TimeProvider timeProvider, DeferredReplies replies) : IParticipantCommandHandler
 {
     public IReadOnlyCollection<string> CommandNames { get; } = ["InspectReturn"];
-    public ParticipantCommandResult? Handle(SagaCommand command, string? replyTo = null)
+    public ParticipantCommandResult? Handle(ParticipantCommand command, string? replyTo = null)
     {
         if (command.Name != "InspectReturn" || command.Headers.IsCompensation)
             throw new InvalidOperationException("Only forward InspectReturn is supported.");
-        ArgumentException.ThrowIfNullOrWhiteSpace(command.Headers.SagaInstanceId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(command.Headers.CorrelationId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(command.Headers.StepId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(replyTo);
         if (SampleFailureInjection.IsRequested(command, "warehouse", "InspectReturn"))
             return ParticipantCommandResult.Failure("warehouse");
-        repository.Register(new InspectionRecord(
-            command.Payload.GetProperty("returnId").GetGuid(),
-            command.Payload.GetProperty("orderId").GetGuid(),
-            command.Headers.SagaInstanceId, command.Headers.CorrelationId,
-            command.Headers.StepId, replyTo, timeProvider.GetUtcNow()));
+        var request = command.Bind<InspectReturnRequest>();
+        replies.Register(command, replyTo, () => repository.Register(new InspectionRecord(
+            request.ReturnId, request.OrderId,
+            timeProvider.GetUtcNow())).InspectionId);
         return null;
     }
 }

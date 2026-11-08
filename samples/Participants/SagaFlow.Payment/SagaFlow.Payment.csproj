@@ -10,7 +10,6 @@
     <PackageReference Include="RabbitMQ.Client" Version="7.2.2" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\..\src\SagaFlow.Core\SagaFlow.Core.csproj" />
-    <Compile Include="..\Shared\RabbitMqParticipantWorker.cs" Link="Messaging\RabbitMqParticipantWorker.cs" />
+    <ProjectReference Include="../Shared/SagaFlow.SampleParticipant.Messaging.csproj" />
   </ItemGroup>
 </Project>

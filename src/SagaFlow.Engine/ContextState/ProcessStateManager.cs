@@ -21,6 +21,16 @@ public sealed class ProcessStateManager
         instance.UpdatedAt = now;
     }
 
+    /// <summary>Coordination completes a local external wait, without inventing a remote business result.</summary>
+    public void RecordExternalCompletion(SagaInstance instance, SagaStepState step, bool success, DateTimeOffset now)
+    {
+        if (!step.External) throw new InvalidOperationException("External completion requires an external step.");
+        step.Status = success ? SagaStepStatus.Completed : SagaStepStatus.Failed;
+        step.Result = null;
+        step.CompletedAt = now;
+        instance.UpdatedAt = now;
+    }
+
     public void ApplyTransition(SagaInstance instance, string target, DateTimeOffset now, SagaDefinition definition)
     {
         instance.UpdatedAt = now;

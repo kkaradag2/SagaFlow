@@ -11,6 +11,7 @@ using SagaFlow.Order.Domain;
 using SagaFlow.Order.Repositories;
 using SagaFlow.Order.Services;
 using SagaFlow.Order.Validators;
+using SagaFlow.Engine.Messaging;
 
 var builder = WebApplication.CreateBuilder(args);
 var publishDefinitions = builder.Configuration.GetValue<bool>("SagaFlow:PublishDefinitions");
@@ -49,6 +50,10 @@ builder.Services.AddSingleton<IValidator<CreateOrderRequest>, CreateOrderRequest
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IOrderService, OrderService>();
 builder.Services.AddSagaRollbackHandler<Order, OrderRollbackHandler>();
+builder.Services.AddSagaRollbackHandler<JsonElement, IncomingOrderRollbackHandler>();
+builder.Services.AddSingleton<IncomingOrderService>();
+builder.Services.AddSingleton<IProcessInvocationPolicy>(services => services.GetRequiredService<IncomingOrderService>());
+builder.Services.AddSingleton<IIncomingInvocationInitializer>(services => services.GetRequiredService<IncomingOrderService>());
 builder.Services.AddSagaFlow(options =>
 {
     options.LoadFromDirectory(definitionDirectory);

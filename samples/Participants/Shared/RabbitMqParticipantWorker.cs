@@ -1,10 +1,10 @@
+using SagaFlow.RabbitMq.Protocol;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
-using SagaFlow.Core.Messages;
 
 namespace SagaFlow.Participants.Messaging;
 
@@ -12,7 +12,7 @@ public interface IParticipantCommandHandler
 {
     IReadOnlyCollection<string> CommandNames { get; }
     // Null means the command was accepted for a deferred outcome (for example a human decision).
-    ParticipantCommandResult? Handle(SagaCommand command, string? replyTo = null);
+    ParticipantCommandResult? Handle(ParticipantCommand command, string? replyTo = null);
 }
 
 public sealed record ParticipantCommandResult(bool IsSuccess, object Value)
@@ -23,7 +23,7 @@ public sealed record ParticipantCommandResult(bool IsSuccess, object Value)
     public static ParticipantCommandResult Failure(string participant) =>
         new(false, new { error = $"Sample failure requested at {participant}." });
 
-    public SagaOutcomeEvent ToOutcome(SagaCommand command) => new()
+    public ParticipantOutcome ToOutcome(ParticipantCommand command) => new()
     {
         Name = $"{command.Name}{(IsSuccess ? "Completed" : "Failed")}",
         IsSuccess = IsSuccess,
@@ -34,11 +34,9 @@ public sealed record ParticipantCommandResult(bool IsSuccess, object Value)
 
 public static class SampleFailureInjection
 {
-    public static bool IsRequested(SagaCommand command, string participant, string forwardCommand) =>
+    public static bool IsRequested(ParticipantCommand command, string participant, string forwardCommand) =>
         command.Name == forwardCommand
-        && command.Payload.TryGetProperty("failureAt", out var failureAt)
-        && failureAt.ValueKind == JsonValueKind.String
-        && string.Equals(failureAt.GetString(), participant, StringComparison.Ordinal);
+        && string.Equals(command.Bind<SampleFailureRequest>().FailureAt, participant, StringComparison.Ordinal);
 }
 
 public class RabbitMqParticipantWorker(
@@ -47,6 +45,7 @@ public class RabbitMqParticipantWorker(
     ILogger<RabbitMqParticipantWorker> logger) : BackgroundService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private readonly TaskCompletionSource _quarantineFailure = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -82,7 +81,8 @@ public class RabbitMqParticipantWorker(
             await channel.BasicConsumeAsync(queueName, autoAck: false, consumer, stoppingToken);
 
         logger.LogInformation("Listening for {Commands} on {Queues}.", string.Join(", ", handler.CommandNames), string.Join(", ", queueNames));
-        try { await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken); }
+        // Dispose/close outside the consumer callback, after the failure signal unwinds that callback.
+        try { await Task.WhenAny(Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken), _quarantineFailure.Task); }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
     }
 
@@ -97,6 +97,7 @@ public class RabbitMqParticipantWorker(
         await channel.QueueDeclareAsync(queueName, durable: true, exclusive: false, autoDelete: false,
             cancellationToken: cancellationToken);
         await channel.QueueBindAsync(queueName, exchange, queueName, cancellationToken: cancellationToken);
+        await RabbitMqQuarantine.DeclareAsync(channel, queueName, cancellationToken);
     }
 
     private async Task HandleDeliveryAsync(
@@ -104,11 +105,29 @@ public class RabbitMqParticipantWorker(
         BasicDeliverEventArgs delivery,
         CancellationToken cancellationToken)
     {
-        SagaCommand command;
+        if (!channel.IsOpen || cancellationToken.IsCancellationRequested || _quarantineFailure.Task.IsCompleted) return;
+        if (!RabbitMqQuarantine.HasSupportedVersion(delivery.BasicProperties))
+        {
+            try
+            {
+                await RabbitMqQuarantine.TransferAsync(channel, delivery.RoutingKey, delivery, cancellationToken);
+                await channel.BasicAckAsync(delivery.DeliveryTag, false, cancellationToken);
+                logger.LogWarning("Preserved incompatible participant command {MessageId} in {Queue}.",
+                    delivery.BasicProperties.MessageId, RabbitMqQuarantine.Queue(delivery.RoutingKey));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+            catch (Exception error)
+            {
+                logger.LogCritical(error, "Command quarantine transfer/ACK failed. Stopping this worker's consumption; restore quarantine and restart the worker. Unacked source deliveries are retained; duplicate copies are possible.");
+                // Wake ExecuteAsync so its channel scope closes outside the dispatcher callback.
+                _quarantineFailure.TrySetResult();
+            }
+            return;
+        }
+        ParticipantCommand command;
         try
         {
-            command = JsonSerializer.Deserialize<SagaCommand>(delivery.Body.Span, JsonOptions)
-                ?? throw new JsonException("Saga command payload is null.");
+            command = ParticipantProtocol.ReadCommand(delivery.Body.Span, delivery.BasicProperties);
             if (command.Headers is null ||
                 string.IsNullOrWhiteSpace(command.Headers.SagaInstanceId) ||
                 string.IsNullOrWhiteSpace(command.Headers.CorrelationId) ||
@@ -140,7 +159,7 @@ public class RabbitMqParticipantWorker(
         }
     }
 
-    private SagaOutcomeEvent? CreateOutcome(SagaCommand command, string replyTo)
+    private ParticipantOutcome? CreateOutcome(ParticipantCommand command, string replyTo)
     {
         try
         {
@@ -162,17 +181,8 @@ public class RabbitMqParticipantWorker(
 
 public static class ParticipantOutcomePublisher
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-
-    public static ValueTask PublishAsync(IChannel channel, SagaOutcomeEvent outcome, string replyTo, CancellationToken cancellationToken) =>
-        channel.BasicPublishAsync(
-            exchange: string.Empty, routingKey: replyTo, mandatory: true,
-            basicProperties: new BasicProperties
-            {
-                ContentType = "application/json", DeliveryMode = DeliveryModes.Persistent,
-                Type = nameof(SagaOutcomeEvent),
-                MessageId = $"{outcome.Headers.SagaInstanceId}:{outcome.Headers.StepId}:outcome",
-                CorrelationId = outcome.Headers.CorrelationId
-            },
-            body: JsonSerializer.SerializeToUtf8Bytes(outcome, JsonOptions), cancellationToken: cancellationToken);
+    public static ValueTask PublishAsync(IChannel channel, ParticipantOutcome outcome, string replyTo, CancellationToken cancellationToken) =>
+        channel.BasicPublishAsync(exchange: string.Empty, routingKey: replyTo, mandatory: true,
+            basicProperties: ParticipantProtocol.OutcomeProperties(outcome),
+            body: JsonSerializer.SerializeToUtf8Bytes(outcome.Result), cancellationToken: cancellationToken);
 }

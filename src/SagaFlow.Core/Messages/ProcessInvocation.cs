@@ -17,7 +17,7 @@ public sealed record ProcessIdentity(string Domain, string Process, string Versi
     public string Version { get; } = InvocationGuard.Version(Version);
 }
 public sealed record ProcessInvocationIdentity(string InvocationId, string CorrelationId,
-    ProcessIdentity Source, string SourceSagaInstanceId, string SourceStep, ProcessIdentity Target)
+    ProcessIdentity Source, string SourceSagaInstanceId, string SourceStep, ProcessIdentity Target, string? SourceExecutionId = null)
 {
     public string InvocationId { get; } = InvocationGuard.Id(InvocationId);
     public string CorrelationId { get; } = InvocationGuard.Text(CorrelationId);
@@ -27,7 +27,7 @@ public sealed record ProcessInvocationIdentity(string InvocationId, string Corre
     public string SourceStep { get; } = InvocationGuard.Name(SourceStep);
 }
 /// <summary>MessageId identifies one logical message; redelivery retains it. OccurredAt is producer UTC event time.</summary>
-public sealed record InvocationMessage(ProcessInvocationIdentity Identity, string MessageId, DateTimeOffset OccurredAt)
+public sealed record InvocationMessage(ProcessInvocationIdentity Identity, string MessageId, DateTimeOffset OccurredAt, string? CausationId = null)
 {
     public void ValidateAgainst(ProcessInvocationIdentity expected)
     {

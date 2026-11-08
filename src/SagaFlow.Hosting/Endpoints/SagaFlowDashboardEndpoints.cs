@@ -138,6 +138,7 @@ public static class SagaFlowDashboardEndpoints
                 step.Invocation.Identity.Target,
                 step.InvocationProgress?.TargetSagaInstanceId,
                 LastKnownStatus = step.InvocationProgress?.Status.ToString(),
+                RejectionReason = step.InvocationProgress?.RejectionReason,
                 CreatedAt = step.InvocationProgress?.CreatedAt,
                 UpdatedAt = step.InvocationProgress?.UpdatedAt,
                 LastObservedAt = step.InvocationProgress?.LastObservedAt,
