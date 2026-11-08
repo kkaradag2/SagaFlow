@@ -55,6 +55,7 @@ export function InvocationDetails({ invocation, localStatus }: { invocation: Inv
       <Fact label="Local step status">{localStatus}</Fact>
       <Fact label="Target process"><Identity value={invocation.target} /></Fact>
       <Fact label="Last known external status"><strong>{invocation.lastKnownStatus ?? "Not recorded"}</strong></Fact>
+      {invocation.rejectionReason && <Fact label="Rejection reason"><span className="whitespace-pre-wrap break-words">{invocation.rejectionReason}</span></Fact>}
       <Fact label="Invocation ID"><CopyIdentity label="invocation ID" value={invocation.invocationId} /></Fact>
       <Fact label="Target Saga instance">{invocation.targetSagaInstanceId ? <CopyIdentity label="target Saga instance ID" value={invocation.targetSagaInstanceId} /> : "Not known yet"}</Fact>
       <Fact label="Created"><DateValue value={invocation.createdAt} /></Fact>

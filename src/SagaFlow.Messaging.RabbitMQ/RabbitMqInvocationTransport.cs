@@ -1,3 +1,4 @@
+using SagaFlow.RabbitMq.Protocol;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
@@ -31,6 +32,7 @@ internal sealed class RabbitMqInvocationTransport(RabbitMqConnectionProvider con
     private long rejectedMessages;
     private long deferredReplays;
     private long parkingFailures;
+    private Task? quarantineShutdown;
     internal long ParkingFailureCount => Interlocked.Read(ref parkingFailures);
     internal long DeferredReplayCount => Interlocked.Read(ref deferredReplays);
     internal long RejectedMessageCount => Interlocked.Read(ref rejectedMessages);
@@ -50,6 +52,7 @@ internal sealed class RabbitMqInvocationTransport(RabbitMqConnectionProvider con
         publisher = await connection.CreateChannelAsync(new CreateChannelOptions(true, true), cancellationToken);
         consumer = await connection.CreateChannelAsync(new CreateChannelOptions(false, false, consumerDispatchConcurrency: 1), cancellationToken);
         parking = await connection.CreateChannelAsync(new CreateChannelOptions(false, false), cancellationToken);
+        await RabbitMqQuarantine.DeclareAsync(parking, DeferredQueue, cancellationToken);
         await parking.QueueDeclareAsync(DeferredQueue, durable: true, exclusive: false, autoDelete: false, cancellationToken: cancellationToken);
         await consumer.ExchangeDeclareAsync(Exchange, ExchangeType.Direct, durable: true, cancellationToken: cancellationToken);
         await consumer.BasicQosAsync(0, 8, false, cancellationToken);
@@ -58,6 +61,7 @@ internal sealed class RabbitMqInvocationTransport(RabbitMqConnectionProvider con
             var queue = Queue(local, isRequest);
             await consumer.QueueDeclareAsync(queue, durable: true, exclusive: false, autoDelete: false, cancellationToken: cancellationToken);
             await consumer.QueueBindAsync(queue, Exchange, queue, cancellationToken: cancellationToken);
+            await RabbitMqQuarantine.DeclareAsync(consumer, queue, cancellationToken);
             var handler = new AsyncEventingBasicConsumer(consumer);
             handler.ReceivedAsync += (_, delivery) => ReceiveAsync(delivery, isRequest);
             tags.Add(await consumer.BasicConsumeAsync(queue, false, handler, cancellationToken));
@@ -78,13 +82,8 @@ internal sealed class RabbitMqInvocationTransport(RabbitMqConnectionProvider con
         if (local != (request ? message.Identity.Source : message.Identity.Target)) throw new InvalidOperationException("Publisher does not own the message source/target process identity.");
         var queue = Queue(destination, request);
         if (queue.Length > 255) throw new InvalidOperationException("Invocation routing identity exceeds AMQP queue name limit.");
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(body);
-        var properties = new BasicProperties
-        {
-            ContentType = "application/json", DeliveryMode = DeliveryModes.Persistent,
-            Type = typeof(T).Name, MessageId = message.MessageId, CorrelationId = message.Identity.CorrelationId,
-            ReplyTo = request ? Queue(message.Identity.Source, false) : null
-        };
+        var bytes = RabbitMqInvocationSerializer.Body(body);
+        var properties = RabbitMqInvocationSerializer.Properties(body, message);
         await publishing.WaitAsync(cancellationToken);
         try
         {
@@ -98,9 +97,14 @@ internal sealed class RabbitMqInvocationTransport(RabbitMqConnectionProvider con
     private async Task ReceiveAsync(BasicDeliverEventArgs delivery, bool requestQueue)
     {
         var channel = consumer;
-        if (channel is null || !channel.IsOpen) return;
+        if (channel is null || !channel.IsOpen || shutdown.IsCancellationRequested) return;
         try
         {
+            if (!RabbitMqQuarantine.HasSupportedVersion(delivery.BasicProperties))
+            {
+                await QuarantineAsync(channel, Queue(local!, requestQueue), delivery);
+                return;
+            }
             await using var scope = scopes.CreateAsyncScope();
             var receiver = scope.ServiceProvider.GetRequiredService<ProcessInvocationReceiver>();
             var type = delivery.BasicProperties.Type;
@@ -175,8 +179,7 @@ internal sealed class RabbitMqInvocationTransport(RabbitMqConnectionProvider con
     }
     private async Task ParkAsync(ReadOnlyMemory<byte> body, IReadOnlyBasicProperties metadata, CancellationToken cancellationToken)
     {
-        var properties = new BasicProperties { ContentType = "application/json", DeliveryMode = DeliveryModes.Persistent,
-            Type = metadata.Type, MessageId = metadata.MessageId, CorrelationId = metadata.CorrelationId };
+        var properties = new BasicProperties(metadata) { DeliveryMode = DeliveryModes.Persistent };
         await publishing.WaitAsync(cancellationToken);
         try { await (publisher ?? throw new InvalidOperationException("Publisher is closed.")).BasicPublishAsync("", DeferredQueue, true, properties, body, cancellationToken); }
         finally { publishing.Release(); }
@@ -203,10 +206,37 @@ internal sealed class RabbitMqInvocationTransport(RabbitMqConnectionProvider con
                 var delivery = await channel.BasicGetAsync(DeferredQueue, false, cancellationToken);
                 if (delivery is null) break;
                 Interlocked.Increment(ref deferredReplays);
+                if (!RabbitMqQuarantine.HasSupportedVersion(delivery.BasicProperties))
+                {
+                    try
+                    {
+                        await publishing.WaitAsync(cancellationToken);
+                        try { await RabbitMqQuarantine.TransferAsync(publisher!, DeferredQueue, delivery.Exchange, delivery.RoutingKey,
+                            delivery.BasicProperties, delivery.Body, cancellationToken); }
+                        finally { publishing.Release(); }
+                        await channel.BasicAckAsync(delivery.DeliveryTag, false, cancellationToken);
+                    }
+                    catch (Exception transferError)
+                    {
+                        // This branch is outside the terminal-processing catch blocks: disposition happens once.
+                        if (channel.IsOpen)
+                        {
+                            try { await channel.BasicNackAsync(delivery.DeliveryTag, false, true, CancellationToken.None); }
+                            catch (Exception nackError)
+                            {
+                                logger.LogCritical(nackError, "Legacy parking requeue failed; source delivery/ACK state is uncertain. Inspect channel and quarantine copies before retry.");
+                                throw new AggregateException("Legacy quarantine transfer and source requeue failed.", transferError, nackError);
+                            }
+                        }
+                        else logger.LogWarning(transferError, "Legacy parking channel closed; source requeue/ACK is uncertain. Inspect broker state before retry.");
+                        throw;
+                    }
+                    continue;
+                }
                 try
                 {
                     if (delivery.BasicProperties.Type != nameof(ProcessInvocationTerminalOutcome)) throw new ArgumentException("Parking queue contains a non-terminal message.");
-                    var outcome = JsonSerializer.Deserialize<ProcessInvocationTerminalOutcome>(delivery.Body.Span) ?? throw new JsonException("Null terminal outcome.");
+                    var outcome = RabbitMqInvocationSerializer.Read<ProcessInvocationTerminalOutcome>(delivery.Body.Span, delivery.BasicProperties);
                     if (outcome.Message.Identity.Source != local || delivery.BasicProperties.MessageId != outcome.Message.MessageId
                         || delivery.BasicProperties.CorrelationId != outcome.Message.Identity.CorrelationId) throw new ArgumentException("Parked terminal metadata/identity mismatch.");
                     await using var scope = scopes.CreateAsyncScope();
@@ -241,8 +271,25 @@ internal sealed class RabbitMqInvocationTransport(RabbitMqConnectionProvider con
         finally { reconciling.Release(); }
     }
 
-    private static T Decode<T>(BasicDeliverEventArgs delivery) => JsonSerializer.Deserialize<T>(delivery.Body.Span)
-        ?? throw new JsonException("Invocation message is null.");
+    private static T Decode<T>(BasicDeliverEventArgs delivery) => RabbitMqInvocationSerializer.Read<T>(delivery.Body.Span, delivery.BasicProperties);
+
+    private async Task QuarantineAsync(IChannel source, string queue, BasicDeliverEventArgs delivery)
+    {
+        try
+        {
+            await publishing.WaitAsync(shutdown.Token);
+            try { await RabbitMqQuarantine.TransferAsync(publisher!, queue, delivery, shutdown.Token); }
+            finally { publishing.Release(); }
+            await source.BasicAckAsync(delivery.DeliveryTag, false, shutdown.Token);
+            Interlocked.Increment(ref handledMessages);
+        }
+        catch (Exception error)
+        {
+            shutdown.Cancel();
+            logger.LogCritical(error, "Invocation quarantine transfer/ACK failed; stopping consumption. Restore quarantine and restart host.");
+            quarantineShutdown = Task.Run(() => StopAsync(CancellationToken.None));
+        }
+    }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
@@ -280,5 +327,5 @@ internal sealed class RabbitMqInvocationTransport(RabbitMqConnectionProvider con
         }
         finally { stopping.Release(); }
     }
-    public async ValueTask DisposeAsync() => await StopAsync(CancellationToken.None);
+    public async ValueTask DisposeAsync() { await StopAsync(CancellationToken.None); if (quarantineShutdown is { } task) await task; }
 }

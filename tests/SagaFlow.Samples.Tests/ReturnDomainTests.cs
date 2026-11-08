@@ -1,5 +1,7 @@
+using SagaFlow.Participants.Messaging;
 using System.Text.Json;
-using SagaFlow.Core.Messages;
+using SagaCommand = SagaFlow.Participants.Messaging.ParticipantCommand;
+using SagaOutcomeEvent = SagaFlow.Participants.Messaging.ParticipantOutcome;
 using SagaFlow.Engine.ProcessDefinition;
 using SagaFlow.Inventory.Domain;
 using SagaFlow.Inventory.Repositories;
@@ -57,7 +59,7 @@ public sealed class ReturnDomainTests
     public void WarehouseDefersOutcomeAndRejectsConflictingOrDuplicateCommands()
     {
         var repository = new WarehouseRepository();
-        var handler = new WarehouseCommandHandler(repository, TimeProvider.System);
+        var handler = new WarehouseCommandHandler(repository, TimeProvider.System, new DeferredReplies());
         var returnId = Guid.NewGuid();
         var command = new SagaCommand {
             Name = "InspectReturn", Payload = JsonSerializer.SerializeToElement(new { returnId, orderId = Guid.NewGuid() }),
@@ -82,8 +84,7 @@ public sealed class ReturnDomainTests
     {
         var repository = new WarehouseRepository();
         var returnId = Guid.NewGuid();
-        repository.Register(new InspectionRecord(returnId, Guid.NewGuid(), "saga", "corr", "warehouse",
-            "return.outcomes", DateTimeOffset.UtcNow));
+        repository.Register(new InspectionRecord(returnId, Guid.NewGuid(), DateTimeOffset.UtcNow));
         var results = await Task.WhenAll(Enumerable.Range(0, 20).Select(_ => Task.Run(() =>
         {
             try { repository.BeginDecision(returnId, true, DateTimeOffset.UtcNow); return true; }
@@ -100,8 +101,7 @@ public sealed class ReturnDomainTests
     {
         var repository = new WarehouseRepository();
         var returnId = Guid.NewGuid();
-        repository.Register(new InspectionRecord(returnId, Guid.NewGuid(), "saga", "corr", "warehouse",
-            "return.outcomes", DateTimeOffset.UtcNow));
+        repository.Register(new InspectionRecord(returnId, Guid.NewGuid(), DateTimeOffset.UtcNow));
         var publisher = new FailingPublisher(definitelyNotSent);
         var service = new WarehouseDecisionService(repository, publisher, TimeProvider.System,
             NullLogger<WarehouseDecisionService>.Instance);
@@ -130,7 +130,7 @@ public sealed class ReturnDomainTests
     private sealed class FailingPublisher(bool definitelyNotSent) : IWarehouseOutcomePublisher
     {
         public int Attempts { get; private set; }
-        public Task PublishAsync(SagaOutcomeEvent outcome, string replyTo)
+        public Task PublishAsync(Guid inspectionId, bool accepted)
         {
             Attempts++;
             if (definitelyNotSent)

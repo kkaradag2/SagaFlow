@@ -14,7 +14,8 @@ public interface IProcessInvocationPolicy
 public sealed class InvocationOutcomeNotReadyException(string message) : Exception(message);
 
 public sealed class ProcessInvocationReceiver(ISagaStateStore store, ProcessDefinitionRegistry definitions,
-    ProcessInvocationManager manager, IProcessInvocationBus bus, ISagaClock clock, IEnumerable<IProcessInvocationPolicy> policies, SagaCoordinator coordinator)
+    ProcessInvocationManager manager, IProcessInvocationBus bus, ISagaClock clock, IEnumerable<IProcessInvocationPolicy> policies, SagaCoordinator coordinator,
+    IIncomingInvocationInitializer? initializer = null)
 {
     public async Task ReceiveAsync(ProcessInvocationRequest request, CancellationToken cancellationToken = default)
     {
@@ -40,7 +41,7 @@ public sealed class ProcessInvocationReceiver(ISagaStateStore store, ProcessDefi
                 }
             }
             decision = await store.RecordIncomingDecisionAsync(new(request, reason,
-                new(request.Identity, Guid.NewGuid().ToString("N"), clock.UtcNow)), cancellationToken);
+                new(request.Identity, Guid.NewGuid().ToString("N"), clock.UtcNow, request.Message.MessageId)), cancellationToken);
         }
         if (decision.Request.Identity != request.Identity || decision.Request.Payload.GetRawText() != request.Payload.GetRawText())
             throw new InvalidOperationException("Duplicate invocation identity/payload conflict.");
@@ -49,6 +50,11 @@ public sealed class ProcessInvocationReceiver(ISagaStateStore store, ProcessDefi
         else
         {
             var instance = await manager.GetOrCreateTargetAsync(request, cancellationToken);
+            if (initializer is not null && instance.Status == SagaStatus.Running && instance.Steps.All(s => s.Status == SagaStepStatus.Pending))
+            {
+                var payload = await initializer.InitializeAsync(request, instance.Id, cancellationToken);
+                await manager.InitializeIncomingPayloadAsync(instance.Id, request, payload, cancellationToken);
+            }
             await bus.PublishAsync(new ProcessInvocationAccepted(decision.Reply, instance.Id), cancellationToken);
             await coordinator.StartIncomingAsync(instance.Id, cancellationToken);
         }
@@ -63,7 +69,7 @@ public sealed class ProcessInvocationReceiver(ISagaStateStore store, ProcessDefi
     public async Task ReceiveAsync(ProcessInvocationRejected rejected, CancellationToken cancellationToken = default)
     {
         await ValidateOutcomeAsync(rejected.Message, cancellationToken);
-        await manager.ObserveAsync(rejected.Message.Identity, ExternalProcessStatus.Rejected, cancellationToken: cancellationToken, message: rejected.Message, fingerprint: Fingerprint(rejected));
+        await manager.ObserveAsync(rejected.Message.Identity, ExternalProcessStatus.Rejected, cancellationToken: cancellationToken, message: rejected.Message, fingerprint: Fingerprint(rejected), rejectionReason: rejected.Reason);
         await coordinator.HandleExternalRejectedAsync(rejected, cancellationToken);
     }
     public async Task ReceiveAsync(ProcessInvocationTerminalOutcome outcome, CancellationToken cancellationToken = default)

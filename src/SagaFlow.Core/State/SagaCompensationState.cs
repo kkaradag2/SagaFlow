@@ -4,6 +4,7 @@ namespace SagaFlow.Core.State;
 
 public sealed class SagaCompensationState
 {
+    public SagaFlow.Core.Messages.SagaMessageHeaders? Execution { get; set; }
     public string StepId { get; init; } = string.Empty;
     public string Command { get; init; } = string.Empty;
     public SagaCompensationStatus Status { get; set; } = SagaCompensationStatus.Pending;

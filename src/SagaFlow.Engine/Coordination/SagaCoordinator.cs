@@ -79,19 +79,20 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
     public Task HandleExternalTerminalAsync(ProcessInvocationTerminalOutcome outcome, CancellationToken cancellationToken = default) =>
         HandleOutcomeCoreAsync(new SagaOutcomeEvent
         {
+            MessageId = outcome.Message.MessageId,
             Headers = new() { SagaInstanceId = outcome.Message.Identity.SourceSagaInstanceId, StepId = outcome.Message.Identity.SourceStep,
                 CorrelationId = outcome.Message.Identity.CorrelationId },
             IsSuccess = outcome.Status == ExternalProcessStatus.Completed,
-            Result = JsonSerializer.SerializeToElement(new { status = outcome.Status.ToString(), invocationId = outcome.Message.Identity.InvocationId,
-                targetSagaInstanceId = outcome.TargetSagaInstanceId })
+
         }, cancellationToken, outcome.Message.Identity, outcome.Status, outcome.TargetSagaInstanceId);
 
     public Task HandleExternalRejectedAsync(ProcessInvocationRejected rejected, CancellationToken cancellationToken = default) =>
         HandleOutcomeCoreAsync(new SagaOutcomeEvent
         {
+            MessageId = rejected.Message.MessageId,
             Headers = new() { SagaInstanceId = rejected.Message.Identity.SourceSagaInstanceId, StepId = rejected.Message.Identity.SourceStep,
                 CorrelationId = rejected.Message.Identity.CorrelationId }, IsSuccess = false,
-            Result = JsonSerializer.SerializeToElement(new { status = "Rejected", invocationId = rejected.Message.Identity.InvocationId, reason = rejected.Reason })
+
         }, cancellationToken, rejected.Message.Identity, ExternalProcessStatus.Rejected);
 
     public Task HandleOutcomeAsync(SagaOutcomeEvent outcome, CancellationToken cancellationToken = default) =>
@@ -123,10 +124,11 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
                     if (step.Invocation?.Identity != externalIdentity || step.InvocationProgress?.Status != externalStatus || step.InvocationProgress?.TargetSagaInstanceId != externalTargetSagaId)
                         throw new InvalidSagaOutcomeException("External terminal does not match the observed invocation.");
                     if (!step.External || instance.Status != SagaStatus.Running || instance.CurrentStep != step.StepId
-                        || step.Status != SagaStepStatus.Dispatched || step.Reconciliation is not null || step.Result.HasValue)
+                        || step.Status != SagaStepStatus.Dispatched || step.Reconciliation is not null )
                         return (Command: (SagaCommand?)null, Error: (string?)null, Changed: false);
                 }
                 else if (step.External) throw new InvalidSagaOutcomeException("Participant outcomes cannot complete external process steps.");
+                if (externalIdentity is null) ExecutionMetadata.Validate(step.Execution, outcome);
                 if (instance.Status == SagaStatus.TimedOut && instance.CurrentStep == step.StepId && step.Status == SagaStepStatus.TimedOut)
                     throw new LateSagaOutcomeException("Outcome arrived after the active Saga step timed out; it must remain available for explicit resolution.");
                 if (step.Result.HasValue && (step.Status is SagaStepStatus.Completed or SagaStepStatus.Failed))
@@ -139,11 +141,32 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
                 if (registered is null || registered.Origin != DefinitionOrigin.Local) throw new InvalidOperationException("The instance's owning local definition/version is unavailable.");
                 // Record and evaluate on the same atomic working snapshot; rejected outcomes still roll back the whole update.
                 var now = clock.UtcNow;
-                states.RecordOutcome(instance, outcome, now);
-                var target = resolver.Resolve(registered.Definition.Steps.Single(s => s.Name == step.StepId), outcome.IsSuccess, outcome.Result, instance);
+                string target;
+                try
+                {
+                    // Older/bypassed registrations must obey the same Result=null contract as newly loaded YAML.
+                    if (externalIdentity is not null) new ProcessDefinitionValidator().Validate(registered.Definition);
+                    if (externalIdentity is null) states.RecordOutcome(instance, outcome, now);
+                    else states.RecordExternalCompletion(instance, step, outcome.IsSuccess, now);
+                    target = resolver.Resolve(registered.Definition.Steps.Single(s => s.Name == step.StepId), outcome.IsSuccess, outcome.Result, instance);
+                }
+                catch (Exception error) when (externalIdentity is not null && error is DefinitionValidationException or InvalidSagaOutcomeException)
+                {
+                    // Observation was committed separately. Commit a permanent local failure instead of requeueing it.
+                    var reason = $"External step '{step.StepId}' cannot resolve its source transition: {error.Message} Manual reconciliation required.";
+                    step.Status = SagaStepStatus.Failed;
+                    step.Result = null;
+                    step.CompletedAt = now;
+                    step.Reconciliation = new(reason, now);
+                    instance.Status = SagaStatus.Failed;
+                    instance.CurrentStep = null;
+                    instance.FailureReason = reason;
+                    instance.UpdatedAt = now;
+                    return (Command: (SagaCommand?)null, Error: (string?)null, Changed: true);
+                }
                 states.ApplyTransition(instance, target, now, registered.Definition);
                 if (target == "completed") return (Command: (SagaCommand?)null, Error: (string?)null, Changed: true);
-                if (target == "compensation") return (Command: compensations.Begin(instance), Error: (string?)null, Changed: true);
+                if (target == "compensation") return (Command: compensations.Begin(instance, outcome.MessageId), Error: (string?)null, Changed: true);
                 var next = instance.Steps.Single(s => s.StepId == target);
                 if (next.Status != SagaStepStatus.Pending)
                 {
@@ -153,7 +176,7 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
                     instance.FailureReason = error;
                     return (Command: (SagaCommand?)null, Error: error, Changed: true);
                 }
-                return (Command: (SagaCommand?)executor.Prepare(instance), Error: (string?)null, Changed: true);
+                return (Command: (SagaCommand?)executor.Prepare(instance, outcome.MessageId), Error: (string?)null, Changed: true);
             }, cancellationToken);
             if (decision.Changed && changes is not null) await changes.PublishAsync(outcome.Headers.SagaInstanceId);
         }

@@ -15,6 +15,24 @@ namespace SagaFlow.Samples.Tests;
 public sealed class ParticipantDomainTests
 {
     [Fact]
+    public void ParticipantAssembliesHaveNoSagaFlowRuntimeOrSdkDependency()
+    {
+        var assemblies = new[]
+        {
+            typeof(SagaFlow.Payment.Messaging.PaymentCommandHandler).Assembly,
+            typeof(SagaFlow.Inventory.Messaging.InventoryCommandHandler).Assembly,
+            typeof(SagaFlow.Shipment.Messaging.ShipmentCommandHandler).Assembly,
+            typeof(SagaFlow.Notification.Messaging.NotificationCommandHandler).Assembly,
+            typeof(SagaFlow.ManagerApproval.Messaging.ApprovalCommandHandler).Assembly,
+            typeof(SagaFlow.Warehouse.WarehouseCommandHandler).Assembly,
+            typeof(SagaFlow.Participants.Messaging.ParticipantProtocol).Assembly
+        };
+        foreach (var assembly in assemblies)
+            Assert.DoesNotContain(assembly.GetReferencedAssemblies(), reference => reference.Name is
+                "SagaFlow.Core" or "SagaFlow.Engine" or "SagaFlow.Hosting" or "SagaFlow.Messaging.RabbitMQ");
+    }
+
+    [Fact]
     public void PaymentAuthorizationAndRefundAreDeterministic()
     {
         var repository = new InMemoryPaymentRepository();

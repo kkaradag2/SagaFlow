@@ -39,7 +39,7 @@ public sealed class ProcessInvocationManager(ISagaStateStore store, ProcessDefin
     /// <summary>Explicit observation/application call for future messaging adapters. Identity must match the stored request exactly.</summary>
     public async ValueTask<CrossDomainInstanceRelationship> ObserveAsync(ProcessInvocationIdentity identity, ExternalProcessStatus status,
         string? targetSagaInstanceId = null, CancellationToken cancellationToken = default,
-        InvocationMessage? message = null, string? fingerprint = null)
+        InvocationMessage? message = null, string? fingerprint = null, string? rejectionReason = null)
     {
         var relationship = await store.UpdateAsync(identity.SourceSagaInstanceId, instance =>
         {
@@ -81,13 +81,33 @@ public sealed class ProcessInvocationManager(ISagaStateStore store, ProcessDefin
             if (now < progress.UpdatedAt || (progress.LastObservedAt is { } observed && now < observed))
                 throw new InvalidOperationException("Observation clock moved backwards.");
             step.InvocationProgress = new(status, targetId, progress.CreatedAt,
-                status == progress.Status ? progress.UpdatedAt : now, now);
+                status == progress.Status ? progress.UpdatedAt : now, now, rejectionReason ?? progress.RejectionReason);
             if (message is not null) step.ObservedMessages = Array.AsReadOnly(step.ObservedMessages.Append(new InvocationObservedMessage(message.MessageId, fingerprint!)).ToArray());
             instance.UpdatedAt = now;
             return Snapshot(step);
         }, cancellationToken);
         if (changes is not null) await changes.PublishAsync(identity.SourceSagaInstanceId);
         return relationship;
+    }
+
+    /// <summary>Commit the target application's execution payload before first dispatch, retaining the original incoming request.</summary>
+    internal async ValueTask InitializeIncomingPayloadAsync(string instanceId, ProcessInvocationRequest request,
+        System.Text.Json.JsonElement payload, CancellationToken cancellationToken)
+    {
+        if (payload.ValueKind == System.Text.Json.JsonValueKind.Undefined) throw new ArgumentException("Execution payload must be JSON.");
+        var changed = await store.UpdateAsync(instanceId, instance =>
+        {
+            EnsureOwner(instance, request.Identity.Target);
+            if (instance.IncomingInvocation?.Identity != request.Identity
+                || instance.IncomingInvocation.Payload?.GetRawText() != request.Payload.GetRawText())
+                throw new InvalidOperationException("Incoming initialization identity/payload conflict.");
+            // A concurrent duplicate may have already dispatched. Never rewrite an executing/terminal Saga.
+            if (instance.Status != SagaStatus.Running || instance.Steps.Any(s => s.Status != SagaStepStatus.Pending)) return false;
+            instance.Context = payload.Clone();
+            instance.UpdatedAt = clock.UtcNow;
+            return true;
+        }, cancellationToken);
+        if (changed && changes is not null) await changes.PublishAsync(instanceId);
     }
 
     /// <summary>Create only local target state, without dispatching steps. Atomic store claim prevents duplicate creation.</summary>

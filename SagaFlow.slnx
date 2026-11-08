@@ -1,9 +1,13 @@
 <Solution>
   <Folder Name="/samples/" />
+  <Folder Name="/samples/ProcurementProcess/">
+    <Project Path="samples/ProcurementProcess/SagaFlow.Procurement/SagaFlow.Procurement.csproj" />
+  </Folder>
   <Folder Name="/samples/OrderProcess/">
     <Project Path="samples/OrderProcess/SagaFlow.Order/SagaFlow.Order.csproj" />
   </Folder>
   <Folder Name="/samples/Participants/">
+    <Project Path="samples/Participants/Shared/SagaFlow.SampleParticipant.Messaging.csproj" />
     <Project Path="samples/Participants/SagaFlow.Payment/SagaFlow.Payment.csproj" />
     <Project Path="samples/Participants/SagaFlow.Inventory/SagaFlow.Inventory.csproj" />
     <Project Path="samples/Participants/SagaFlow.Shipment/SagaFlow.Shipment.csproj" />

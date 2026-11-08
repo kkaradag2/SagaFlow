@@ -12,6 +12,7 @@ internal static class SagaStateSnapshot
         CreatedAt = state.CreatedAt, UpdatedAt = state.UpdatedAt, FailureReason = state.FailureReason, Revision = state.Revision,
         Steps = Array.AsReadOnly(state.Steps.Select(step => new SagaStepState
         {
+            Execution = step.Execution,
             ObservedMessages = Array.AsReadOnly(step.ObservedMessages.ToArray()), Reconciliation = step.Reconciliation, Publication = step.Publication, InvocationProgress = step.InvocationProgress, Invocation = step.Invocation, StepName = step.StepName, Command = step.Command, External = step.External, Status = step.Status, ExecutionOrder = step.ExecutionOrder,
             Input = step.Input?.Clone(), Result = step.Result?.Clone(), StartedAt = step.StartedAt, CompletedAt = step.CompletedAt,
             TimeoutLimit = step.TimeoutLimit, TimedOutAt = step.TimedOutAt
@@ -26,6 +27,7 @@ internal static class SagaStateSnapshot
 
     public static SagaCompensationState CopyCompensation(SagaCompensationState state) => new()
     {
+        Execution = state.Execution,
         StepId = state.StepId, Command = state.Command, Status = state.Status, ExecutionOrder = state.ExecutionOrder,
         StartedAt = state.StartedAt, CompletedAt = state.CompletedAt, Result = state.Result?.Clone()
     };

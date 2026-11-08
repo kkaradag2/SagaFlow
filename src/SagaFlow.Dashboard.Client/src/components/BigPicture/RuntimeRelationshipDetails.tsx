@@ -18,6 +18,7 @@ export function RuntimeRelationshipDetails({ row, onLocalInstanceOpen }: {
       <p className="mt-1 text-xs">A remote completion does not resolve this warning.</p>
     </div>}
     <dl className="space-y-4">
+      {row.perspective === "Source" && row.rejectionReason && <div><dt className="text-xs text-zinc-500 dark:text-zinc-400">Rejection reason</dt><dd className="mt-1 whitespace-pre-wrap break-words">{row.rejectionReason}</dd></div>}
       {fact("Invocation ID", row.invocationId, true)}
       {fact("Source process", processKey(row.source))}
       {fact("Source Saga ID", row.sourceSagaInstanceId, true)}
