@@ -15,14 +15,14 @@ vi.mock("../src/components/Workflow/WorkflowGraph", () => ({ default: ({ definit
 vi.mock("@xyflow/react", async importOriginal => {
   const actual = await importOriginal<typeof import("@xyflow/react")>();
   return { ...actual, Background: () => null, Controls: () => null, Handle: () => null,
-    ReactFlow: ({ nodes, edges, onNodeClick, onEdgeClick }: {
+    ReactFlow: ({ nodes, edges, onEdgeClick }: {
       nodes: ReturnType<typeof mapBigPicture>["nodes"]; edges: ReturnType<typeof mapBigPicture>["edges"];
-      onNodeClick: (event: unknown, node: unknown) => void; onEdgeClick: (event: unknown, edge: unknown) => void;
+      onEdgeClick: (event: unknown, edge: unknown) => void;
     }) => <div data-testid="bigpicture-flow">
-      {nodes.map(node => <button type="button" key={node.id} onClick={event => onNodeClick(event, node)}>
+      {nodes.map(node => <div key={node.id}>
         <ProcessNodeCard data={node.data} selected={false} id={node.id} type="process" dragging={false}
           isConnectable={false} zIndex={0} selectable={true} deletable={false} draggable={false}
-          selected={false} /></button>)}
+          /></div>)}
       {edges.map(edge => <button type="button" key={edge.id} onClick={event => onEdgeClick(event, edge)}>
         {edge.label ?? "Unlabelled reference"}</button>)}</div>,
   };
@@ -102,7 +102,7 @@ describe("BigPicture graph", () => {
       targetCorrelationId: "target-correlation", lastKnownStatus: null, targetLocalStatus: "Running", reconciliation: null };
     render(<ThemeProvider><BigPictureGraph graph={graph} instanceContext={{ ...row.target, instanceId: "target-saga" }} runtime={[targetRow]}
       onLocalInstanceOpen={navigate} /></ThemeProvider>);
-    await user.click(within(screen.getByTestId("bigpicture-flow")).getByRole("button", { name: /return-process/ }));
+    await user.click(within(screen.getByTestId("bigpicture-flow")).getByRole("button", { name: /View details for .*return-process/ }));
     const drawer = screen.getByRole("dialog");
     expect(within(drawer).getByText("Target Local Status")).toBeTruthy();
     const origin = within(drawer).getByText("Origin: External");
@@ -118,7 +118,7 @@ describe("BigPicture graph", () => {
   it("does not mark a normal local Saga as external in its process drawer", async () => {
     const user = userEvent.setup();
     render(<ThemeProvider><BigPictureGraph graph={graph} instanceContext={instanceContext} runtime={[]} /></ThemeProvider>);
-    await user.click(within(screen.getByTestId("bigpicture-flow")).getByRole("button", { name: /order-process/ }));
+    await user.click(within(screen.getByTestId("bigpicture-flow")).getByRole("button", { name: /View details for .*order-process/ }));
     const drawer = screen.getByRole("dialog");
     expect(within(drawer).getByText("Local", { exact: true })).toBeTruthy();
     expect(within(drawer).queryByText("Origin: External")).toBeNull();
@@ -164,10 +164,10 @@ describe("BigPicture graph", () => {
       return <BigPictureGraph graph={withDefinitions} workflow={selected} onWorkflowOpen={setSelected} onWorkflowBack={() => setSelected(null)} />;
     }
     render(<ThemeProvider><Harness /></ThemeProvider>);
-    await user.click(screen.getByRole("button", { name: /order-process/ }));
+    await user.click(screen.getByRole("button", { name: /Open workflow for .*order-process/ }));
     expect(await screen.findByRole("img", { name: "order-process workflow diagram" })).toHaveProperty("textContent", "order-step");
-    await user.click(screen.getByRole("button", { name: "Back to BigPicture" }));
-    await user.click(screen.getByRole("button", { name: /return-process/ }));
+    await user.click(screen.getByRole("button", { name: "Back to Topology" }));
+    await user.click(screen.getByRole("button", { name: /Open workflow for .*return-process/ }));
     expect(await screen.findByRole("img", { name: "return-process workflow diagram" })).toHaveProperty("textContent", "return-step");
   });
 
@@ -176,7 +176,7 @@ describe("BigPicture graph", () => {
     const path = workflowPath("/sagaflow", identity);
     expect(path).toBe("/sagaflow/bigpicture/workflow/return/return-process/2.0%20beta");
     expect(workflowFromPath(path)).toEqual(identity);
-    expect(workflowFromPath("/sagaflow/bigpicture/workflow/return/return-process")).toBeNull();
+    expect(workflowFromPath(workflowPath("/sagaflow", { ...identity, version: null }))).toEqual({ ...identity, version: null });
     expect(workflowFromPath("/sagaflow/bigpicture/workflow/return/return-process/%ZZ")).toBeNull();
   });
 
@@ -184,7 +184,8 @@ describe("BigPicture graph", () => {
     { domain: "missing", process: "return-process", version: "2.0" },
     { domain: "return", process: "missing", version: "2.0" },
     { domain: "return", process: "return-process", version: "9.9" },
-  ])("does not invent a graph for unknown workflow identity $domain/$process@$version", async workflow => {
+    { domain: "return", process: "return-process", version: "2.0" },
+  ])("does not invent a graph without a matching workflow definition for $domain/$process@$version", async workflow => {
     render(<ThemeProvider><BigPictureGraph graph={graph} workflow={workflow} /></ThemeProvider>);
     expect(screen.getByRole("status").textContent).toContain("Workflow definition unavailable");
     expect(screen.queryByRole("img", { name: /workflow diagram/ })).toBeNull();
@@ -196,7 +197,7 @@ describe("BigPicture graph", () => {
         targetProcess: "return-process", requestedVersion: "2.0", kind: "Unavailable", message: "Remote unavailable" }] };
     const user = userEvent.setup();
     const view = render(<ThemeProvider><BigPictureGraph graph={unresolved} /></ThemeProvider>);
-    await user.click(screen.getByRole("button", { name: /return-process/ }));
+    await user.click(screen.getByRole("button", { name: /View details for .*return-process/ }));
     expect(screen.getByRole("dialog").textContent).toContain("Unresolved");
     view.rerender(<ThemeProvider><BigPictureGraph graph={graph} /></ThemeProvider>);
     expect(screen.getByRole("dialog").textContent).toContain("Resolved");
@@ -266,7 +267,7 @@ describe("BigPicture graph", () => {
         targetProcess: "return-process", kind: "Unavailable", message: "Remote unavailable" }] };
     const user = userEvent.setup();
     render(<ThemeProvider><BigPictureGraph graph={unresolved} /></ThemeProvider>);
-    await user.click(screen.getByRole("button", { name: /return-process/ }));
+    await user.click(screen.getByRole("button", { name: /View details for .*return-process/ }));
     const drawer = screen.getByRole("dialog", { name: "BigPicture details" });
     expect(within(drawer).getByText("Version")).toBeTruthy();
     expect(drawer.textContent).toContain("Remote unavailable");

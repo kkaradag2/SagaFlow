@@ -6,8 +6,11 @@ import { aggregateDefinitionGraphs, BigPicturePage } from "../src/pages/BigPictu
 
 vi.mock("../src/api/sagaflowApi", () => ({ getDefinitionGraph: vi.fn() }));
 vi.mock("../src/components/BigPicture/BigPictureGraph", () => ({ default: ({ graph }: { graph: DefinitionGraph }) =>
-  <div role="img" aria-label="Combined BigPicture graph"><span>{graph.edges[0]?.target ? "Resolved" : "Unresolved"}</span>{graph.edges.map((edge, index) =>
-    <span key={index}>{edge.source.domain} → {edge.targetDomain}: {edge.relationship}</span>)}</div> }));
+  <div role="img" aria-label="Combined BigPicture graph">
+    {graph.nodes.map(node => <span key={`${node.domain}/${node.process}@${node.version}`}>{node.domain} · {node.origin}</span>)}
+    <span>{graph.edges[0]?.target ? "Resolved" : "Unresolved"}</span>
+    {graph.edges.map((edge, index) => <span key={index}>{edge.source.domain} → {edge.targetDomain}: {edge.relationship}</span>)}
+  </div> }));
 
 const definition = (domain: string): SagaDefinition => ({ name: `${domain}-process`, domain, version: "1.0", steps: [],
   bigPicture: [{ domain: "return", process: "return-process", version: "1.0", endpoint: "https://return.example", relationship: "related" }] });
@@ -53,16 +56,21 @@ describe("BigPicture page", () => {
     expect(getDefinitionGraph).toHaveBeenCalledTimes(2);
   });
 
-  it("clears topology when a refresh is denied", async () => {
+  it("clears the denied root's previous graph while retaining Local nodes and another root's last successful graph", async () => {
     vi.useFakeTimers();
-    vi.mocked(getDefinitionGraph).mockResolvedValueOnce(graph("order"))
-      .mockRejectedValueOnce(new Error("SagaFlow request failed (403)."));
-    render(<BigPicturePage definitions={[definition("order")]} refreshIntervalMs={1000} />);
+    vi.mocked(getDefinitionGraph).mockResolvedValueOnce(graph("order")).mockResolvedValueOnce(graph("returns"))
+      .mockRejectedValueOnce(new Error("SagaFlow request failed (403)."))
+      .mockRejectedValueOnce(new Error("SagaFlow request failed (503)."));
+    render(<BigPicturePage definitions={[definition("order"), definition("returns")]} refreshIntervalMs={1000} />);
     await act(async () => { await Promise.resolve(); });
-    expect(screen.getByRole("img", { name: "Combined BigPicture graph" })).toBeTruthy();
+    expect(screen.getByText("order → return: related")).toBeTruthy();
     await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-    expect(screen.getByRole("alert").textContent).toBe("Access to process relationships was denied.");
-    expect(screen.queryByRole("img", { name: "Combined BigPicture graph" })).toBeNull();
+    expect(screen.getByRole("alert").textContent).toContain("Access to process relationships was denied for order/order-process@1.0.");
+    expect(screen.getByRole("alert").textContent).toContain("Unable to load or refresh process relationships for returns/returns-process@1.0.");
+    expect(screen.getByText("order · Local")).toBeTruthy();
+    expect(screen.getByText("returns · Local")).toBeTruthy();
+    expect(screen.queryByText("order → return: related")).toBeNull();
+    expect(screen.getByText("returns → return: related")).toBeTruthy();
   });
 
   it("ignores an old response after the local definitions change", async () => {
@@ -102,17 +110,37 @@ describe("BigPicture page", () => {
     expect(getDefinitionGraph).toHaveBeenCalledTimes(2);
   });
 
-  it("distinguishes graph API failure from an empty graph without leaking cached data", async () => {
+  it("keeps the successful Remote node and edge when a different root fails", async () => {
+    const remote = { domain: "return", name: "return-process", version: "1.0" };
+    const successful = graph("returns");
+    vi.mocked(getDefinitionGraph).mockRejectedValueOnce(new Error("SagaFlow request failed (503)."))
+      .mockResolvedValueOnce({ nodes: [...successful.nodes, { domain: remote.domain, process: remote.name,
+        version: remote.version, origin: "Remote", definition: definition(remote.domain) }],
+        edges: [{ ...successful.edges[0], target: remote }], failures: [] });
+    render(<BigPicturePage definitions={[definition("order"), definition("returns")]} />);
+    expect(await screen.findByText("returns → return: related")).toBeTruthy();
+    expect(screen.getByText("return · Remote")).toBeTruthy();
+    expect(screen.getByText("order · Local")).toBeTruthy();
+    expect(screen.queryByText("order → return: related")).toBeNull();
+    expect(screen.getByRole("alert").textContent).toContain("Unable to load or refresh process relationships for order/order-process@1.0.");
+  });
+
+  it("shows only Local definitions and an error after initial graph access is denied", async () => {
     vi.mocked(getDefinitionGraph).mockRejectedValue(new Error("SagaFlow request failed (403)."));
     render(<BigPicturePage definitions={[definition("order")]} />);
-    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Access to process relationships was denied.");
+    expect(await screen.findByText("order · Local")).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("Access to process relationships was denied");
+    expect(screen.queryByText("return · Remote")).toBeNull();
     expect(screen.queryByText("order → return: related")).toBeNull();
   });
 
-  it("shows a true empty response as empty rather than an API error", async () => {
+  it("keeps the Local node when discovery returns an empty graph", async () => {
     vi.mocked(getDefinitionGraph).mockResolvedValue({ nodes: [], edges: [], failures: [] });
     render(<BigPicturePage definitions={[definition("order")]} />);
-    expect(await screen.findByText("No process relationships available.")).toBeTruthy();
+    expect(await screen.findByRole("img", { name: "Combined BigPicture graph" })).toBeTruthy();
+    expect(aggregateDefinitionGraphs([], [definition("order")]).nodes).toEqual([
+      { domain: "order", process: "order-process", version: "1.0", origin: "Local" },
+    ]);
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });

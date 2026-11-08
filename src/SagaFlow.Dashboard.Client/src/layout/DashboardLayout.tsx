@@ -2,7 +2,6 @@ import {
   Boxes,
   LayoutDashboard,
   Network,
-  GitBranch,
   PanelLeftOpen,
   type LucideIcon,
 } from "lucide-react";
@@ -10,7 +9,6 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 
 import { SidebarItem } from "../components/Sidebar/SidebarItem";
 import { ThemeToggle } from "../components/ThemeToggle/ThemeToggle";
-import { DefinitionsPage } from "../pages/DefinitionsPage";
 import { BigPicturePage } from "../pages/BigPicturePage";
 import { InstancesPage } from "../pages/InstancesPage";
 import { OverviewPage } from "../pages/OverviewPage";
@@ -19,8 +17,7 @@ import { instanceContextFromSearch, instanceContextQuery, workflowFromPath, work
 
 const pages = [
   "Overview",
-  "Workflows",
-  "BigPicture",
+  "Process Explorer",
   "Instances",
 ] as const;
 
@@ -28,30 +25,25 @@ type Page = (typeof pages)[number];
 
 const navigationIcons: Record<Page, LucideIcon> = {
   Overview: LayoutDashboard,
-  Workflows: GitBranch,
-  BigPicture: Network,
+  "Process Explorer": Network,
   Instances: Boxes,
 };
 
 const breadcrumbs: Record<Page, string[]> = {
   Overview: ["Dashboard", "Overview"],
-  Workflows: ["Dashboard", "Workflows"],
-  BigPicture: ["Dashboard", "BigPicture"],
+  "Process Explorer": ["Dashboard", "Process Explorer"],
   Instances: ["Dashboard", "Saga Instances"],
 };
 
-const routeName: Record<Page, string> = { Overview: "overview", Workflows: "workflows", BigPicture: "bigpicture", Instances: "instances" };
+const routeName: Record<Page, string> = { Overview: "overview", "Process Explorer": "bigpicture", Instances: "instances" };
 function routeBase() {
   const path = window.location.pathname.replace(/\/$/, "");
-  return path.replace(/\/(?:overview|workflows|bigpicture(?:\/workflow\/[^/]+\/[^/]+\/[^/]+)?|instances)$/i, "") || "/sagaflow";
+  return path.replace(/\/(?:overview|workflows|bigpicture(?:\/workflow\/[^/]+\/[^/]+(?:\/[^/]+)?)?|instances)$/i, "") || "/sagaflow";
 }
 function pageFromPath(): Page {
+  if (workflowFromPath(window.location.pathname)) return "Process Explorer";
   const segment = window.location.pathname.replace(/\/$/, "").split("/").pop()?.toLowerCase();
-  return segment === "overview" ? "Overview" : window.location.pathname.toLowerCase().includes("/bigpicture") ? "BigPicture"
-    : segment === "instances" ? "Instances" : "Workflows";
-}
-function hasDeclaredRelationship(definition: SagaDefinition) {
-  return definition.bigPicture.some(reference => reference.relationship === "related" || reference.relationship === "invokes");
+  return segment === "overview" ? "Overview" : segment === "instances" ? "Instances" : "Process Explorer";
 }
 
 export function DashboardLayout() {
@@ -66,9 +58,6 @@ export function DashboardLayout() {
   const [reload, setReload] = useState(0);
   const [isSidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isMobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const relatedDefinitions = useMemo(() => definitions.filter(hasDeclaredRelationship), [definitions]);
-  const bigPictureAvailable = !definitionsLoading && !definitionsError && (relatedDefinitions.length > 0 || Boolean(instanceContext));
-  const visiblePage = activePage === "BigPicture" && !bigPictureAvailable ? "Workflows" : activePage;
 
   useEffect(() => {
     const abort = new AbortController();
@@ -76,7 +65,7 @@ export function DashboardLayout() {
     setDefinitionsError(null);
     setDefinitions([]);
     void getDefinitions(abort.signal).then(result => { if (!abort.signal.aborted) setDefinitions(result); })
-      .catch(failure => { if (!abort.signal.aborted) setDefinitionsError(failure instanceof Error ? failure.message : "Unable to load workflows."); })
+      .catch(failure => { if (!abort.signal.aborted) setDefinitionsError(failure instanceof Error ? failure.message : "Unable to load process definitions."); })
       .finally(() => { if (!abort.signal.aborted) setDefinitionsLoading(false); });
     return () => abort.abort();
   }, [reload]);
@@ -87,29 +76,34 @@ export function DashboardLayout() {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
-  useEffect(() => {
-    if (activePage === "BigPicture" && !definitionsLoading && !bigPictureAvailable) {
-      window.history.replaceState(null, "", `${routeBase()}/workflows`);
-      setActivePage("Workflows");
-      setActiveWorkflow(null);
-    }
-  }, [activePage, bigPictureAvailable, definitionsLoading]);
-
   const handleWorkflowOpen = useCallback(() => {
     setSidebarCollapsed(!window.matchMedia("(max-width: 1023px)").matches);
     setMobileSidebarOpen(false);
   }, []);
 
+  const topologyHref = `${routeBase()}/bigpicture${instanceContextQuery(instanceContext)}`;
+  const handleWorkflowBack = useCallback(() => {
+    window.history.pushState(null, "", topologyHref);
+    setActiveWorkflow(null);
+  }, [topologyHref]);
+  const workflowDomain = activePage === "Process Explorer" ? activeWorkflow?.domain : undefined;
+  const breadcrumbItems: BreadcrumbItem[] = workflowDomain ? [
+    "Dashboard",
+    { label: "Process Explorer", href: topologyHref, navigate: handleWorkflowBack },
+    workflowDomain.charAt(0).toUpperCase() + workflowDomain.slice(1),
+  ] : breadcrumbs[activePage];
+
   const content = useMemo(() => {
     switch (activePage) {
       case "Overview":
         return <OverviewPage />;
-      case "Workflows":
-        return <DefinitionsPage onWorkflowOpen={handleWorkflowOpen} definitions={definitions} loading={definitionsLoading}
-          error={definitionsError} onRefresh={() => setReload(value => value + 1)} />;
-      case "BigPicture":
-        return definitionsLoading ? <div role="status" className="text-sm text-zinc-500">Loading process relationships…</div>
-          : bigPictureAvailable ? <BigPicturePage definitions={definitions} workflow={activeWorkflow} instanceContext={instanceContext}
+      case "Process Explorer":
+        if (definitionsLoading) return <div role="status" className="text-sm text-zinc-500">Loading process definitions…</div>;
+        if (definitionsError) return <div className="space-y-3 text-sm">
+          <p role="alert" className="text-red-600 dark:text-red-400">{definitionsError}</p>
+          <button type="button" className="rounded-lg border px-3 py-2" onClick={() => setReload(value => value + 1)}>Retry loading definitions</button>
+        </div>;
+        return <BigPicturePage definitions={definitions} workflow={activeWorkflow} instanceContext={instanceContext}
             onLocalInstanceOpen={id => {
               const query = `?${new URLSearchParams({ instanceId: id })}`;
               window.history.pushState(null, "", `${routeBase()}/instances${query}`);
@@ -120,10 +114,7 @@ export function DashboardLayout() {
               window.history.pushState(null, "", workflowPath(routeBase(), workflow) + instanceContextQuery(instanceContext));
               setActiveWorkflow(workflow);
               handleWorkflowOpen();
-            }} onWorkflowBack={() => {
-              window.history.pushState(null, "", `${routeBase()}/bigpicture${instanceContextQuery(instanceContext)}`);
-              setActiveWorkflow(null);
-            }} /> : null;
+            }} onWorkflowBack={handleWorkflowBack} />;
       case "Instances":
         return <InstancesPage key={instanceId ?? "list"} initialInstanceId={instanceId}
           onInstanceNavigate={id => {
@@ -132,17 +123,16 @@ export function DashboardLayout() {
           }} onBigPictureOpen={(context: InstanceContext) => {
             const query = instanceContextQuery(context);
             window.history.pushState(null, "", `${routeBase()}/bigpicture${query}`);
-            setSearch(query); setActivePage("BigPicture"); setActiveWorkflow(null);
+            setSearch(query); setActivePage("Process Explorer"); setActiveWorkflow(null);
           }} />;
     }
-  }, [activePage, activeWorkflow, handleWorkflowOpen, definitions, definitionsLoading, definitionsError, bigPictureAvailable, relatedDefinitions, instanceContext, instanceId]);
+  }, [activePage, activeWorkflow, handleWorkflowOpen, handleWorkflowBack, definitions, definitionsLoading, definitionsError, instanceContext, instanceId]);
 
   const closeMobileSidebar = () => {
     setMobileSidebarOpen(false);
   };
 
   const navigateTo = (page: Page) => {
-    if (page === "BigPicture" && !bigPictureAvailable) return;
     window.history.pushState(null, "", `${routeBase()}/${routeName[page]}`);
     setActivePage(page);
     setActiveWorkflow(null);
@@ -176,7 +166,7 @@ export function DashboardLayout() {
           type="button"
           aria-label="Go to dashboard home"
           title="Dashboard home"
-          onClick={() => navigateTo("Workflows")}
+          onClick={() => navigateTo("Process Explorer")}
           className={[
             "flex min-h-10 items-center gap-3 rounded-lg text-left transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-500",
             isSidebarCollapsed ? "justify-center" : "",
@@ -197,7 +187,7 @@ export function DashboardLayout() {
 
         <div className={isSidebarCollapsed ? "mt-9 lg:mt-10" : "mt-9"}>
           <nav className="flex flex-col gap-1">
-            {pages.filter(page => page !== "BigPicture" || bigPictureAvailable).map((page) => (
+            {pages.map((page) => (
               <SidebarItem
                 key={page}
                 label={page}
@@ -255,10 +245,10 @@ export function DashboardLayout() {
 
             <div className="min-w-0">
               <h1 className="m-0 truncate text-[22px] font-bold leading-7 tracking-tight text-zinc-950 dark:text-zinc-100">
-                {visiblePage}
+                {activePage}
               </h1>
 
-              <Breadcrumb items={breadcrumbs[visiblePage]} />
+              <Breadcrumb items={breadcrumbItems} />
             </div>
           </div>
 
@@ -275,7 +265,9 @@ export function DashboardLayout() {
   );
 }
 
-function Breadcrumb({ items }: { items: string[] }) {
+type BreadcrumbItem = string | { label: string; href: string; navigate: () => void };
+
+function Breadcrumb({ items }: { items: BreadcrumbItem[] }) {
   return (
     <nav
       aria-label="Breadcrumb"
@@ -283,19 +275,26 @@ function Breadcrumb({ items }: { items: string[] }) {
     >
       {items.map((item, index) => {
         const isLast = index === items.length - 1;
+        const label = typeof item === "string" ? item : item.label;
 
         return (
-          <span key={`${item}-${index}`} className="flex min-w-0 items-center gap-1">
-            <span
-              className={[
-                "truncate",
-                isLast ? "text-zinc-700 dark:text-zinc-300" : "",
-              ].join(" ")}
-            >
-              {item}
-            </span>
+          <span key={`${label}-${index}`} className="flex min-w-0 items-center gap-1">
+            {typeof item === "string" ? (
+              <span aria-current={isLast ? "page" : undefined}
+                className={`truncate ${isLast ? "text-zinc-700 dark:text-zinc-300" : ""}`}>
+                {label}
+              </span>
+            ) : (
+              <a href={item.href} onClick={event => {
+                if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                event.preventDefault();
+                item.navigate();
+              }} className="truncate rounded-sm hover:underline focus-visible:outline focus-visible:outline-emerald-500">
+                {label}
+              </a>
+            )}
             {!isLast && (
-              <span className="shrink-0 text-zinc-400 dark:text-zinc-600">/</span>
+              <span aria-hidden="true" className="shrink-0 text-zinc-400 dark:text-zinc-600">/</span>
             )}
           </span>
         );

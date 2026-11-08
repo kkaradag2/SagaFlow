@@ -63,15 +63,22 @@ try {
   assert.match(await resolved.innerText(), /Remote/); assert.match(await resolved.innerText(), /Resolved/);
   await shot('01-definition-light'); checks.push('real gRPC definition related/invokes/resolved/unresolved; no runtime without context');
   // Existing node -> workflow navigation is still a real browser interaction.
-  await resolved.click(); await page.getByRole('region', { name: 'BigPicture workflow' }).waitFor();
+  await resolved.getByRole('button', { name: /^Open workflow for / }).click(); await page.getByRole('region', { name: 'Process Explorer workflow' }).waitFor();
   await page.locator('.workflow-canvas .react-flow__node').first().waitFor();
   await shot('01b-workflow-navigation');
   assert.match(page.url(), /bigpicture\/workflow/);
-  await page.getByRole('button', { name: 'Back to BigPicture' }).click();
+  await page.getByRole('button', { name: 'Back to Topology' }).click();
   await page.locator('.bigpicture-reference-label').first().waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Process Explorer', exact: true }).count(), 1);
+  assert.equal(await page.getByRole('button', { name: /^(Workflows?|BigPicture)$/ }).count(), 0);
+  await unknown.getByRole('button', { name: /^Open workflow for / }).click();
+  await page.getByText(/Workflow definition unavailable/).waitFor();
+  assert.equal(await page.locator('.workflow-canvas .react-flow__node').count(), 0);
+  await page.getByRole('button', { name: 'Back to Topology' }).click();
+  checks.push('unified navigation, published remote workflow, unavailable remote workflow and return to topology');
   // Start from real local Instance Detail, not a constructed DTO.
   await page.goto(new URL('sagaflow/instances?instanceId=' + m.firstId, m.sourceUrl).href);
-  await page.getByRole('button', { name: 'View instance in BigPicture' }).click();
+  await page.getByRole('button', { name: 'View instance in Process Explorer' }).click();
   await list().getByRole('button').nth(1).waitFor();
   assert.equal(new URL(page.url()).searchParams.get('instanceId'), m.firstId);
   assert.ok(requests.some(address => address.includes(m.firstId) && address.includes('domain=' + m.source.domain) && address.includes('limit=100')));
@@ -79,7 +86,7 @@ try {
   assert.equal(await page.locator('.react-flow__edge').count(), 3);
   assert.equal(await page.locator('.react-flow__edge.bigpicture-edge-runtime').count(), 1);
   const runtimeEdge = page.locator('.react-flow__edge.bigpicture-edge-runtime');
-  await page.locator('.react-flow__node').filter({ has: page.getByText('local', { exact: true }) }).click();
+  await page.locator('.react-flow__node').filter({ has: page.getByText('local', { exact: true }) }).getByRole('button', { name: /^View details for / }).click();
   assert.equal(await drawer().getByRole('heading', { name: 'Process definition', exact: true }).count(), 1);
   assert.equal(await drawer().getByRole('article').count(), 2);
   await shot('02a-source-node-drawer'); await close();
@@ -163,13 +170,13 @@ try {
   await close();
   await selectRow(m.activeInvocationId.slice(0, 8));
   await drawer().getByRole('button', { name: 'Open local instance' }).click();
-  await page.getByRole('button', { name: 'View instance in BigPicture' }).waitFor();
+  await page.getByRole('button', { name: 'View instance in Process Explorer' }).waitFor();
   await page.goBack(); await list().waitFor(); assert.equal(new URL(page.url()).searchParams.get('instanceId'), m.firstId);
-  await page.goForward(); await page.getByRole('button', { name: 'View instance in BigPicture' }).waitFor();
+  await page.goForward(); await page.getByRole('button', { name: 'View instance in Process Explorer' }).waitFor();
   // Incoming target is genuine broker state, including independent correlation.
   await page.goto(new URL('sagaflow/instances?instanceId=' + m.activeTargetId, m.targetUrl).href);
   await page.getByRole('region', { name: 'External origin' }).waitFor();
-  await page.getByRole('button', { name: 'View instance in BigPicture' }).click();
+  await page.getByRole('button', { name: 'View instance in Process Explorer' }).click();
   await list().getByRole('button').waitFor();
   assert.match(await list().innerText(), /No matching declared invokes edge/);
   await list().getByRole('button').click();
@@ -186,7 +193,7 @@ try {
   // Real local publication failure, followed by real remote completion; sticky reconciliation remains.
   await page.goto(new URL('sagaflow/instances?instanceId=' + m.failedId, m.failedUrl).href);
   await page.getByText('Failed', { exact: true }).first().waitFor();
-  await page.getByRole('button', { name: 'View instance in BigPicture' }).click();
+  await page.getByRole('button', { name: 'View instance in Process Explorer' }).click();
   await list().getByRole('button').click();
   await drawer().getByRole('alert').waitFor(); await checkpoint('reconcile');
   await drawer().getByText('Completed', { exact: true }).waitFor();
@@ -217,6 +224,17 @@ try {
   assert.ok((await list().innerText()).includes(m.otherRows[0].invocationId.slice(0, 8)));
   assert.ok(!(await list().innerText()).includes(m.activeInvocationId.slice(0, 8)));
   checks.push('real HTTP response latency + fast SPA context switch; stale response isolation');
+  await page.goto(new URL('sagaflow/bigpicture', m.targetUrl).href);
+  const standalone = page.locator('.react-flow__node');
+  await standalone.waitFor();
+  assert.equal(await standalone.count(), 1);
+  assert.match(await standalone.innerText(), /Local/);
+  assert.equal(await page.locator('.react-flow__edge').count(), 0);
+  await shot('13a-standalone-local');
+  await standalone.getByRole('button', { name: /^Open workflow for / }).click();
+  await page.getByRole('region', { name: 'Process Explorer workflow' }).waitFor();
+  await page.locator('[data-workflow-kind="step"]').first().waitFor();
+  checks.push('standalone Local topology and local workflow');
   await openContext(m.emptyUrl, m.emptyId, m.empty); await page.getByText('No runtime relationships recorded for this local instance.').waitFor(); await shot('13-empty-real-local-saga');
   await page.goto(url(m.sourceUrl, 'unknown-local-instance', m.source)); await page.getByRole('alert').waitFor();
   assert.match(await page.getByRole('alert').innerText(), /404/); await shot('14-real-http-error');

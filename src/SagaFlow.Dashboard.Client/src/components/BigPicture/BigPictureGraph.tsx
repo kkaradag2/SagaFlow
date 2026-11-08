@@ -35,10 +35,17 @@ export default function BigPictureGraph({ graph, definitions = [], workflow = nu
   const [selection, setSelection] = useState<Selection | null>(null);
   const interactiveEdges = useMemo(() => mapped.edges.map(edge => ({ ...edge,
     data: edge.data ? { ...edge.data, onInspect: () => setSelection({ kind: "edge", id: edge.id }) } : undefined })), [mapped]);
-  const workflowDefinition = workflow ? graph.nodes.find(node => node.domain === workflow.domain
-    && node.process === workflow.process && node.version === workflow.version)?.definition
-    ?? definitions.find(definition => definition.domain === workflow.domain && definition.name === workflow.process
-      && definition.version === workflow.version) : null;
+  const interactiveNodes = useMemo(() => mapped.nodes.map(node => {
+    const { domain, process, version } = node.data;
+    return { ...node, data: { ...node.data,
+      onOpenWorkflow: onWorkflowOpen ? () => { setSelection(null); onWorkflowOpen({ domain, process, version }); } : undefined,
+      onInspect: () => setSelection({ kind: "node", id: node.id, domain, process, version }),
+    } };
+  }), [mapped.nodes, onWorkflowOpen]);
+  const workflowDefinition = workflow ? definitions.find(definition => definition.domain === workflow.domain
+    && definition.name === workflow.process && definition.version === workflow.version)
+    ?? graph.nodes.find(node => node.domain === workflow.domain && node.process === workflow.process
+      && node.version === workflow.version)?.definition : null;
   const selectedData = useMemo(() => {
     if (!selection) return null;
     if (selection.kind === "runtime") {
@@ -60,13 +67,13 @@ export default function BigPictureGraph({ graph, definitions = [], workflow = nu
   const localCount = mapped.nodes.length - remoteCount;
   const height = Math.min(720, Math.max(360, Math.max(remoteCount, localCount) * 154 + 60));
 
-  if (workflow) return <section aria-label="BigPicture workflow" className="flex h-[calc(100vh-230px)] min-h-[560px] flex-col gap-4">
+  if (workflow) return <section aria-label="Process Explorer workflow" className="flex h-[calc(100vh-230px)] min-h-[560px] flex-col gap-4">
     <div className="flex flex-wrap items-center justify-between gap-3">
       <button type="button" onClick={onWorkflowBack}
         className="inline-flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900">
-        <ArrowLeft size={16} />Back to BigPicture
+        <ArrowLeft size={16} />Back to Topology
       </button>
-      <span className="text-sm text-zinc-500">{workflow.domain} / {workflow.process} · v{workflow.version}</span>
+      <span className="text-sm text-zinc-500">{workflow.domain} / {workflow.process} · {workflow.version ? `v${workflow.version}` : "Version unspecified"}</span>
     </div>
     {workflowDefinition ? <Suspense fallback={<div role="status">Loading workflow diagram…</div>}>
       <WorkflowGraph key={JSON.stringify([workflow.domain, workflow.process, workflow.version])} definition={workflowDefinition} />
@@ -75,24 +82,13 @@ export default function BigPictureGraph({ graph, definitions = [], workflow = nu
     </div>}
   </section>;
 
-  return <section aria-label="BigPicture process relationships" className="min-w-0">
+  return <section aria-label="Process Explorer topology" className="min-w-0">
     <div data-testid="bigpicture-canvas" className="bigpicture-canvas workflow-canvas relative overflow-hidden rounded-2xl border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"
       style={{ height }}>
-      <ReactFlow<ProcessNode, ProcessEdge> nodes={mapped.nodes} edges={interactiveEdges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
+      <ReactFlow<ProcessNode, ProcessEdge> nodes={interactiveNodes} edges={interactiveEdges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         colorMode={theme} fitView fitViewOptions={{ padding: 0.18, minZoom: 0.6, maxZoom: 1 }}
-        nodesDraggable={false} nodesConnectable={false} edgesReconnectable={false} deleteKeyCode={null}
+        nodesDraggable={false} nodesFocusable={false} nodesConnectable={false} edgesReconnectable={false} deleteKeyCode={null}
         minZoom={0.25} maxZoom={1.6} onPaneClick={close}
-        onNodeClick={(_, node) => {
-          const definition = graph.nodes.find(entry => entry.domain === node.data.domain
-            && entry.process === node.data.process && entry.version === node.data.version)?.definition
-            ?? definitions.find(entry => entry.domain === node.data.domain && entry.name === node.data.process
-              && entry.version === node.data.version);
-          if (!instanceContext && node.data.status === "Resolved" && definition) {
-            setSelection(null);
-            onWorkflowOpen?.({ domain: node.data.domain, process: node.data.process, version: definition.version });
-          } else setSelection({ kind: "node", id: node.id,
-            domain: node.data.domain, process: node.data.process, version: node.data.version });
-        }}
         onEdgeClick={(_, edge) => { if (edge.data) setSelection({ kind: "edge", id: edge.id }); }}
         aria-label="BigPicture definition graph">
         <Background variant={BackgroundVariant.Dots} gap={22} size={1.5}

@@ -68,7 +68,8 @@ try {
   await shot('08-reconciliation-narrow');
   await page.setViewportSize({width:1365,height:1000});
   await page.goto(new URL('sagaflow/workflows',m.sourceUrl).href);
-  await page.getByRole('button',{name:/^local /}).click();
+  const localNode = page.locator('.react-flow__node').filter({has:page.getByText('local',{exact:true})});
+  await localNode.getByRole('button',{name:/^Open workflow for /}).click();
   await page.locator('[data-workflow-kind="step"]').first().click();
   await page.getByRole('dialog',{name:'Step details'}).waitFor();
   await shot('09-workflow-drawer');

@@ -2,7 +2,8 @@ import { MarkerType, Position, type Edge, type Node } from "@xyflow/react";
 import type { DefinitionGraph, DefinitionIdentity, SagaDefinition, InstanceRelationship, ProcessIdentity } from "../../api/sagaflowApi";
 
 export type ProcessNodeData = { domain: string; process: string; version: string | null;
-  origin: "Local" | "Remote"; status: "Resolved" | "Unresolved"; failure?: string; steps?: string[]; runtimeCount?: number };
+  origin: "Local" | "Remote"; status: "Resolved" | "Unresolved"; failure?: string; steps?: string[]; runtimeCount?: number;
+  onOpenWorkflow?: () => void; onInspect?: () => void };
 export type ProcessEdgeData = { source: string; target: string; relationship: string | null;
   status: "Resolved" | "Unresolved"; failure?: string; sourceOrigin?: string; targetOrigin?: string; runtime?: InstanceRelationship[]; onInspect?: () => void };
 export type ProcessNode = Node<ProcessNodeData, "process">;
