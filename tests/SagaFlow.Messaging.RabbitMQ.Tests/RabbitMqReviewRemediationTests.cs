@@ -4,7 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using RabbitMQ.Client;
 using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.State;
-using SagaFlow.Engine.Persistence.InMemory;
+using SagaFlow.Storage.InMemory;
 using SagaFlow.RabbitMq.Protocol;
 
 namespace SagaFlow.Messaging.RabbitMQ.Tests;

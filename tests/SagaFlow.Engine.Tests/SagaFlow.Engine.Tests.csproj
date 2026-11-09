@@ -22,6 +22,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\SagaFlow.Engine\SagaFlow.Engine.csproj" />
     <ProjectReference Include="..\..\src\SagaFlow.Core\SagaFlow.Core.csproj" />
+    <ProjectReference Include="..\..\src\SagaFlow.Storage.InMemory\SagaFlow.Storage.InMemory.csproj" />
   </ItemGroup>
 
   <ItemGroup>

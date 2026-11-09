@@ -10,6 +10,7 @@
     <ProjectReference Include="..\SagaFlow.Core\SagaFlow.Core.csproj" />
     <ProjectReference Include="..\SagaFlow.Dashboard\SagaFlow.Dashboard.csproj" />
     <ProjectReference Include="..\SagaFlow.Engine\SagaFlow.Engine.csproj" />
+    <ProjectReference Include="..\SagaFlow.Storage.InMemory\SagaFlow.Storage.InMemory.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

@@ -3,16 +3,19 @@ using SagaFlow.Core.Messages;
 
 namespace SagaFlow.Core.Abstractions;
 
+/// <summary>Defines saga state persistence, atomic mutations, and incoming invocation tracking.</summary>
 public interface ISagaStateStore
 {
     /// <summary>Create at revision zero, or replace using an exact current revision. Never silently overwrite stale state.</summary>
     ValueTask SaveAsync(SagaInstance instance, CancellationToken cancellationToken = default);
 
+    /// <summary>Finds an isolated snapshot by instance ID, or returns null if the instance is missing.</summary>
     ValueTask<SagaInstance?> FindAsync(string instanceId, CancellationToken cancellationToken = default);
 
     /// <summary>Return isolated snapshots of all Saga instances currently held by the store.</summary>
     ValueTask<IReadOnlyList<SagaInstance>> ListAsync(CancellationToken cancellationToken = default);
 
+    /// <summary>Finds an instance using the compact string form of its GUID.</summary>
     ValueTask<SagaInstance?> FindAsync(Guid instanceId, CancellationToken cancellationToken = default) =>
         FindAsync(instanceId.ToString("N"), cancellationToken);
 
@@ -32,6 +35,7 @@ public interface ISagaStateStore
         DateTimeOffset acceptedAt, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("Store does not support atomic incoming invocation claims.");
 
+    /// <summary>Finds the first recorded admission decision, or returns null when no decision exists.</summary>
     ValueTask<IncomingInvocationDecision?> FindIncomingDecisionAsync(string invocationId, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("Store does not support incoming admission decisions.");
 

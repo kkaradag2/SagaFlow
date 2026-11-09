@@ -8,7 +8,7 @@ using RabbitMQ.Client.Exceptions;
 using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.Messages;
 using SagaFlow.Core.State;
-using SagaFlow.Engine.Persistence.InMemory;
+using SagaFlow.Storage.InMemory;
 using SagaFlow.Hosting.DependencyInjection;
 using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
 
