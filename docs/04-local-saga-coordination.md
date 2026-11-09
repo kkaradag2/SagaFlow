@@ -294,9 +294,78 @@ builder.Services.AddSagaFlow(options => options.LoadFromDirectory("saga"));
 builder.Services.AddSagaFlowPostgreSqlStorage(connectionString);
 ```
 
-Kayıt iki sırada da çalışır ve `Host` ile `Database` ayarlarını doğrular. Bağlantı, şema başlatılırken veya ilk store çağrısında açılır. Şema başlatıcısı DDL yetkisi gerektirir. Bir veritabanındaki `sagaflow` şeması tek bir mantıksal store'dur ve kendi içinde domain ayrımı uygulamaz. Örnek uygulamalar InMemory kullanır. PostgreSQL kayıtları yeni host tarafından okunabilir. Otomatik Saga devam ettirme ayrı bir iş kalemidir.
+Kayıt iki sırada da çalışır ve `Host` ile `Database` ayarlarını doğrular. Bağlantı, şema başlatılırken veya ilk store çağrısında açılır. Şema başlatıcısı DDL yetkisi gerektirir. Bir veritabanındaki `sagaflow` şeması tek bir mantıksal store'dur ve kendi içinde domain ayrımı uygulamaz. PostgreSQL kayıtları yeni host tarafından okunabilir. Otomatik Saga devam ettirme ayrı bir iş kalemidir.
 
 Gerçek veritabanı testleri için `SAGAFLOW_POSTGRESQL_TEST_CONNECTION` ortam değişkenini, test veritabanı oluşturabilen bir rol ile ayrılmış bir PostgreSQL sunucusuna yöneltin. Fixture her test için benzersiz bir veritabanı oluşturup siler. Ortam değişkeni yoksa PostgreSQL entegrasyon testleri açık skip nedeni ile işaretlenir. [Test fixture'ı](../tests/SagaFlow.Storage.PostgreSQL.Tests/PostgreSqlTestDatabase.cs)
+
+### PBI-04 örnek uygulamaları Compose ile başlatma
+
+Mevcut Compose dosyası RabbitMQ ile birlikte PostgreSQL 17'yi çalıştırır. PostgreSQL varsayılan olarak yalnız `127.0.0.1:55432` üzerinden açılır. Portu `SAGAFLOW_POSTGRES_PORT` ile değiştirebilirsiniz. Veriler `sagaflow-postgres-data` adlı volume'da tutulur. İlk kurulumda Order, Return ve Procurement için sırasıyla `sagaflow_order`, `sagaflow_return` ve `sagaflow_procurement` veritabanları ve aynı adlarda ayrı login rolleri oluşturulur. Her veritabanında `PUBLIC` bağlantı izni kaldırılır. [Compose](../samples/docker-compose.yml) · [Rol ve veritabanı kurulumu](../samples/postgres/init-domains.sql)
+
+Geliştirme parolaları Compose dosyasında tanımlıdır. Admin için `SAGAFLOW_POSTGRES_ADMIN_USER` ve `SAGAFLOW_POSTGRES_ADMIN_PASSWORD`, domain rolleri için `SAGAFLOW_POSTGRES_ORDER_PASSWORD`, `SAGAFLOW_POSTGRES_RETURN_PASSWORD` ve `SAGAFLOW_POSTGRES_PROCUREMENT_PASSWORD` kullanılabilir. İlk kurulum ayarları mevcut volume'daki rolleri sonradan değiştirmez.
+
+Repo kökünden aşağıdaki komutları ayrı terminallerde çalıştırın. Başlatıcılar Compose servislerinin sağlıklı olmasını bekler, ilgili domain bağlantısını ayarlar ve mevcut .NET launch profilini kullanır. Katılımcı uygulamalarını mevcut profilleriyle başlatın. HTTPS discovery için güvenilir geliştirme sertifikası gerekir. Procurement grafiğinde Order'ın Return ilişkisini de çözmek için Procurement terminalinde `SagaFlow__Discovery__AllowedEndpoints__1=https://localhost:65305` ayarlayın. [Başlatıcı](../scripts/run-sample-postgresql.ps1) · [Katılımcı başlatma komutları](06-manager-approval-sample.md#iki-ayrı-os-process-ile-yerel-başlatma)
+
+```powershell
+./scripts/run-sample-postgresql.ps1 -Domain Order
+./scripts/run-sample-postgresql.ps1 -Domain Return
+./scripts/run-sample-postgresql.ps1 -Domain Procurement
+```
+
+Doğrudan `dotnet run` kullanırken örnek `appsettings.json` dosyaları InMemory seçer. PostgreSQL için `SagaFlow__Storage__Provider=PostgreSQL` ve `SagaFlow__Storage__ConnectionString` verin. Bağlantı dizesindeki `Database` ve `Username` ilgili domain adıyla eşleşmelidir. Ortak başlangıç kodu HTTP ve RabbitMQ servisleri başlamadan önce sağlayıcının `InitializeAsync` API'sini çağırır. Tekrar başlatma mevcut şemayı doğrular ve Saga kayıtlarını korur. Geçersiz ayar, bağlantı hatası veya desteklenmeyen şema sürümü başlangıcı durdurur. İş verisi repository'leri süreç belleğinde kalır. [Örnek storage başlangıcı](../samples/DomainStarters/Shared/SampleSagaStorage.cs)
+
+Üç süreçli regresyon testi için `SAGAFLOW_SAMPLE_POSTGRESQL_TEST_PORT` değerini aynı kurulum SQL'iyle hazırlanmış **ayrı bir test sunucusunun** loopback portuna ayarlayın. Test bu veritabanlarında Saga kayıtları oluşturur. RabbitMQ vhost izolasyonu mevcut test betiği tarafından sağlanır. [Süreç ve restart testi](../tests/SagaFlow.Samples.Tests/SamplePostgreSqlTests.cs) · [RabbitMQ test betiği](../scripts/run-rabbitmq-integration.ps1)
+
+### PBI04-01 Mevcut PostgreSQL volume'unu tamamlama
+
+PostgreSQL imajı `/docker-entrypoint-initdb.d` altındaki betikleri yalnızca veri dizinini ilk kez başlatırken çalıştırır. `init-domains.sql` değişiklikleri mevcut volume'daki veritabanlarına ve rollere otomatik uygulanmaz. **`docker compose down -v` kullanmayın.** Bu komut `sagaflow-postgres-data` volume'unu ve içindeki Saga kayıtlarını siler. Eksik nesneleri mevcut volume üzerinde tamamlayın. [Compose](../samples/docker-compose.yml) · [PostgreSQL imajı](https://hub.docker.com/_/postgres) · [Compose down](https://docs.docker.com/reference/cli/docker/compose/down/)
+
+1. **Salt okunur envanter çıkarın.** Repo kökünden aşağıdaki komutla `postgres` veritabanına yönetici olarak bağlanın. Mevcut volume farklı bir yöneticiyle oluşturulduysa `-U` için o hesabı kullanın. Her domain için veritabanı sahibi, aynı adlı ve süper kullanıcı yetkisi olmayan login rolü olmalıdır. Eksik satırlar hangi nesnelerin oluşturulması gerektiğini gösterir.
+
+   ```powershell
+   docker compose -f samples/docker-compose.yml exec postgres sh -c 'exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres'
+   ```
+
+   ```sql
+   BEGIN READ ONLY;
+   SELECT rolname, rolcanlogin, rolsuper FROM pg_roles
+   WHERE rolname IN ('sagaflow_order', 'sagaflow_return', 'sagaflow_procurement');
+
+   SELECT datname, pg_get_userbyid(datdba) AS owner, datacl FROM pg_database
+   WHERE datname IN ('sagaflow_order', 'sagaflow_return', 'sagaflow_procurement');
+   COMMIT;
+   ```
+
+2. **Yalnızca eksikleri tamamlayın.** Etkilenen Domain Starter'ları durdurun ve değişiklikten önce yedek alın. Mevcut Saga tabloları için `SELECT id, revision FROM sagaflow.instances ORDER BY id;` çıktısını karşılaştırma amacıyla kaydedin. Yönetici `psql` oturumunda eksik rol için kurulum SQL'indeki ilgili `\getenv` ve `CREATE ROLE` satırlarını kullanın. Parola değişkeninin konteynerde ayarlı ve Domain Starter yapılandırmasıyla uyumlu olduğunu doğrulayın. Ardından eksik veritabanı için ilgili `CREATE DATABASE … OWNER …` satırını çalıştırın. `CREATE ROLE` ve `CREATE DATABASE` yalnızca ilgili nesne yoksa çalıştırılır. `CREATE DATABASE` için rol önceden mevcut olmalı ve komut açık bir transaction dışında çalıştırılmalıdır. Order örneğindeki satırların Return ve Procurement karşılıkları kurulum SQL'indedir. [Kurulum SQL'i](../samples/postgres/init-domains.sql) · [CREATE DATABASE](https://www.postgresql.org/docs/17/sql-createdatabase.html)
+
+   ```sql
+   \getenv order_password SAGAFLOW_POSTGRES_ORDER_PASSWORD
+   CREATE ROLE sagaflow_order LOGIN PASSWORD :'order_password';
+   CREATE DATABASE sagaflow_order OWNER sagaflow_order;
+   REVOKE CONNECT ON DATABASE sagaflow_order FROM PUBLIC;
+   ```
+
+3. **Mevcut kayıtları koruyun.** Kurulum SQL'ini topluca çalıştırmayın. Doğru sahibin doğrulandığı mevcut veritabanında eksik izolasyon ayarı için yalnızca ilgili `REVOKE CONNECT … FROM PUBLIC` satırını uygulayın. Bu işlem tekrar çalıştırılabilir ve Saga tablolarına dokunmaz. Beklenmeyen sahiplik, rol üyeliği veya açık bağlantı yetkisi varsa değişiklikten önce ilgili nesneleri ve izinleri inceleyin. Rol parolasının değiştirilmesi gerekiyorsa ilgili hesap için `psql` içindeki `\password` komutunu kullanın ve başlatıcıya verilen parola değişkenini güncelleyin. Domain Starter'ı PostgreSQL ile yeniden başlattığınızda sağlayıcının şema başlatıcısı eksik şemayı kurar veya mevcut sürümü doğrular. [Kurulum SQL'i](../samples/postgres/init-domains.sql) · [Şema başlatıcısı](../src/SagaFlow.Storage.PostgreSQL/Schema/PostgreSqlStorageSchema.cs)
+
+4. **Bağlantı ve izolasyonu doğrulayın.** Aşağıdaki TCP kontrolünü her domain için kendi rolü ve veritabanıyla çalıştırın. Sorgu doğru veritabanını ve kullanıcıyı döndürmelidir. Şema başlatıldıktan sonra `SELECT version FROM sagaflow.schema_version;` ile sürümü kontrol edin ve önceki Saga kimliği ve revision listesini karşılaştırın. Bu kontrolleri yeni Saga istekleri göndermeden önce yapın. Ardından her rolün doğru parolasını kullanarak `-d` ile diğer iki domain veritabanını deneyin. Altı çapraz deneme de veritabanı bağlantı izni hatası vermelidir. Parola hatası izolasyonun doğrulandığını göstermez.
+
+   ```powershell
+   docker compose -f samples/docker-compose.yml exec postgres psql -X -h postgres -p 5432 -W -U sagaflow_order -d sagaflow_order -c 'SELECT current_database(), current_user;'
+   ```
+
+### İsteğe bağlı pgAdmin
+
+PostgreSQL çalışırken repo kökünden pgAdmin'i ayrı olarak başlatın:
+
+```powershell
+docker compose -f samples/docker-compose.yml up -d pgadmin
+```
+
+Arayüz `http://127.0.0.1:5050` adresinde açılır. Host portunu `SAGAFLOW_PGADMIN_PORT` ile değiştirin. Yerel geliştirme için varsayılan giriş `pgadmin@example.com` ve `sagaflow-pgadmin-dev` değerleridir. İlk başlatmadan önce `SAGAFLOW_PGADMIN_EMAIL` ve `SAGAFLOW_PGADMIN_PASSWORD` ile değiştirebilirsiniz. pgAdmin ayrı bir profil kullanır. Domain başlatıcıları, PostgreSQL ve RabbitMQ bu profilden bağımsız çalışır. [Compose](../samples/docker-compose.yml) · [Domain başlatıcısı](../scripts/run-sample-postgresql.ps1)
+
+`SagaFlow` grubundaki Order, Return ve Procurement bağlantıları Compose ağında `postgres:5432` adresini ve ilgili domain rolünü kullanır. İlk bağlantıda o rolün PostgreSQL parolasını girin. Giriş hesabı ve sunucu tanımları `pgadmin-data` volume'unda saklanır. `servers.json` ilk kurulumda içe aktarılır. Mevcut volume kullanılırken tanımları değiştirmek için pgAdmin'in Import/Export Servers aracını kullanın. [Sunucu tanımları](../samples/pgadmin/servers.json) · [pgAdmin içe aktarma belgeleri](https://www.pgadmin.org/docs/pgadmin4/latest/import_export_servers.html)
+
+Doğrulamada ilk HTTP sorguları servis hazır olmadan yanıt alamadı. Açık IPv4 dinleme ayarıyla servis yeniden oluşturuldu ve HTTP 200 alındı. Stop/start sonrası sunucu ağacında üç kayıt korundu. Her bağlantı parola istedi ve parola saklanmadan doğru domain rolüyle açıldı. PostgreSQL altı çapraz bağlantıyı reddetti. pgAdmin dururken PostgreSQL ve RabbitMQ sağlıklı kaldı. Öncesi ve sonrası ölçümler PostgreSQL konteynerini, başlama zamanını, volume'u ve şema sürümlerini aynı gösterdi. Üç veritabanında da Saga ve invocation tabloları iki ölçümde de boştu. `docker compose config --quiet` ve `git diff --check` geçti. .NET kaynak değişikliği olmadığı için regresyon paketi tekrar çalıştırılmadı. Kanıt `.artifacts/pbi04-pgadmin-http.log`, `.artifacts/pbi04-pgadmin-before.txt` ve `.artifacts/pbi04-pgadmin-after.txt`.
 
 ## DI kayıtları
 
@@ -331,6 +400,8 @@ Model ve servis ayrımı sonrası `./scripts/run-rabbitmq-integration.ps1` tekra
 PBI-03 (2026-11-09) ilk odak derlemesi, test yardımcısında derleme zamanı sabiti olmayan varsayılan parametre nedeniyle `CS1736` ile durdu. Bu denemede 0 uyarı, 1 hata vardı ve testler başlamadı (`.artifacts/pbi03-focused-initial.log`). Düzeltmeden sonra odak koşusunda 51 test geçti (Engine 8, Hosting 35, Samples 8). [Kayıt testleri](../tests/SagaFlow.Hosting.Tests/StorageProviderRegistrationTests.cs) iki kayıt sırasını, singleton paylaşımını, tekrar ve çakışmaları, eksik kaydı, geçersiz yaşam süresini ve factory hatalarını sınadı. [Özel store testi](../tests/SagaFlow.Hosting.Tests/LocalSagaCoordinationHostingTests.cs) iki kayıt sırasında da host startup ve Saga çalıştırmayı doğruladı. Gerçek RabbitMQ ile [Order](../tests/SagaFlow.Samples.Tests/SampleRabbitMqEndToEndTests.cs), [Return](../tests/SagaFlow.Samples.Tests/ReturnRabbitMqEndToEndTests.cs) ve [Procurement](../tests/SagaFlow.Samples.Tests/ProcurementRabbitMqTests.cs) geçti. [İzole runner](../scripts/run-rabbitmq-integration.ps1) tam koşuda 673 test geçirdi (Core 2, Engine 320, Hosting 75, RabbitMQ 62, Samples 214). Son iki derlemede 0 uyarı ve 0 hata, son iki test koşusunda 0 başarısız ve 0 atlanan vaka kaydedildi. Test vhost'ları temizlendi. İsteğe bağlı Chrome kontrolleri çalıştırılmadı. Loglar `.artifacts/pbi03-focused.log` ve `.artifacts/pbi03-full.log`.
 
 PBI-02 (2026-11-09) geçici PostgreSQL 17.11 sunucusunda doğrulandı. İlk bağımsız sağlayıcı derlemesi DI Abstractions sürüm düşüşü nedeniyle `NU1605` ile durdu (0 uyarı, 1 hata). Sürüm hizalaması sonrası ilk sağlayıcı koşusunda 16 test geçti. Genişletilmiş ilk odak koşusunda 62 geçti, 1 başarısız ve 0 atlandı. Erişilemeyen sunucu testinde Npgsql exception'ı EF Core tarafından iç exception olarak taşındı. Assertion düzeltildikten sonra odak koşusunda 63 test geçti (sağlayıcı 18, Engine 11, Hosting 34). Tam izole koşuda 691 geçti (Core 2, Engine 320, Hosting 75, RabbitMQ 62, Samples 214, PostgreSQL 18). Son iki koşuda 0 başarısız, 0 atlandı. Solution derlemesi 0 uyarı, 0 hata. PostgreSQL testleri iki store ve bağımsız veritabanı oturumlarıyla yarışları, kilit beklerken iptali, database hatasında rollback'i ve yeni hosttan state okumayı sınadı. İsteğe bağlı Chrome kontrolleri çalıştırılmadı. Loglar `.artifacts/pbi02-postgresql.log`, `.artifacts/pbi02-focused-initial.log`, `.artifacts/pbi02-focused.log` ve `.artifacts/pbi02-full.log`. [PostgreSQL testleri](../tests/SagaFlow.Storage.PostgreSQL.Tests/PostgreSqlStoreTests.cs) · [DI ve erişim testleri](../tests/SagaFlow.Storage.PostgreSQL.Tests/PostgreSqlRegistrationTests.cs)
+
+PBI-04 (2026-11-09) gerçek PostgreSQL 17.11 ve izole RabbitMQ ile doğrulandı. Odak koşusunda 25 test geçti (Samples 7, PostgreSQL 18). Tam koşuda 698 test geçti (Core 2, Engine 320, Hosting 75, RabbitMQ 62, Samples 221, PostgreSQL 18). İki koşuda 0 başarısız ve 0 atlandı. İki solution derlemesi 0 uyarı ve 0 hata verdi. Order, Return ve Procurement başlatıcılarının üçü de HTTP 200 döndürdü ve şema sürümü 1 olarak doğrulandı. Compose PostgreSQL restart'ından sonra üç şema sürümü de korundu. Gerçek brokerlı testte local Order ve Return ile Procurement → Order tamamlandı. Üç ayrı süreç yeniden başlatıldı. Dört Saga'nın kimliği, revision'ı, correlation'ı, adımları ve invocation bilgisi aynı kaldı. Test PostgreSQL konteyneri restart'ından sonra da dört kaydın revision'ı ve saklanan JSON özeti eşleşti. Domain rolleri için diğer veritabanlarına altı bağlantı denemesi PostgreSQL tarafından reddedildi. Local ve Remote Process Explorer HTTP/gRPC grafikleri doğrulandı. Tarayıcı kontrolleri çalıştırılmadı. Loglar `.artifacts/pbi04-focused.log`, `.artifacts/pbi04-full.log` ve `.artifacts/pbi04-container-restart.log`. [Süreç ve restart testi](../tests/SagaFlow.Samples.Tests/SamplePostgreSqlTests.cs)
 
 İlk runtime geliştirmesinin referansı: solution build sıfır uyarı ve sıfır hatayla geçti. Toplam 157 test geçti (Core 1, Engine 121, Hosting 35); başarısız veya atlanan test yok. Önceki 98 test korundu; 59 yeni davranış vakası eklendi. Testler 2 ve 10 adımlı akışları, conditional/else dallarını, ters compensation planını, 500 eşzamanlı atomik state güncellemesini, 30 eşzamanlı duplicate outcome'u, scoped DI, transport hataları ve cancellation sınırlarını kapsar.
 

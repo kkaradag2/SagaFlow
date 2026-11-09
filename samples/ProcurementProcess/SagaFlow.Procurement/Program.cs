@@ -1,6 +1,6 @@
 using SagaFlow.Engine.Coordination;
 using SagaFlow.Hosting.DependencyInjection;
-using SagaFlow.Storage.InMemory.DependencyInjection;
+using SagaFlow.Samples;
 using SagaFlow.Hosting.Endpoints;
 using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
 
@@ -8,7 +8,7 @@ namespace SagaFlow.Procurement;
 
 public partial class ProcurementProgram
 {
-    public static void Main(string[] args)
+    public static async Task Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
         builder.Services.AddControllers(); builder.Services.AddEndpointsApiExplorer(); builder.Services.AddSwaggerGen();
@@ -26,11 +26,11 @@ public partial class ProcurementProgram
             options.Dashboard.DescribeDomainStarter = instance => new() { OperationName = "CreatePurchaseRequest", RollbackOperationName = "Local failure review",
                 Result = instance.Context.Clone() };
         });
-        builder.Services.AddSagaFlowInMemoryStorage();
+        await SampleSagaStorage.ConfigureAsync(builder, "procurement");
         if (builder.Configuration.GetValue("RabbitMq:Enabled", true)) builder.Services.AddSagaFlowRabbitMq(builder.Configuration.GetRequiredSection("RabbitMq"));
         var app = builder.Build();
         if (app.Environment.IsDevelopment()) { app.UseSwagger(); app.UseSwaggerUI(); }
         if (builder.Configuration.GetValue<bool>("SagaFlow:PublishDefinitions")) app.MapSagaFlowDefinitionDiscovery();
-        app.MapControllers(); app.Run();
+        app.MapControllers(); await app.RunAsync();
     }
 }
