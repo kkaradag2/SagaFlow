@@ -242,6 +242,10 @@ public sealed class LocalSagaCoordinationHostingTests
         using var client = new HttpClient { BaseAddress = new Uri(address) };
         using var response = await client.GetAsync("/sagaflow/api/definitions");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        using var html = await client.GetAsync("/sagaflow/");
+        using var hub = await client.PostAsync("/sagaflow/hub/negotiate?negotiateVersion=1", null);
+        Assert.Equal(HttpStatusCode.NotFound, html.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, hub.StatusCode);
     }
 
     [Fact]
@@ -463,8 +467,11 @@ public sealed class LocalSagaCoordinationHostingTests
             builder.Services.AddSagaFlow(options =>
             {
                 options.LoadFromDirectory(directory);
-                options.Dashboard.Path = dashboardPath;
-                configureDashboard?.Invoke(options.Dashboard);
+                options.UseDashboard(dashboard =>
+                {
+                    dashboard.Path = dashboardPath;
+                    configureDashboard?.Invoke(dashboard);
+                });
             });
             builder.Services.AddScoped<StarterBusinessService>();
             var app = builder.Build();

@@ -517,7 +517,7 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
     {
         var builder = WebApplication.CreateBuilder(); builder.Logging.ClearProviders(); builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Services.AddSagaFlowInMemoryStorage();
-        builder.Services.AddSagaFlow(); builder.Services.AddScoped<IProcessInvocationPolicy, Policy>();
+        builder.Services.AddSagaFlow(options => options.UseDashboard()); builder.Services.AddScoped<IProcessInvocationPolicy, Policy>();
         if (target is not null) { builder.Services.AddSingleton(new Target(target, false)); builder.Services.AddScoped<ILocalSagaStepHandler, Handler>(); }
         builder.Services.AddSagaFlowRabbitMq(options =>
         {
@@ -526,7 +526,7 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
         });
         configure?.Invoke(builder.Services);
         var app = builder.Build(); app.Services.GetRequiredService<ProcessDefinitionRegistry>().RegisterLocalBatch([definition]);
-        app.MapSagaFlowDashboard(); await app.StartAsync(); return app;
+        await app.StartAsync(); return app;
     }
     private static HttpClient DashboardClient(WebApplication app) => new()
     { BaseAddress = new(app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single()) };

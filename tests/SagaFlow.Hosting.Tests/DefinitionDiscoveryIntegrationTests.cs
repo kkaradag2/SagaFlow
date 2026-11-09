@@ -71,8 +71,7 @@ public sealed class DefinitionDiscoveryIntegrationTests
             Domain = "return", Process = "return-process", Version = version,
             Endpoint = "http://127.0.0.1:1", Relationship = "related"
         }).ToArray();
-        var options = new DefinitionDiscoveryOptions { AllowInsecureHttp = true };
-        options.AllowedEndpoints.Add("http://127.0.0.1:1");
+        var options = new DefinitionDiscoveryOptions();
         var discovery = new DefinitionDiscovery(new VersionFailureClient(), options);
         var result = await discovery.DiscoverAsync(Definition("order", "order-process", references));
         Assert.Equal(new[] { "1.0", "2.0" }, result.Failures.Select(failure => failure.RequestedVersion));
@@ -122,33 +121,35 @@ public sealed class DefinitionDiscoveryIntegrationTests
     }
 
     [Fact]
-    public async Task PublicationListsOnlyAllowedLocalDefinitionsAndRedactsTopologyByDefault()
+    public async Task PublicationListsAllLocalDefinitionsAndOmitsTopologyByDefault()
     {
-        await using var host = await DomainHost.Start("payment", "payment-process", references: [new() { Domain = "private", Process = "private-process", Endpoint = "https://private-internal:7001", Relationship = "related" }]);
+        await using var host = await DomainHost.Start("payment", "payment-process", references: [new() { Domain = "private", Process = "private-process", Endpoint = "http://127.0.0.1:1", Relationship = "related" }]);
         var registry = host.App.Services.GetRequiredService<ProcessDefinitionRegistry>();
         registry.RegisterRemote(Definition("remote", "remote-process"), "https://remote");
-        registry.RegisterLocalBatch([Definition("payment", "private-process")]);
+        registry.RegisterLocalBatch([Definition("payment", "another-process")]);
         using var channel = GrpcChannel.ForAddress(host.Endpoint);
         var client = new ProcessDefinitions.ProcessDefinitionsClient(channel);
         var list = await client.ListDefinitionsAsync(new());
         Assert.Equal(1u, list.ProtocolVersion);
-        Assert.Equal("payment-process", list.Definitions.Single().Process);
+        Assert.Equal(new[] { "another-process", "payment-process" }, list.Definitions.Select(definition => definition.Process).Order());
         var response = await client.GetDefinitionAsync(new() { Domain = "payment", Process = "payment-process", Version = "1.0" });
         Assert.Empty(new DefinitionYamlCodec().Parse(response.CanonicalYaml).BigPicture);
         var published = new DefinitionYamlCodec().Parse(response.CanonicalYaml);
         Assert.Equal("work", published.Steps[0].Name);
-        Assert.DoesNotContain("private-internal", response.CanonicalYaml);
+        Assert.DoesNotContain("127.0.0.1:1", response.CanonicalYaml);
         Assert.DoesNotContain("relationship:", response.CanonicalYaml);
         using var dashboardClient = new HttpClient { DefaultRequestVersion = HttpVersion.Version20,
             DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact };
         var definitionsJson = await dashboardClient.GetStringAsync($"{host.Endpoint}/sagaflow/api/definitions");
-        Assert.DoesNotContain("private-internal", definitionsJson);
+        Assert.DoesNotContain("127.0.0.1:1", definitionsJson);
         Assert.Contains("related", definitionsJson);
         var graphJson = await dashboardClient.GetStringAsync($"{host.Endpoint}/sagaflow/api/definition-graph?domain=payment&process=payment-process&version=1.0");
-        Assert.DoesNotContain("private-internal", graphJson);
+        Assert.DoesNotContain("127.0.0.1:1", graphJson);
         Assert.Contains("related", graphJson);
         Assert.DoesNotContain(host.Directory, response.CanonicalYaml);
-        var ex = await Assert.ThrowsAsync<RpcException>(async () => await client.GetDefinitionAsync(new() { Domain = "payment", Process = "private-process" }));
+        var another = await client.GetDefinitionAsync(new() { Domain = "payment", Process = "another-process" });
+        Assert.Equal("another-process", another.Identity.Process);
+        var ex = await Assert.ThrowsAsync<RpcException>(async () => await client.GetDefinitionAsync(new() { Domain = "remote", Process = "remote-process" }));
         Assert.Equal(StatusCode.NotFound, ex.StatusCode);
     }
 
@@ -159,7 +160,7 @@ public sealed class DefinitionDiscoveryIntegrationTests
     [InlineData(true, true)]
     public async Task LocalDashboardTopologyIsIndependentOfRemotePublication(bool publish, bool includeTopology)
     {
-        const string secret = "https://private-topology:7001";
+        const string secret = "http://127.0.0.1:1";
         await using var host = await DomainHost.Start("order", "order-process", publish: publish,
             publishTopology: includeTopology, references:
             [new() { Domain = "private", Process = "private-process", Endpoint = secret, Relationship = "related" }]);
@@ -186,15 +187,15 @@ public sealed class DefinitionDiscoveryIntegrationTests
     {
         await using var host = await DomainHost.Start("order", "order-process", publishTopology: true,
             mapDashboardEndpoints: true, references:
-            [new() { Domain = "private", Process = "private-process", Endpoint = "https://private-topology:7001", Relationship = "related" }]);
+            [new() { Domain = "private", Process = "private-process", Endpoint = "http://127.0.0.1:1", Relationship = "related" }]);
         using var client = new HttpClient { DefaultRequestVersion = HttpVersion.Version20,
             DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact };
         var url = $"{host.Endpoint}/sagaflow/api/definition-graph?domain=order&process=order-process&version=1.0";
         var definitionsUrl = $"{host.Endpoint}/sagaflow/api/definitions";
         Assert.Contains("related", await client.GetStringAsync(url));
         Assert.Contains("related", await client.GetStringAsync(definitionsUrl));
-        Assert.DoesNotContain("private-topology", await client.GetStringAsync(url));
-        Assert.DoesNotContain("private-topology", await client.GetStringAsync(definitionsUrl));
+        Assert.DoesNotContain("127.0.0.1:1", await client.GetStringAsync(url));
+        Assert.DoesNotContain("127.0.0.1:1", await client.GetStringAsync(definitionsUrl));
     }
 
     [Fact]
@@ -214,7 +215,7 @@ public sealed class DefinitionDiscoveryIntegrationTests
         Assert.Equal("2.0", pinned.Identity.Version);
         Assert.Equal(StatusCode.InvalidArgument, (await Assert.ThrowsAsync<RpcException>(async () => await client.GetDefinitionAsync(new() { Domain = "../payment", Process = "payment-process" }))).StatusCode);
 
-        var graph = await Discovery([host.Endpoint]).DiscoverAsync(Definition("order", "order-process", [Source(host, "payment", "payment-process")]));
+        var graph = await Discovery().DiscoverAsync(Definition("order", "order-process", [Source(host, "payment", "payment-process")]));
         Assert.Equal(DiscoveryFailureKind.AmbiguousVersion, graph.Failures.Single().Kind);
     }
 
@@ -227,7 +228,7 @@ public sealed class DefinitionDiscoveryIntegrationTests
     public async Task InvalidRemoteResponsesBecomeStructuredFailures(string mode)
     {
         await using var remote = await StubHost.Start(mode);
-        var discovery = Discovery([remote.Endpoint]);
+        var discovery = Discovery();
         var graph = await discovery.DiscoverAsync(Definition("order", "order-process", [new() { Domain = "payment", Process = "payment-process", Version = "1.0", Endpoint = remote.Endpoint }]));
         Assert.Equal(DiscoveryFailureKind.InvalidResponse, graph.Failures.Single().Kind);
         Assert.Single(graph.Nodes);
@@ -248,7 +249,7 @@ public sealed class DefinitionDiscoveryIntegrationTests
             new() { Domain = "slow", Process = "slow-process", Endpoint = slow.Endpoint },
             new() { Domain = "unused", Process = "unused-process", Endpoint = deadEndpoint }
         ]);
-        var graph = await Discovery([good.Endpoint, slow.Endpoint, deadEndpoint], timeout: TimeSpan.FromMilliseconds(400)).DiscoverAsync(root);
+        var graph = await Discovery(timeout: TimeSpan.FromMilliseconds(400)).DiscoverAsync(root);
         Assert.Equal(2, graph.Nodes.Count);
         Assert.Equal(4, graph.Edges.Count);
         Assert.Contains(graph.Failures, f => f.Kind == DiscoveryFailureKind.NotFound);
@@ -258,19 +259,20 @@ public sealed class DefinitionDiscoveryIntegrationTests
     }
 
     [Fact]
-    public async Task EndpointDenyPolicyRunsBeforeNetworkCalls()
+    public async Task DiscoveryUsesHttpEndpointFromYamlWithDefaultOptions()
     {
         await using var remote = await DomainHost.Start("payment", "payment-process");
-        var graph = await Discovery([]).DiscoverAsync(Definition("order", "order-process", [Source(remote, "payment", "payment-process")]));
-        Assert.Equal(DiscoveryFailureKind.UntrustedEndpoint, graph.Failures.Single().Kind);
-        Assert.Single(graph.Nodes);
+        var graph = await Discovery().DiscoverAsync(Definition("order", "order-process", [Source(remote, "payment", "payment-process")]));
+        Assert.Empty(graph.Failures);
+        Assert.Equal(2, graph.Nodes.Count);
+        Assert.NotNull(Assert.Single(graph.Edges).Target);
     }
 
     [Fact]
     public async Task GrpcUnavailableStatusIsReportedWithoutLeakingServerDetails()
     {
         await using var remote = await StubHost.Start("unavailable");
-        var graph = await Discovery([remote.Endpoint]).DiscoverAsync(Definition("order", "order-process",
+        var graph = await Discovery().DiscoverAsync(Definition("order", "order-process",
             [new() { Domain = "payment", Process = "payment-process", Endpoint = remote.Endpoint }]));
         Assert.Equal(DiscoveryFailureKind.Unavailable, graph.Failures.Single().Kind);
         Assert.DoesNotContain("private", graph.Failures.Single().Message);
@@ -283,17 +285,17 @@ public sealed class DefinitionDiscoveryIntegrationTests
         var back = new BigPictureSourceDefinition { Domain = "order", Process = "order-process", Endpoint = "http://127.0.0.1:1" };
         await using var b = await DomainHost.Start("payment", "payment-process", references: [back], publishTopology: true);
         var root = Definition("order", "order-process", [Source(b, "payment", "payment-process")]);
-        var graph = await Discovery([b.Endpoint, back.Endpoint]).DiscoverAsync(root);
+        var graph = await Discovery().DiscoverAsync(root);
         Assert.Equal(DiscoveryFailureKind.Cycle, graph.Failures.Single().Kind);
         Assert.Equal(2, graph.Nodes.Count);
-        var limited = await Discovery([b.Endpoint, back.Endpoint], depth: 1).DiscoverAsync(root);
+        var limited = await Discovery(depth: 1).DiscoverAsync(root);
         // Cycle detection remains the stronger explanation for this edge.
         Assert.Single(limited.Failures);
         await using var c = await DomainHost.Start("fulfillment", "fulfillment-process");
         await using var branch = await DomainHost.Start("branch", "branch-process", references: [Source(c, "fulfillment", "fulfillment-process")], publishTopology: true);
         var tree = Definition("order", "order-process", [Source(branch, "branch", "branch-process")]);
-        Assert.Equal(DiscoveryFailureKind.LimitExceeded, (await Discovery([branch.Endpoint, c.Endpoint], depth: 1).DiscoverAsync(tree)).Failures.Single().Kind);
-        Assert.Equal(DiscoveryFailureKind.LimitExceeded, (await Discovery([branch.Endpoint, c.Endpoint], requests: 1).DiscoverAsync(tree)).Failures.Single().Kind);
+        Assert.Equal(DiscoveryFailureKind.LimitExceeded, (await Discovery(depth: 1).DiscoverAsync(tree)).Failures.Single().Kind);
+        Assert.Equal(DiscoveryFailureKind.LimitExceeded, (await Discovery(requests: 1).DiscoverAsync(tree)).Failures.Single().Kind);
     }
 
     [Fact]
@@ -306,24 +308,18 @@ public sealed class DefinitionDiscoveryIntegrationTests
     }
 
     [Fact]
-    public void IncorrectPublicationAndTrustConfigurationFailClearly()
+    public async Task EnabledPublicationWithNoLocalDefinitionsReturnsAnEmptyList()
     {
-        Assert.Throws<InvalidOperationException>(() => new ServiceCollection().AddSagaFlow(o => o.Publication.Enabled = true));
-        Assert.Throws<ArgumentException>(() => new ServiceCollection().AddSagaFlow(o => o.Discovery.AllowedEndpoints.Add("http://localhost:7001")));
-        Assert.Throws<ArgumentException>(() => new ServiceCollection().AddSagaFlow(o => o.Discovery.AllowedEndpoints.Add("https://localhost/private")));
-    }
-
-    [Fact]
-    public async Task PublishingMissingLocalIdentityFailsHostStartup()
-    {
-        var builder = WebApplication.CreateBuilder();
-        builder.Logging.ClearProviders();
+        var builder = Builder();
         builder.Services.AddSagaFlowInMemoryStorage();
-        builder.Services.AddSagaFlow(o => { o.Publication.Enabled = true; o.Publication.PublishedDefinitions.Add(new("absent", "absent", "1.0")); });
+        builder.Services.AddSagaFlow(options => options.Publication.Enabled = true);
         await using var app = builder.Build();
         app.MapSagaFlowDefinitionDiscovery();
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => app.StartAsync());
-        Assert.Contains("not loaded locally", error.Message);
+        await app.StartAsync();
+        var endpoint = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+        using var channel = GrpcChannel.ForAddress(endpoint);
+        var client = new ProcessDefinitions.ProcessDefinitionsClient(channel);
+        Assert.Empty((await client.ListDefinitionsAsync(new())).Definitions);
     }
 
     [Fact]
@@ -331,7 +327,7 @@ public sealed class DefinitionDiscoveryIntegrationTests
     {
         var builder = Builder();
         builder.Services.AddSagaFlowInMemoryStorage();
-        builder.Services.AddSagaFlow(o => { o.Publication.Enabled = true; o.Publication.PublishedDefinitions.Add(new("order", "order-process", "1.0")); });
+        builder.Services.AddSagaFlow(options => options.Publication.Enabled = true);
         await using var app = builder.Build();
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => app.StartAsync());
         Assert.Contains("MapSagaFlowDefinitionDiscovery", error.Message);
@@ -343,7 +339,7 @@ public sealed class DefinitionDiscoveryIntegrationTests
         await using var slow = await StubHost.Start("slow");
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Discovery([slow.Endpoint]).DiscoverAsync(
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Discovery().DiscoverAsync(
             Definition("order", "order-process", [new() { Domain = "payment", Process = "payment-process", Endpoint = slow.Endpoint }]), cancellation.Token));
     }
 
@@ -354,17 +350,16 @@ public sealed class DefinitionDiscoveryIntegrationTests
         await using var slow = await StubHost.Start("slow");
         var root = Definition("order", "order-process", [Source(good, "payment", "payment-process"),
             new() { Domain = "slow", Process = "slow-process", Endpoint = slow.Endpoint }]);
-        var graph = await Discovery([good.Endpoint, slow.Endpoint], timeout: TimeSpan.FromSeconds(5), overall: TimeSpan.FromMilliseconds(600)).DiscoverAsync(root);
+        var graph = await Discovery(timeout: TimeSpan.FromSeconds(5), overall: TimeSpan.FromMilliseconds(600)).DiscoverAsync(root);
         Assert.Equal(2, graph.Nodes.Count);
         Assert.Equal(DiscoveryFailureKind.OverallTimeout, graph.Failures.Single().Kind);
     }
 
     private static BigPictureSourceDefinition Source(DomainHost host, string domain, string process) => new() { Domain = domain, Process = process, Endpoint = host.Endpoint };
-    private static DefinitionDiscovery Discovery(string[] endpoints, int depth = 4, int requests = 32, TimeSpan? timeout = null, TimeSpan? overall = null)
+    private static DefinitionDiscovery Discovery(int depth = 4, int requests = 32, TimeSpan? timeout = null, TimeSpan? overall = null)
     {
-        var options = new DefinitionDiscoveryOptions { AllowInsecureHttp = true, MaximumDepth = depth, MaximumRequests = requests, RequestTimeout = timeout ?? TimeSpan.FromSeconds(3) };
+        var options = new DefinitionDiscoveryOptions { MaximumDepth = depth, MaximumRequests = requests, RequestTimeout = timeout ?? TimeSpan.FromSeconds(3) };
         if (overall is not null) options.OverallTimeout = overall.Value;
-        foreach (var endpoint in endpoints) options.AllowedEndpoints.Add(endpoint);
         return new(new SagaFlow.Hosting.Definitions.GrpcRemoteDefinitionClient(), options);
     }
 
@@ -403,10 +398,7 @@ public sealed class DefinitionDiscoveryIntegrationTests
                 options.LoadFromDirectory(directory);
                 options.Publication.Enabled = publish;
                 options.Publication.IncludeBigPictureSources = publishTopology;
-                if (mapDashboardEndpoints) options.Dashboard.Enabled = false;
-                foreach (var version in versions) options.Publication.PublishedDefinitions.Add(new(domain, process, version));
-                options.Discovery.AllowInsecureHttp = true;
-                foreach (var source in references ?? []) options.Discovery.AllowedEndpoints.Add(source.Endpoint);
+                if (!mapDashboardEndpoints) options.UseDashboard();
             });
             builder.Services.RemoveAll<SagaCoordinator>();
             builder.Services.RemoveAll<ISagaFlow>();

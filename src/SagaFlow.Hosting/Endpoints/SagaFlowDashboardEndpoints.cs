@@ -16,30 +16,39 @@ public static class SagaFlowDashboardEndpoints
 {
     public static IEndpointRouteBuilder MapSagaFlowDashboard(this IEndpointRouteBuilder endpoints)
     {
-        endpoints.MapGet("/sagaflow/api/definitions", (ProcessDefinitionRegistry registry) =>
+        var options = endpoints.ServiceProvider.GetRequiredService<SagaFlowOptions>().Dashboard;
+        endpoints.MapDashboardApi("/sagaflow", options);
+        return endpoints;
+    }
+
+    internal static RouteGroupBuilder MapDashboardApi(this IEndpointRouteBuilder endpoints,
+        string path, SagaFlowDashboardOptions options)
+    {
+        var api = endpoints.MapGroup($"{path}/api");
+        api.MapGet("/definitions", (ProcessDefinitionRegistry registry) =>
             Results.Ok(ToDefinitions(registry)));
-        endpoints.MapGet("/sagaflow/api/definition-graph", async (
-            string domain, string process, string version, ProcessDefinitionRegistry registry,
+        api.MapGet("/definition-graph", async (
+            string? domain, string? process, string? version, ProcessDefinitionRegistry registry,
             DefinitionDiscovery discovery, CancellationToken cancellationToken) =>
         {
-            var graph = await ToDefinitionGraphAsync(registry, discovery, domain, process, version,
+            var graph = await ToDefinitionGraphAsync(registry, discovery, domain ?? "", process ?? "", version ?? "",
                 cancellationToken);
             return graph is null ? Results.NotFound() : Results.Ok(graph);
         });
-        endpoints.MapGet("/sagaflow/api/instances", async (ISagaStateStore store, CancellationToken cancellationToken) =>
+        api.MapGet("/instances", async (ISagaStateStore store, CancellationToken cancellationToken) =>
         {
             var instances = await store.ListAsync(cancellationToken);
             return Results.Ok(instances.Select(ToSummary));
         });
-        endpoints.MapGet("/sagaflow/api/instances/{instanceId}", async (string instanceId, ISagaStateStore store, SagaFlowOptions options, CancellationToken cancellationToken) =>
+        api.MapGet("/instances/{instanceId}", async (string instanceId, ISagaStateStore store, CancellationToken cancellationToken) =>
         {
             var instance = await store.FindAsync(instanceId, cancellationToken);
-            return instance is null ? Results.NotFound() : Results.Ok(ToDetail(instance, options.Dashboard.DescribeDomainStarter));
+            return instance is null ? Results.NotFound() : Results.Ok(ToDetail(instance, options.DescribeDomainStarter));
         });
-        endpoints.MapGet("/sagaflow/api/instances/{instanceId}/relationships",
+        api.MapGet("/instances/{instanceId}/relationships",
             (string instanceId, HttpContext context, ISagaStateStore store) =>
                 InstanceRelationshipView.ReadAsync(instanceId, context, store));
-        return endpoints;
+        return api;
     }
 
     // Presentation of the already parsed registry snapshots; no loading, discovery, or runtime execution.

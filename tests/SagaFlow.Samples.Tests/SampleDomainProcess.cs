@@ -4,7 +4,7 @@ using System.Net.Sockets;
 
 namespace SagaFlow.Samples.Tests;
 
-/// <summary>Runs a built sample in its own OS process and captures startup diagnostics.</summary>
+/// <summary>Runs the PostgreSQL sample test host in its own OS process and captures startup diagnostics.</summary>
 internal sealed class SampleDomainProcess : IAsyncDisposable
 {
     private readonly Process _process;
@@ -27,18 +27,13 @@ internal sealed class SampleDomainProcess : IAsyncDisposable
         var root = FindRoot();
         var name = $"SagaFlow.{domain}";
         var directory = Path.Combine(root, "samples", $"{domain}Process", name);
-        var configuration = new DirectoryInfo(AppContext.BaseDirectory).Parent!.Name;
-        var isolated = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", name,
-            new DirectoryInfo(AppContext.BaseDirectory).Name, $"{name}.dll"));
-        var binary = File.Exists(isolated) ? isolated : Path.Combine(directory, "bin", configuration, "net10.0", $"{name}.dll");
-        if (!File.Exists(binary)) throw new FileNotFoundException("Build the sample projects before running process tests.", binary);
-
         var start = new ProcessStartInfo(Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet")
         {
             WorkingDirectory = directory, UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = true
         };
-        start.ArgumentList.Add(binary);
+        start.ArgumentList.Add(typeof(PostgreSqlDomainHost).Assembly.Location);
+        start.ArgumentList.Add(domain);
         start.Environment["ASPNETCORE_ENVIRONMENT"] = "Production";
         start.Environment["DOTNET_ENVIRONMENT"] = "Production";
         start.Environment["Kestrel__Endpoints__Api__Url"] = endpoint;

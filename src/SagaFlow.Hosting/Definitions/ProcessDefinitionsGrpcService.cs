@@ -10,7 +10,7 @@ internal sealed class ProcessDefinitionsGrpcService(ProcessDefinitionRegistry re
     private IEnumerable<RegisteredDefinition> Published()
     {
         if (!settings.Enabled) throw new RpcException(new Status(StatusCode.Unavailable, "Definition publication is disabled."));
-        return registry.Snapshot().Where(d => d.Origin == DefinitionOrigin.Local && settings.PublishedDefinitions.Contains(ProcessDefinitionId.From(d.Definition)));
+        return registry.Snapshot().Where(d => d.Origin == DefinitionOrigin.Local);
     }
 
     public override Task<ListDefinitionsResponse> ListDefinitions(ListDefinitionsRequest request, ServerCallContext context)

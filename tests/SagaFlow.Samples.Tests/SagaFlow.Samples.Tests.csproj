@@ -4,6 +4,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+    <GenerateProgramFile>false</GenerateProgramFile>
+    <StartupObject>SagaFlow.Samples.Tests.PostgreSqlDomainHost</StartupObject>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\samples\ProcurementProcess\SagaFlow.Procurement\SagaFlow.Procurement.csproj" />

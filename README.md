@@ -4,7 +4,7 @@ SagaFlow.Net is a lightweight .NET library and embedded dashboard for defining, 
 
 SagaFlow.Net is developed as the software artifact of the thesis titled "A Local-Orchestration-Based Reference Architecture for Hybrid Saga Coordination in Microservice Architectures."
 
-Current status: YAML process definitions, optional gRPC Big-Picture discovery, and the first local Saga coordination PoC are implemented. `ISagaFlow.StartAsync(payload)` creates volatile InMemory state and dispatches YAML commands through the application-provided `ISagaMessageBus` port. No default message transport, durable state, or compensation execution is provided. See [local coordination and state semantics](docs/04-local-saga-coordination.md) and [definition/discovery documentation](docs/03-yaml-definition-discovery.md).
+Current status: SagaFlow loads YAML definitions, optionally discovers definitions through gRPC, and coordinates Saga execution and compensation inside the Domain Starter. Applications select InMemory or PostgreSQL for coordination state and can enable RabbitMQ for messaging. See [local coordination and state semantics](docs/04-local-saga-coordination.md) and [definition/discovery documentation](docs/03-yaml-definition-discovery.md).
 
 SagaFlow does not require a separately deployed orchestration server. The engine is embedded into the domain starter microservice through the hosting integration.
 
@@ -59,23 +59,29 @@ The internal structure of SagaFlow intentionally follows the six feature groups 
 
 ```csharp
 using SagaFlow.Hosting.DependencyInjection;
-using SagaFlow.Storage.InMemory.DependencyInjection;
+using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
+using SagaFlow.Storage.PostgreSQL.DependencyInjection;
 
 builder.Services.AddSagaFlow(options =>
 {
-    options.LoadFromYaml("saga/order-process.yaml");
-    // Dashboard is enabled by default at /sagaflow.
-    // options.Dashboard.Path = "/dashboard";
+    options.LoadConfiguration("saga/order-process.yaml");
+    options.Storage.UsePostgreSql(storage =>
+        storage.ConnectionString = builder.Configuration.GetConnectionString("SagaFlow"));
+    options.Messaging.UseRabbitMq(rabbit =>
+        rabbit.ConnectionString = builder.Configuration.GetConnectionString("RabbitMq"));
+    options.UseDashboard();
 });
-builder.Services.AddSagaFlowInMemoryStorage();
 ```
 
-Reference `SagaFlow.Storage.InMemory` to select InMemory. You can register it before or after
-`AddSagaFlow()`. To use a custom provider, register one unkeyed singleton `ISagaStateStore` instead.
+Select exactly one storage provider. Reference `SagaFlow.Storage.InMemory` and import
+`SagaFlow.Storage.InMemory.DependencyInjection` to call `options.Storage.UseInMemory()`.
+PostgreSQL initializes and validates its schema before hosted services start.
+RabbitMQ accepts an `amqp://` or `amqps://` connection URI. A host can omit messaging
+when it only loads or publishes definitions. The Order, Return, and Procurement samples select InMemory in code and show the PostgreSQL call immediately below it as an alternative.
 
-`AddSagaFlow()` automatically hosts the read-only dashboard and its state API. Set
-`options.Dashboard.Enabled = false` to disable it. `UseSagaFlowDashboard()` remains
-available for applications that need to register the middleware explicitly.
+`options.UseDashboard()` automatically exposes the read-only UI, API, and SignalR hub
+at `/sagaflow`. Set a custom prefix with `options.UseDashboard(dashboard => dashboard.Path = "/admin/sagas")`.
+Omit `UseDashboard()` to keep the Dashboard disabled.
 
 ## Build
 

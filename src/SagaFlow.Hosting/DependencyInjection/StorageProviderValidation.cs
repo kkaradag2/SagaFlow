@@ -13,7 +13,7 @@ internal static class StorageProviderValidation
             .ToArray();
 
         if (registrations.Length == 0)
-            throw new InvalidOperationException("No SagaFlow storage provider is registered. Call your storage provider's registration extension or use AddSingleton<ISagaStateStore> before starting the host.");
+            throw new InvalidOperationException("No SagaFlow storage provider is registered. Call options.Storage.UseInMemory() or options.Storage.UsePostgreSql(...) in AddSagaFlow, or register a custom provider with AddSingleton<ISagaStateStore>.");
         if (registrations.Length > 1)
             throw new InvalidOperationException("Multiple SagaFlow storage providers are registered. Remove the extra unkeyed ISagaStateStore registrations and keep exactly one.");
         if (registrations[0].Lifetime != ServiceLifetime.Singleton)

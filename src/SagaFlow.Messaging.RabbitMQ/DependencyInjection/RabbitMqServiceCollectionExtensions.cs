@@ -1,12 +1,37 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
 using SagaFlow.Core.Abstractions;
 using SagaFlow.Engine.Messaging;
+using SagaFlow.Hosting.DependencyInjection;
 
 namespace SagaFlow.Messaging.RabbitMQ.DependencyInjection;
 
 public static class RabbitMqServiceCollectionExtensions
 {
+    /// <summary>Selects the managed RabbitMQ transport with an AMQP connection URI.</summary>
+    public static void UseRabbitMq(this SagaFlowMessagingOptions messaging, Action<RabbitMqOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        messaging.Select(services =>
+        {
+            // The host exposes its configuration through the builder context before DI is built.
+            var context = services.LastOrDefault(service =>
+                service.ServiceType == typeof(HostBuilderContext) && !service.IsKeyedService)?.ImplementationInstance as HostBuilderContext;
+            var configuration = context?.Configuration;
+            var section = configuration?.GetSection("RabbitMq");
+            if (section?.GetValue<bool?>("Enabled") == false) return;
+
+            services.AddSagaFlowRabbitMq(options =>
+            {
+                section?.Bind(options);
+                configure(options);
+                if (string.IsNullOrWhiteSpace(options.ConnectionString))
+                    throw new InvalidOperationException("Set the RabbitMQ ConnectionString when calling options.Messaging.UseRabbitMq.");
+            });
+        });
+    }
+
     public static IServiceCollection AddSagaFlowRabbitMq(this IServiceCollection services) =>
         services.AddSagaFlowRabbitMqUsingHostConnection(_ => { });
 

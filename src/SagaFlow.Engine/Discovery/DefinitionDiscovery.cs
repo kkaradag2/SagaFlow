@@ -10,7 +10,7 @@ public interface IRemoteDefinitionClient
     Task<RemoteDefinitionEnvelope> GetAsync(Uri endpoint, BigPictureSourceDefinition source, TimeSpan timeout, CancellationToken cancellationToken);
 }
 
-public enum DiscoveryFailureKind { UntrustedEndpoint, NotFound, AmbiguousVersion, Unavailable, Timeout, InvalidResponse, Cycle, LimitExceeded, OverallTimeout }
+public enum DiscoveryFailureKind { NotFound = 1, AmbiguousVersion, Unavailable, Timeout, InvalidResponse, Cycle, LimitExceeded, OverallTimeout }
 public sealed class RemoteDefinitionException(DiscoveryFailureKind kind, string message) : Exception(message)
 {
     public DiscoveryFailureKind Kind { get; } = kind;
@@ -18,9 +18,6 @@ public sealed class RemoteDefinitionException(DiscoveryFailureKind kind, string 
 
 public sealed class DefinitionDiscoveryOptions
 {
-    /// <summary>Exact HTTP(S) origins; deny by default. HTTPS is required unless explicitly enabled for a local PoC.</summary>
-    public ISet<string> AllowedEndpoints { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-    public bool AllowInsecureHttp { get; set; }
     public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(3);
     public TimeSpan OverallTimeout { get; set; } = TimeSpan.FromSeconds(15);
     public int MaximumDepth { get; set; } = 4;
@@ -36,8 +33,6 @@ public sealed record DefinitionGraph(IReadOnlyList<DefinitionGraphNode> Nodes, I
 public sealed class DefinitionDiscovery
 {
     private readonly IRemoteDefinitionClient _client;
-    private readonly HashSet<string> _allowed;
-    private readonly bool _allowHttp;
     private readonly TimeSpan _timeout;
     private readonly TimeSpan _overallTimeout;
     private readonly TimeProvider _timeProvider;
@@ -55,17 +50,7 @@ public sealed class DefinitionDiscovery
             || options.OverallTimeout <= TimeSpan.Zero || options.OverallTimeout > TimeSpan.FromMinutes(5)
             || options.MaximumDepth is < 1 or > 16 || options.MaximumRequests is < 1 or > 256)
             throw new ArgumentException("Discovery request timeout must be (0, 1 minute], overall timeout (0, 5 minutes], depth 1..16 and requests 1..256.", nameof(options));
-        _allowed = new(StringComparer.OrdinalIgnoreCase);
-        foreach (var endpoint in options.AllowedEndpoints)
-        {
-            if (!ProcessDefinitionValidator.TryEndpoint(endpoint, out var uri))
-                throw new ArgumentException($"Invalid allowed discovery origin '{endpoint}'.", nameof(options));
-            if (uri.Scheme == "http" && !options.AllowInsecureHttp)
-                throw new ArgumentException("HTTP discovery origins require explicit AllowInsecureHttp for the local PoC.", nameof(options));
-            _allowed.Add(uri.GetLeftPart(UriPartial.Authority));
-        }
         _client = client;
-        _allowHttp = options.AllowInsecureHttp;
         _timeout = options.RequestTimeout;
         _overallTimeout = options.OverallTimeout;
         _timeProvider = timeProvider;
@@ -106,8 +91,6 @@ public sealed class DefinitionDiscovery
                     if (BudgetExpired()) throw new OperationCanceledException(overall.Token);
                     var uri = new Uri(source.Endpoint);
                     var origin = uri.GetLeftPart(UriPartial.Authority);
-                    if (!_allowed.Contains(origin) || (uri.Scheme == "http" && !_allowHttp))
-                        throw new RemoteDefinitionException(DiscoveryFailureKind.UntrustedEndpoint, "Endpoint origin is not explicitly trusted by this host.");
                     var ancestor = active.FirstOrDefault(a => a.Domain == source.Domain && a.Name == source.Process && (source.Version is null || source.Version == a.Version));
                     if (ancestor is not null)
                     {

@@ -1,7 +1,8 @@
 using SagaFlow.Hosting.DependencyInjection;
-using SagaFlow.Samples;
 using SagaFlow.Hosting.Endpoints;
 using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
+using SagaFlow.Storage.InMemory.DependencyInjection;
+using SagaFlow.Storage.PostgreSQL.DependencyInjection;
 using SagaFlow.Returns;
 
 
@@ -10,24 +11,42 @@ public partial class ReturnProgram
     public static async Task Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
-        builder.Services.AddControllers();
-        builder.Services.AddEndpointsApiExplorer();
-        builder.Services.AddSwaggerGen();
-        builder.Services.AddSingleton<ReturnRepository>();
-        builder.Services.AddScoped<ReturnService>();
+        AddDomainServices(builder.Services);
         builder.Services.AddSagaFlow(options =>
         {
-            options.LoadFromDirectory("saga");
-            options.Publication.Enabled = builder.Configuration.GetValue<bool>("SagaFlow:PublishDefinitions");
-            options.Publication.PublishedDefinitions.Add(new("return", "return-process", "1.0"));
+            options.LoadConfiguration("saga/return-process.yaml");
+
+            options.Storage.UseInMemory();
+
+            // Alternative: PostgreSQL
+            // options.Storage.UsePostgreSql(storage =>
+            // {
+            //     storage.ConnectionString = builder.Configuration
+            //         .GetConnectionString("SagaFlow");
+            // });
+
+            options.Messaging.UseRabbitMq(rabbit =>
+            {
+                rabbit.ConnectionString = builder.Configuration
+                    .GetConnectionString("RabbitMq");
+            });
+
+            options.UseDashboard();
         });
-        await SampleSagaStorage.ConfigureAsync(builder, "return");
-        if (builder.Configuration.GetValue("RabbitMq:Enabled", true))
-            builder.Services.AddSagaFlowRabbitMq(builder.Configuration.GetRequiredSection("RabbitMq"));
+
         var app = builder.Build();
         if (app.Environment.IsDevelopment()) { app.UseSwagger(); app.UseSwaggerUI(); }
-        if (builder.Configuration.GetValue<bool>("SagaFlow:PublishDefinitions")) app.MapSagaFlowDefinitionDiscovery();
+        app.MapSagaFlowDefinitionDiscoveryIfEnabled();
         app.MapControllers();
         await app.RunAsync();
+    }
+
+    internal static void AddDomainServices(IServiceCollection services)
+    {
+        services.AddControllers();
+        services.AddEndpointsApiExplorer();
+        services.AddSwaggerGen();
+        services.AddSingleton<ReturnRepository>();
+        services.AddScoped<ReturnService>();
     }
 }

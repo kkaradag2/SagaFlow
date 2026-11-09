@@ -55,8 +55,8 @@ public sealed class ProcurementRabbitMqTests
         var requestFault = new RequestFault();
         await using var order = new WebApplicationFactory<global::Program>().WithWebHostBuilder(builder => builder
             .UseSetting("RabbitMq:EnableProcessInvocations", "true")
-            .UseSetting("SagaFlow:PublishDefinitions", "true")
-            .UseSetting("SagaFlow:PublishBigPictureSources", "true")
+            .UseSetting("SagaFlow:Publication:Enabled", "true")
+            .UseSetting("SagaFlow:Publication:IncludeBigPictureSources", "true")
             .ConfigureServices(services =>
             {
                 services.AddSingleton(fault);
@@ -81,9 +81,7 @@ public sealed class ProcurementRabbitMqTests
                 File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "procurement-process.yaml"))
                     .Replace("https://localhost:50823", grpcEndpoint, StringComparison.Ordinal));
             await using var procurement = new WebApplicationFactory<ProcurementProgram>().WithWebHostBuilder(builder => builder
-                .UseSetting("SagaFlow:DefinitionDirectory", directory)
-                .UseSetting("SagaFlow:Discovery:AllowedEndpoints:0", grpcEndpoint)
-                .UseSetting("SagaFlow:Discovery:AllowInsecureHttp", "true")
+                .UseSetting("SagaFlow:DefinitionPath", Path.Combine(directory, "procurement-process.yaml"))
                 .ConfigureServices(services =>
                 {
                     services.RemoveAll<ILocalSagaStepHandler>(); services.AddSingleton(requestFault);

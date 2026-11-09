@@ -2,13 +2,49 @@ using System.Diagnostics;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Grpc.Core;
+using Grpc.Net.Client;
 using SagaFlow.Core.Definitions;
 using SagaFlow.Hosting.Definitions;
+using SagaFlow.Hosting.Grpc.V1;
 
 namespace SagaFlow.Hosting.Tests;
 
 public sealed class SampleOrderReturnDiscoveryTests
 {
+    [Fact]
+    public async Task OrderDiscoversReturnFromYamlWithoutEnablingItsOwnPublication()
+    {
+        var root = FindRoot();
+        var orderDirectory = Path.Combine(root, "samples", "OrderProcess", "SagaFlow.Order");
+        var returnDirectory = Path.Combine(root, "samples", "ReturnProcess", "SagaFlow.Return");
+        await using var returns = await SampleProcess.StartAsync(returnDirectory, "SagaFlow.Return",
+            "--SagaFlow:Publication:Enabled", "true");
+        var yaml = await File.ReadAllTextAsync(Path.Combine(orderDirectory, "saga", "order-process.yaml"));
+        var definitions = Directory.CreateTempSubdirectory("sagaflow-order-yaml-discovery-");
+        try
+        {
+            var path = Path.Combine(definitions.FullName, "order-process.yaml");
+            await File.WriteAllTextAsync(path, yaml.Replace("https://localhost:65305", returns.Endpoint, StringComparison.Ordinal));
+            await using var order = await SampleProcess.StartAsync(orderDirectory, "SagaFlow.Order", "--SagaFlow:DefinitionPath", path);
+            using var client = new HttpClient { DefaultRequestVersion = HttpVersion.Version20,
+                DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact };
+            var graphUrl = $"{order.Endpoint}/sagaflow/api/definition-graph?domain=order&process=order-process&version=1.0";
+            using var graph = JsonDocument.Parse(await client.GetStringAsync(graphUrl));
+            Assert.Equal(2, graph.RootElement.GetProperty("nodes").GetArrayLength());
+            var edge = Assert.Single(graph.RootElement.GetProperty("edges").EnumerateArray());
+            Assert.Equal("related", edge.GetProperty("relationship").GetString());
+            Assert.Equal("return", edge.GetProperty("target").GetProperty("domain").GetString());
+            Assert.Empty(graph.RootElement.GetProperty("failures").EnumerateArray());
+
+            using var channel = GrpcChannel.ForAddress(order.Endpoint);
+            var publisher = new ProcessDefinitions.ProcessDefinitionsClient(channel);
+            var error = await Assert.ThrowsAsync<RpcException>(async () => await publisher.ListDefinitionsAsync(new()));
+            Assert.Equal(StatusCode.Unimplemented, error.StatusCode);
+        }
+        finally { definitions.Delete(recursive: true); }
+    }
+
     [Fact]
     public async Task IndependentSampleProcessesDiscoverRelatedDefinitionsWithoutStartingSagas()
     {
@@ -16,7 +52,7 @@ public sealed class SampleOrderReturnDiscoveryTests
         var returnDirectory = Path.Combine(root, "samples", "ReturnProcess", "SagaFlow.Return");
         var orderDirectory = Path.Combine(root, "samples", "OrderProcess", "SagaFlow.Order");
         await using var returns = await SampleProcess.StartAsync(returnDirectory, "SagaFlow.Return",
-            "--SagaFlow:PublishDefinitions", "true");
+            "--SagaFlow:Publication:Enabled", "true");
         var yaml = await File.ReadAllTextAsync(Path.Combine(orderDirectory, "saga", "order-process.yaml"));
         Assert.Contains("https://localhost:65305", yaml);
         var definitionDirectory = Directory.CreateTempSubdirectory("sagaflow-order-return-").FullName;
@@ -24,12 +60,15 @@ public sealed class SampleOrderReturnDiscoveryTests
         {
             await File.WriteAllTextAsync(Path.Combine(definitionDirectory, "order-process.yaml"),
                 yaml.Replace("https://localhost:65305", returns.Endpoint, StringComparison.Ordinal));
+            using var profiles = JsonDocument.Parse(await File.ReadAllTextAsync(
+                Path.Combine(orderDirectory, "Properties", "launchSettings.json")));
+            var discoveryArguments = profiles.RootElement.GetProperty("profiles").GetProperty("SagaFlow.Order.Discovery")
+                .GetProperty("environmentVariables").EnumerateObject()
+                .Where(variable => variable.Name.StartsWith("SagaFlow__", StringComparison.Ordinal))
+                .SelectMany(variable => new[] { "--" + variable.Name.Replace("__", ":"), variable.Value.GetString()! });
             await using var orders = await SampleProcess.StartSecureAsync(orderDirectory, "SagaFlow.Order",
-                "--SagaFlow:DefinitionDirectory", definitionDirectory,
-                "--SagaFlow:PublishDefinitions", "true",
-                "--SagaFlow:PublishBigPictureSources", "true",
-                "--SagaFlow:Discovery:AllowInsecureHttp", "true",
-                "--SagaFlow:Discovery:AllowedEndpoints:0", returns.Endpoint);
+                [.. discoveryArguments,
+                    "--SagaFlow:DefinitionPath", Path.Combine(definitionDirectory, "order-process.yaml")]);
             Assert.NotEqual(orders.ProcessId, returns.ProcessId);
 
             using var handler = new HttpClientHandler { UseCookies = true,
@@ -56,13 +95,13 @@ public sealed class SampleOrderReturnDiscoveryTests
     }
 
     [Fact]
-    public async Task NormalOrderProfileShowsLocalRelationshipWithoutPublishingItOrRequiringLogin()
+    public async Task ExplicitDiscoveryShowsLocalRelationshipWithoutPublishingItOrRequiringLogin()
     {
         var root = FindRoot();
         var returnDirectory = Path.Combine(root, "samples", "ReturnProcess", "SagaFlow.Return");
         var orderDirectory = Path.Combine(root, "samples", "OrderProcess", "SagaFlow.Order");
         await using var returns = await SampleProcess.StartAsync(returnDirectory, "SagaFlow.Return",
-            "--SagaFlow:PublishDefinitions", "true");
+            "--SagaFlow:Publication:Enabled", "true");
         var yaml = await File.ReadAllTextAsync(Path.Combine(orderDirectory, "saga", "order-process.yaml"));
         var definitionDirectory = Directory.CreateTempSubdirectory("sagaflow-local-dashboard-").FullName;
         try
@@ -70,10 +109,8 @@ public sealed class SampleOrderReturnDiscoveryTests
             await File.WriteAllTextAsync(Path.Combine(definitionDirectory, "order-process.yaml"),
                 yaml.Replace("https://localhost:65305", returns.Endpoint, StringComparison.Ordinal));
             await using var orders = await SampleProcess.StartSecureAsync(orderDirectory, "SagaFlow.Order",
-                "--SagaFlow:DefinitionDirectory", definitionDirectory,
-                "--SagaFlow:PublishDefinitions", "false",
-                "--SagaFlow:Discovery:AllowInsecureHttp", "true",
-                "--SagaFlow:Discovery:AllowedEndpoints:0", returns.Endpoint);
+                "--SagaFlow:DefinitionPath", Path.Combine(definitionDirectory, "order-process.yaml"),
+                "--SagaFlow:Publication:Enabled", "false");
             using var handler = new HttpClientHandler { UseCookies = true,
                 ServerCertificateCustomValidationCallback = (_, _, _, _) => true };
             using var client = new HttpClient(handler);
@@ -96,7 +133,7 @@ public sealed class SampleOrderReturnDiscoveryTests
             Assert.False(string.IsNullOrWhiteSpace(unresolved.RootElement.GetProperty("failures")[0]
                 .GetProperty("message").GetString()));
             await using var restartedReturns = await SampleProcess.StartAsync(returnDirectory, "SagaFlow.Return",
-                "--SagaFlow:PublishDefinitions", "true", "--urls", returns.Endpoint);
+                "--SagaFlow:Publication:Enabled", "true", "--urls", returns.Endpoint);
             using var rediscovered = JsonDocument.Parse(await client.GetStringAsync(graphUrl));
             Assert.Equal("return", rediscovered.RootElement.GetProperty("edges")[0]
                 .GetProperty("target").GetProperty("domain").GetString());

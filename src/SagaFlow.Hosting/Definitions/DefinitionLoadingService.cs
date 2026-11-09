@@ -8,9 +8,9 @@ namespace SagaFlow.Hosting.Definitions;
 
 internal sealed class DefinitionLoadingService(
     SagaFlowOptions options, IHostEnvironment environment, ProcessDefinitionRegistry registry,
-    DefinitionPublicationSettings publication, DefinitionEndpointMapping mapping, ISagaDefinitionLoader loader) : IHostedService
+    DefinitionPublicationSettings publication, DefinitionEndpointMapping mapping, ISagaDefinitionLoader loader) : IHostedLifecycleService
 {
-    public async Task StartAsync(CancellationToken cancellationToken)
+    public async Task StartingAsync(CancellationToken cancellationToken)
     {
         if (publication.Enabled && !mapping.IsMapped)
             throw new InvalidOperationException("Definition publication is enabled; call MapSagaFlowDefinitionDiscovery before starting the host.");
@@ -23,14 +23,11 @@ internal sealed class DefinitionLoadingService(
         }
         else if (options.DefinitionPath is not null)
             registry.RegisterLocalBatch([await loader.LoadAsync(Path.GetFullPath(options.DefinitionPath, environment.ContentRootPath), cancellationToken)]);
-
-        if (publication.Enabled)
-        {
-            var local = registry.Snapshot().Where(x => x.Origin == DefinitionOrigin.Local).Select(x => ProcessDefinitionId.From(x.Definition)).ToHashSet();
-            foreach (var id in publication.PublishedDefinitions)
-                if (!local.Contains(id)) throw new InvalidOperationException($"Published SagaFlow definition '{id}' is not loaded locally.");
-        }
     }
 
+    public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task StartedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task StoppingAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task StoppedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

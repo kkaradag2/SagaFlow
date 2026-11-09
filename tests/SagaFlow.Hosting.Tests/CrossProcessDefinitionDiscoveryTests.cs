@@ -46,9 +46,7 @@ public sealed class CrossProcessDefinitionDiscoveryTests
             };
             var registry = new ProcessDefinitionRegistry();
             registry.RegisterLocalBatch([root]);
-            var options = new DefinitionDiscoveryOptions { AllowInsecureHttp = true, OverallTimeout = TimeSpan.FromSeconds(10) };
-            options.AllowedEndpoints.Add(publisher.Endpoint);
-            options.AllowedEndpoints.Add(catalog.Endpoint);
+            var options = new DefinitionDiscoveryOptions { OverallTimeout = TimeSpan.FromSeconds(10) };
             var graph = await new DefinitionDiscovery(transport, options).DiscoverAsync(registry.Find(ProcessDefinitionId.From(root))!.Definition, deadline.Token);
             Assert.Empty(graph.Failures);
             Assert.Equal(3, graph.Nodes.Count);
@@ -86,8 +84,8 @@ public sealed class CrossProcessDefinitionDiscoveryTests
             };
             foreach (var argument in new[] { host, "--urls", "http://127.0.0.1:0", "--Kestrel:EndpointDefaults:Protocols", "Http2",
                 "--RabbitMq:Enabled", "false",
-                "--SagaFlow:PublishDefinitions", "true", "--SagaFlow:PublishBigPictureSources", "true",
-                "--SagaFlow:DefinitionDirectory", directory, "--Logging:LogLevel:Microsoft.Hosting.Lifetime", "Information" }) start.ArgumentList.Add(argument);
+                "--SagaFlow:Publication:Enabled", "true", "--SagaFlow:Publication:IncludeBigPictureSources", "true",
+                "--SagaFlow:DefinitionPath", Path.Combine(directory, "purchase.yaml"), "--Logging:LogLevel:Microsoft.Hosting.Lifetime", "Information" }) start.ArgumentList.Add(argument);
             _process = new() { StartInfo = start, EnableRaisingEvents = true };
             _process.Exited += (_, _) => _ready.TrySetException(new InvalidOperationException("Publisher exited before reporting readiness."));
         }

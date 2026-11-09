@@ -1,3 +1,5 @@
+using RabbitMQ.Client;
+
 namespace SagaFlow.Samples.Tests;
 
 public sealed class SampleRabbitMqFactAttribute : FactAttribute
@@ -18,8 +20,10 @@ internal static class SampleRabbitMqTestIsolation
     {
         var vhost = Environment.GetEnvironmentVariable("SAGAFLOW_RABBITMQ_TEST_VHOST");
         if (string.IsNullOrWhiteSpace(vhost) || vhost == "/" ||
-            !string.Equals(vhost, Environment.GetEnvironmentVariable("RabbitMq__VirtualHost"), StringComparison.Ordinal))
-            throw new InvalidOperationException("Sample integration tests require matching dedicated SAGAFLOW_RABBITMQ_TEST_VHOST and RabbitMq__VirtualHost; use scripts/run-rabbitmq-integration.ps1.");
+            !string.Equals(vhost, Environment.GetEnvironmentVariable("RabbitMq__VirtualHost"), StringComparison.Ordinal) ||
+            !Uri.TryCreate(Environment.GetEnvironmentVariable("ConnectionStrings__RabbitMq"), UriKind.Absolute, out var uri) ||
+            new ConnectionFactory { Uri = uri }.VirtualHost != vhost)
+            throw new InvalidOperationException("Sample integration tests require the same dedicated vhost in SAGAFLOW_RABBITMQ_TEST_VHOST, RabbitMq__VirtualHost and ConnectionStrings__RabbitMq. Use scripts/run-rabbitmq-integration.ps1.");
         return vhost;
     }
 }

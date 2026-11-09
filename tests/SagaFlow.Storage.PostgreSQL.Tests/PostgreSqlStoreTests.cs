@@ -398,6 +398,67 @@ public sealed class PostgreSqlStoreTests : IAsyncLifetime
         Assert.Equal(PostgresErrorCodes.InvalidCatalogName, initializationError.SqlState);
     }
 
+    [PostgreSqlFact]
+    public async Task UnifiedSelectionInitializesBeforeOtherServicesAndPreservesStateAcrossStarts()
+    {
+        await using var empty = new PostgreSqlTestDatabase();
+        await empty.CreateAsync();
+        var instance = Target();
+
+        IHost BuildHost()
+        {
+            var builder = Host.CreateApplicationBuilder();
+            builder.Logging.ClearProviders();
+            builder.Services.Configure<HostOptions>(options => options.ServicesStartConcurrently = true);
+            // Register the probe first so this test also checks startup phase ordering.
+            builder.Services.AddHostedService<StoreStartupProbe>();
+            builder.Services.AddSagaFlow(options => options.Storage.UsePostgreSql(storage =>
+                storage.ConnectionString = empty.ConnectionString));
+            return builder.Build();
+        }
+
+        using (var host = BuildHost())
+        {
+            await host.StartAsync();
+            var store = Assert.IsType<PostgreSqlSagaStateStore>(host.Services.GetRequiredService<ISagaStateStore>());
+            using var scope = host.Services.CreateScope();
+            Assert.Same(store, scope.ServiceProvider.GetRequiredService<ISagaStateStore>());
+            await store.SaveAsync(instance);
+            await host.StopAsync();
+        }
+
+        using (var host = BuildHost())
+        {
+            await host.StartAsync();
+            Assert.NotNull(await host.Services.GetRequiredService<ISagaStateStore>().FindAsync(instance.Id));
+            await host.StopAsync();
+        }
+
+        await PostgreSqlTestDatabase.ExecuteAsync(empty.ConnectionString, "UPDATE sagaflow.schema_version SET version = 2");
+        using var incompatibleHost = BuildHost();
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => incompatibleHost.StartAsync());
+        Assert.Contains("schema version 2", error.InnerException!.Message);
+        Assert.NotNull(await incompatibleHost.Services.GetRequiredService<ISagaStateStore>().FindAsync(instance.Id));
+    }
+
+    private sealed class StoreStartupProbe(ISagaStateStore store) : IHostedService
+    {
+        public async Task StartAsync(CancellationToken cancellationToken) => await store.ListAsync(cancellationToken);
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("invalid connection string")]
+    public void UnifiedSelectionRejectsInvalidConnectionSettings(string? connection)
+    {
+        var services = new ServiceCollection();
+        var error = Record.Exception(() => services.AddSagaFlow(options =>
+            options.Storage.UsePostgreSql(storage => storage.ConnectionString = connection)));
+        Assert.NotNull(error);
+        Assert.Contains("PostgreSQL", error.Message);
+    }
+
     private IHost CreateHost(bool storageFirst)
     {
         var builder = Host.CreateApplicationBuilder();
