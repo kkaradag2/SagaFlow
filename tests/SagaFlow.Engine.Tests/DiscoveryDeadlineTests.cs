@@ -124,7 +124,6 @@ public sealed class DiscoveryDeadlineTests
     private static DefinitionDiscovery Discovery(IRemoteDefinitionClient client, TimeSpan? request = null, TimeSpan? overall = null, TimeProvider? timeProvider = null)
     {
         var options = new DefinitionDiscoveryOptions { RequestTimeout = request ?? TimeSpan.FromSeconds(3), OverallTimeout = overall ?? TimeSpan.FromSeconds(5) };
-        options.AllowedEndpoints.Add("https://remote");
         return new(client, options, timeProvider ?? TimeProvider.System);
     }
     private static BigPictureSourceDefinition Source(string name) => new() { Domain = name, Process = name, Endpoint = "https://remote" };

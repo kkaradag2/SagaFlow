@@ -47,9 +47,11 @@ public sealed class InstanceRelationshipApiTests
         var plain = new SagaInstance { DefinitionDomain = owner.Domain, DefinitionName = owner.Process, DefinitionVersion = owner.Version };
         await store.SaveAsync(plain);
         var builder = WebApplication.CreateBuilder(); builder.Logging.ClearProviders(); builder.WebHost.UseUrls("http://127.0.0.1:0");
-        builder.Services.AddSagaFlow(o => o.Dashboard.Path = automaticMiddleware ? "/sagaflow" : "/embedded");
+        builder.Services.AddSagaFlow(o => o.UseDashboard(dashboard => dashboard.Path = automaticMiddleware ? "/sagaflow" : "/embedded"));
         builder.Services.AddSingleton<ISagaStateStore>(store);
-        await using var app = builder.Build(); app.MapSagaFlowDashboard(); await app.StartAsync();
+        await using var app = builder.Build();
+        if (!automaticMiddleware) app.MapSagaFlowDashboard();
+        await app.StartAsync();
         using var client = new HttpClient { BaseAddress = new(app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single()) };
         var url = $"/sagaflow/api/instances/{id}/relationships";
         async Task<JsonElement> Get(string address)

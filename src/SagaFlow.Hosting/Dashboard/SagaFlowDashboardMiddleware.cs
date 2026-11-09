@@ -88,13 +88,20 @@ public sealed class SagaFlowDashboardMiddleware
             return;
         }
 
+        await ServeAssetsAsync(context, _options, dashboardPath);
+    }
+
+    internal static async Task ServeAssetsAsync(HttpContext context, SagaFlowDashboardOptions options, string dashboardPath)
+    {
+        var requestPath = context.Request.Path.Value ?? string.Empty;
+        var publicPath = context.Request.PathBase.Add(new PathString(dashboardPath)).ToUriComponent();
         if (string.Equals(requestPath, dashboardPath, StringComparison.OrdinalIgnoreCase))
         {
-            context.Response.Redirect($"{dashboardPath}/");
+            context.Response.Redirect($"{publicPath}/");
             return;
         }
 
-        var assetRoot = _options.AssetRoot ?? EmbeddedDashboardAssets.GetDashboardAssetPath();
+        var assetRoot = options.AssetRoot ?? EmbeddedDashboardAssets.GetDashboardAssetPath();
         var rootPath = Path.GetFullPath(assetRoot);
         var indexPath = Path.Combine(rootPath, "index.html");
 
@@ -107,13 +114,14 @@ public sealed class SagaFlowDashboardMiddleware
         var relativePath = requestPath[dashboardPath.Length..].TrimStart('/');
         if (string.IsNullOrWhiteSpace(relativePath))
         {
-            await SendIndexAsync(context, indexPath, dashboardPath);
+            await SendIndexAsync(context, indexPath, publicPath);
             return;
         }
 
         var assetPath = Path.GetFullPath(Path.Combine(rootPath, relativePath));
 
-        if (assetPath.StartsWith(rootPath, StringComparison.OrdinalIgnoreCase) && File.Exists(assetPath))
+        if (assetPath.StartsWith(Path.TrimEndingDirectorySeparator(rootPath) + Path.DirectorySeparatorChar,
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal) && File.Exists(assetPath))
         {
             await SendFileAsync(context, assetPath);
             return;
@@ -125,7 +133,7 @@ public sealed class SagaFlowDashboardMiddleware
             return;
         }
 
-        await SendIndexAsync(context, indexPath, dashboardPath);
+        await SendIndexAsync(context, indexPath, publicPath);
     }
 
     private static bool IsDashboardRequest(string requestPath, string dashboardPath)

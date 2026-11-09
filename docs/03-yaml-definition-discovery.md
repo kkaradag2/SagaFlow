@@ -16,7 +16,7 @@ Process Explorer'ın kalıcı mimari sınırı salt okunur gözlem ve görselle�
 
 `bigPicture` kaydına isteğe bağlı `relationship: related` eklendi. `related`, kaynak Domain Starter'ın hedef süreçle **tanım düzeyinde iş ilişkisi** bildirmesidir. Hedef domain'in karşılıklı onayı, süreç çağrısı, parent/child yürütümü, ortak Saga instance, runtime correlation veya merkezi koordinasyon anlamına gelmez. Alanı olmayan eski YAML aynı biçimde yüklenir ve grafikte etiketsiz kenar oluşturur. Açık boş, `null` veya `related` dışındaki değerler [`ProcessDefinitionValidator`](../src/SagaFlow.Engine/ProcessDefinition/ProcessDefinitionValidator.cs) tarafından reddedilir; kaynak model [`BigPictureSourceDefinition`](../src/SagaFlow.Core/Definitions/BigPictureSourceDefinition.cs) ve snapshot [`DefinitionSnapshot`](../src/SagaFlow.Engine/ProcessDefinition/DefinitionSnapshot.cs) alanın yokluğunu korur.
 
-Order örneği [`order-process.yaml`](../samples/OrderProcess/SagaFlow.Order/saga/order-process.yaml) içinde `return/return-process@1.0` için `relationship: related` bildirir. Adres, Return'un mevcut HTTPS launch profilindeki `https://localhost:65305` değeridir; Order [`appsettings.json`](../samples/OrderProcess/SagaFlow.Order/appsettings.json) bu origin'i keşif allowlist'ine alır. Normal Return geliştirme profili yalnız `return/return-process@1.0` tanımının gRPC yayınını açar; profil dışı çalıştırmada yayın varsayılan olarak kapalı kalır. Yerel demo için iki ayrı terminalde:
+Order örneği [`order-process.yaml`](../samples/OrderProcess/SagaFlow.Order/saga/order-process.yaml) içinde `return/return-process@1.0` için `relationship: related` bildirir. Adres, Return'un mevcut HTTPS launch profilindeki `https://localhost:65305` değeridir. Order, Return adresini YAML’dan okur. Order'ın `Discovery` ve `Domain` [profilleri](../samples/OrderProcess/SagaFlow.Order/Properties/launchSettings.json) Order’ın kendi gRPC yayınını açar. Normal Return geliştirme profili yalnız `return/return-process@1.0` tanımının gRPC yayınını açar. Profil dışı çalıştırmada yayın varsayılan olarak kapalı kalır. Yerel demo için iki ayrı terminalde:
 
 ```powershell
 docker compose -f samples/docker-compose.yml up -d
@@ -33,12 +33,12 @@ Set-Location samples/OrderProcess/SagaFlow.Order
 dotnet run --launch-profile SagaFlow.Order
 ```
 
-`https://localhost:50823/sagaflow/` sayfasını açıp **Process Explorer** girişini seçin. Normal Order profili, kendi gRPC tanım yayını kapalıyken de yerel `api/definitions` yanıtındaki `relationship: related` ile topolojiyi sunar. Return yayıncısı erişilebilirse grafik Order **Local · Resolved** → Return **Remote · Resolved** kenarını `related` etiketiyle gösterir. Düğüm workflow'a, bilgi düğmesi veya kenar Drawer'a gider. `GET /sagaflow/api/definition-graph?domain=order&process=order-process&version=1.0` mevcut allowlist ve gRPC keşif kurallarını kullanır. Dashboard DTO'ları endpoint adreslerini dışarıda bırakır. Return yayını erişilemezse ilişki ve `Remote · Unresolved` düğümü görünür, Drawer keşif nedenini gösterir. [Topoloji eşlemesi](../src/SagaFlow.Dashboard.Client/src/components/BigPicture/bigPictureMapping.ts).
+`https://localhost:50823/sagaflow/` sayfasını açıp **Process Explorer** girişini seçin. Normal Order profili yerel `api/definitions` yanıtında `related` ilişkisini gösterir. Return yayıncısı erişilebilirse grafik Order **Local · Resolved** → Return **Remote · Resolved** kenarını `related` etiketiyle gösterir. Düğüm workflow'a, bilgi düğmesi veya kenar Drawer'a gider. `GET /sagaflow/api/definition-graph?domain=order&process=order-process&version=1.0` adresi YAML’dan alıp gRPC isteği gönderir. Dashboard DTO'ları endpoint adreslerini dışarıda bırakır. Return yayını erişilemezse ilişki ve `Remote · Unresolved` düğümü görünür, Drawer keşif nedenini gösterir. [Topoloji eşlemesi](../src/SagaFlow.Dashboard.Client/src/components/BigPicture/bigPictureMapping.ts).
 
-Process Explorer açıkken istemci yapılandırılmış ilişkilerin mevcut Dashboard graph API yanıtını varsayılan **15 saniyede bir** yeniler; ayrı bir server hosted service veya SignalR topoloji olayı yoktur. Graph API her çağrıda mevcut gRPC Definition Discovery ve allowlist/timeout kurallarını kullanır. Tek zamanlayıcıyla üst üste binmeyen yenileme yapılır; gizli sekmede istek ertelenir, sayfadan ayrılınca istek iptal edilir. Uzak yayıncı açılınca hedef Resolved, kapanınca Unresolved, aynı adreste yeniden açılınca Resolved olur; bildirim için browser yenilemesi gerekmez. PE-01 ile graph isteklerinin sonuçları root bazında birleştirilir ve hatalar ayrı uyarıda gösterilir. Bir root için HTTP 401/403 geldiğinde o root’un önceki graph verisi kaldırılır. Geçici hatada aynı root’un daha önce başarıyla alınan verisi uyarıyla birlikte görünür kalabilir. Diğer root’ların başarılı sonuçları ve yerel `api/definitions` düğümleri erişilebilir kalır. Gerçek ayrı Order/Return süreçleriyle graph API durum geçişleri [Hosting testinde](../tests/SagaFlow.Hosting.Tests/SampleOrderReturnDiscoveryTests.cs), zamanlayıcı ve Drawer davranışı [istemci testlerinde](../src/SagaFlow.Dashboard.Client/tests/bigPicturePage.test.tsx) sınandı; gerçek tarayıcıda Order açıkken Return kapalı → açık → kapalı → yeniden açık ve Return önce → Order sonra geçişleri manuel yenilemesiz doğrulandı. Başlatma sırası önemli değildir: Order açıkken Return sonradan erişilebilir olursa sonraki yenilemede keşfedilir.
+Process Explorer açıkken istemci yapılandırılmış ilişkilerin mevcut Dashboard graph API yanıtını varsayılan **15 saniyede bir** yeniler; ayrı bir server hosted service veya SignalR topoloji olayı yoktur. Graph API her çağrıda YAML adresleriyle gRPC keşfi yapar ve mevcut zaman sınırlarını uygular. Tek zamanlayıcıyla üst üste binmeyen yenileme yapılır; gizli sekmede istek ertelenir, sayfadan ayrılınca istek iptal edilir. Uzak yayıncı açılınca hedef Resolved, kapanınca Unresolved, aynı adreste yeniden açılınca Resolved olur; bildirim için browser yenilemesi gerekmez. PE-01 ile graph isteklerinin sonuçları root bazında birleştirilir ve hatalar ayrı uyarıda gösterilir. Bir root için HTTP 401/403 geldiğinde o root’un önceki graph verisi kaldırılır. Geçici hatada aynı root’un daha önce başarıyla alınan verisi uyarıyla birlikte görünür kalabilir. Diğer root’ların başarılı sonuçları ve yerel `api/definitions` düğümleri erişilebilir kalır. Gerçek ayrı Order/Return süreçleriyle graph API durum geçişleri [Hosting testinde](../tests/SagaFlow.Hosting.Tests/SampleOrderReturnDiscoveryTests.cs), zamanlayıcı ve Drawer davranışı [istemci testlerinde](../src/SagaFlow.Dashboard.Client/tests/bigPicturePage.test.tsx) sınandı; gerçek tarayıcıda Order açıkken Return kapalı → açık → kapalı → yeniden açık ve Return önce → Order sonra geçişleri manuel yenilemesiz doğrulandı. Başlatma sırası önemli değildir: Order açıkken Return sonradan erişilebilir olursa sonraki yenilemede keşfedilir.
 Çoklu yerel tanım grafikleri birleştirilirken `(domain, process, version)` kimliği yerel Dashboard tanım listesinden alınır; aynı tanımın uzak keşif kopyası Local sahipliğini değiştiremez. Keşif hatası API yanıtı isteğe bağlı `requestedVersion` taşır; istemci hata nedenini kaynak kimliği, hedef kimliği ve istenen sürümle eşleştirir. Eski, sürüm alanı olmayan yanıtlarda neden yalnız eşleşme tek anlamlıysa gösterilir; belirsiz neden başka bir sürüme atanmaz. [Birleştirme testleri](../src/SagaFlow.Dashboard.Client/tests/bigPicturePage.test.tsx), [neden eşleme testleri](../src/SagaFlow.Dashboard.Client/tests/bigPictureGraph.test.tsx), [HTTP DTO testi](../tests/SagaFlow.Hosting.Tests/DefinitionDiscoveryIntegrationTests.cs).
 
-`DefinitionYamlCodec` açık ilişkiyi canonical YAML ve gRPC yayını boyunca korur. **Yerel Dashboard topolojisi** yerel tanımlar için kimlik doğrulama istemeden tanım ve graph API yanıtlarında görünür; endpoint adresleri yanıtlardan çıkarılır. Dashboard erişimi ağ veya host düzeyinde sınırlandırılmalıdır; Dashboard'a erişebilen herkes yerel ilişki metadata'sını okuyabilir. Otomatik middleware ve `MapSagaFlowDashboard` aynı davranışı uygular. **Uzak gRPC yayını** ayrıca `Publication.Enabled`, yerel tanım yayın allowlist'i ve topoloji için `IncludeBigPictureSources=true` gerektirir; varsayılan kapalıdır. Dashboard görünürlüğü bu koşulları değiştirmez. gRPC endpoint'i host'un kendi gRPC yetkilendirme yapılandırmasıyla, uzak keşif ise endpoint allowlist'iyle yönetilir. Yerel grafiğin uzak tanımı bulması yürütüm erişilebilirliğini veya herhangi bir Saga'nın başladığını kanıtlamaz. [Gerçek HTTP/gRPC testleri](../tests/SagaFlow.Hosting.Tests/DefinitionDiscoveryIntegrationTests.cs), [ayrı örnek process testi](../tests/SagaFlow.Hosting.Tests/SampleOrderReturnDiscoveryTests.cs) ve [Dashboard testleri](../src/SagaFlow.Dashboard.Client/tests/bigPictureGraph.test.tsx) bu kapsamı sınar.
+`DefinitionYamlCodec` açık ilişkiyi canonical YAML ve gRPC yayını boyunca korur. **Yerel Dashboard topolojisi** yerel tanımlar için kimlik doğrulama istemeden tanım ve graph API yanıtlarında görünür; endpoint adresleri yanıtlardan çıkarılır. Dashboard erişimi ağ veya host düzeyinde sınırlandırılmalıdır; Dashboard'a erişebilen herkes yerel ilişki metadata'sını okuyabilir. `UseDashboard()` ile otomatik kaydedilen endpoint’ler ve mevcut `MapSagaFlowDashboard` aynı okuma modelini kullanır. Otomatik rotalar host’un fallback yetkilendirme politikasına tabidir. **Uzak gRPC yayını** varsayılan olarak kapalıdır. `Publication.Enabled=true` ile host tüm yerel tanımlarını sunar. `IncludeBigPictureSources=true` yayımlanan tanıma topoloji referanslarını da ekler. gRPC uç noktasının erişim politikası host tarafından yönetilir. Yerel grafiğin uzak tanımı bulması yürütüm erişilebilirliğini veya herhangi bir Saga'nın başladığını kanıtlamaz. [Gerçek HTTP/gRPC testleri](../tests/SagaFlow.Hosting.Tests/DefinitionDiscoveryIntegrationTests.cs), [ayrı örnek process testi](../tests/SagaFlow.Hosting.Tests/SampleOrderReturnDiscoveryTests.cs) ve [Dashboard testleri](../src/SagaFlow.Dashboard.Client/tests/bigPictureGraph.test.tsx) bu kapsamı sınar.
 
 ## Model and YAML contract
 
@@ -124,7 +124,7 @@ Whitespace around operators is allowed. The syntax is case-sensitive and limited
 
 `LoadFromDirectory("saga")` loads top-level `.yaml` and `.yml` files in ordinal filename order during host startup. Paths are resolved relative to the host content root. Loading is all-or-nothing before registry registration; an invalid file or duplicate identity/version aborts startup. Multiple versions of a process are allowed. Duplicate identities are rejected even when content is identical. No watchers or remote calls run during local loading.
 
-`LoadFromYaml("saga/order.yaml")` remains available for one file. Choose one source mode. The direct `YamlSagaDefinitionLoader(sourceDirectory)` API confines file lookups to that directory. Symlinks/reparse points are rejected to avoid traversing outside the configured source. Unknown YAML properties, duplicate keys, additional documents, malformed content, explicit null collections, and invalid model fields are rejected with source and process/step context. Input is limited to 1 MiB, 256 steps, 128 transitions per step, and 128 Big-Picture references per definition.
+`LoadConfiguration("saga/order-process.yaml")` loads one file relative to the host content root or by absolute path. It uses the same loader and validation as `LoadFromYaml`, which remains available. Choose one source mode. The direct `YamlSagaDefinitionLoader(sourceDirectory)` API confines file lookups to that directory. Symlinks/reparse points are rejected to avoid traversing outside the configured source. Unknown YAML properties, duplicate keys, additional documents, malformed content, explicit null collections, and invalid model fields are rejected with source and process/step context. Input is limited to 1 MiB, 256 steps, 128 transitions per step, and 128 Big-Picture references per definition.
 
 Hosted startup resolves `ISagaDefinitionLoader` from DI and calls its `LoadAsync` for each configured file, including directory mode. Register a replacement/decorator before or after `AddSagaFlow`; the default loader uses `TryAddSingleton` so earlier registrations are preserved. Directory enumeration retains the shared filename ordering and path policy. The registry validates and atomically stores the loaded batch; a failed load cannot partially register local definitions. No additional loader abstraction is introduced.
 
@@ -139,31 +139,35 @@ using SagaFlow.Storage.InMemory.DependencyInjection;
 
 builder.Services.AddSagaFlow(options =>
 {
-    options.LoadFromDirectory("saga");
-    options.Publication.Enabled = true;
-    options.Publication.PublishedDefinitions.Add(new("order", "order-process", "1.0"));
-
-    // Opt in only if these topology addresses are safe to publish.
-    options.Publication.IncludeBigPictureSources = true;
-
-    options.Discovery.AllowedEndpoints.Add("https://payment-service:7001");
-    options.Discovery.AllowedEndpoints.Add("https://fulfillment-service:7002");
-    options.Discovery.RequestTimeout = TimeSpan.FromSeconds(3);
-    options.Discovery.OverallTimeout = TimeSpan.FromSeconds(15);
-    options.Discovery.MaximumDepth = 4;
-    options.Discovery.MaximumRequests = 32;
+    options.LoadConfiguration("saga/order-process.yaml");
+    options.Storage.UseInMemory();
+    options.UseDashboard();
 });
-builder.Services.AddSagaFlowInMemoryStorage();
 
 var app = builder.Build();
-app.MapSagaFlowDefinitionDiscovery();
+app.MapSagaFlowDefinitionDiscoveryIfEnabled();
 // Alternatively: app.MapSagaFlowDefinitionDiscovery().RequireAuthorization("definitions");
 app.Run();
 ```
 
-Registration follows ASP.NET Core's `AddGrpc`/`MapGrpcService` conventions internally. No domain-specific gRPC implementation is needed. Publication is disabled by default. Enabling it requires a nonempty exact identity allowlist and endpoint mapping; every published identity must be loaded locally or startup fails. Mapping while disabled or mapping twice fails clearly. A host with publication disabled can still load YAML and use discovery.
+Host configuration uses the standard ASP.NET Core providers. The following `appsettings.json` publishes the host's local definitions, including topology references.
 
-The host configures ordinary Kestrel HTTP/2 and TLS, certificates, and any authentication/authorization policy. The client uses HTTPS with normal system certificate verification. HTTP is rejected unless the host explicitly sets `Discovery.AllowInsecureHttp = true` and allowlists the exact HTTP origin, intended for local fixtures only. No certificate bypass, secret, or runtime command endpoint is added.
+```json
+{
+  "SagaFlow": {
+    "Publication": {
+      "Enabled": true,
+      "IncludeBigPictureSources": true
+    }
+  }
+}
+```
+
+Hosting binds these sections when it first resolves the registration. Configured scalar values take precedence over callback defaults. Dashboard opt-in and its path are configured through `options.UseDashboard(...)`. `SagaFlow:DefinitionPath` can override the single-file path and cannot be combined with directory loading. Publication and topology disclosure are opt-in. Publication requires endpoint mapping and includes all local definitions. The conditional mapper skips disabled publication. The strict mapper still rejects disabled publication, and both reject duplicate mapping. Discovery reads endpoint addresses from YAML regardless of the local publication setting.
+
+The host configures ordinary Kestrel HTTP/2 and TLS, certificates, and any authentication/authorization policy. The client accepts HTTP or HTTPS origins directly from YAML. HTTPS uses normal system certificate verification.
+
+Remove the former `SagaFlow:Publication:PublishedDefinitions`, `SagaFlow:Discovery:AllowedEndpoints`, and `SagaFlow:Discovery:AllowInsecureHttp` keys from existing settings and environment overrides. Configuration binding rejects obsolete keys.
 
 ## Protobuf service
 
@@ -175,7 +179,7 @@ Package `sagaflow.definitions.v1`, service `ProcessDefinitions`:
 - `GetDefinition(GetDefinitionRequest)` returns protocol version 1, an identity envelope, and canonical YAML.
 - An omitted request version succeeds only if exactly one published matching version exists. Multiple versions return `FailedPrecondition`; callers should pin a version. Missing/unpublished identities return `NotFound`; malformed identity requests return `InvalidArgument`.
 
-The server never returns file paths or raw source text. Canonical output contains only the supported public model. `bigPicture` references (including endpoint addresses) are omitted by default. Recursive traversal through a remote process requires that publisher to explicitly enable `IncludeBigPictureSources`; otherwise discovery ends at that process. Publication allowlists are independent of registry contents: remote entries and private local entries are excluded.
+The server never returns file paths or raw source text. Canonical output contains only the supported public model. `bigPicture` references (including endpoint addresses) are omitted by default. A publisher can enable `IncludeBigPictureSources` to let clients traverse its references. Publication is limited to definitions the host owns locally.
 
 ## Discovery and graph use
 
@@ -192,13 +196,13 @@ var graph = await discovery.DiscoverAsync(local.Definition, cancellationToken);
 // graph.Failures: source, requested target, categorized reason.
 ```
 
-Each call builds a new graph and leaves local definitions intact. Responses must match the request, protocol version, envelope and YAML identity. Invalid definitions are rejected. A failure on one branch does not remove successful siblings. Caller cancellation propagates; request deadlines become structured `Timeout` failures. Other categories include `UntrustedEndpoint`, `NotFound`, `AmbiguousVersion`, `Unavailable`, `InvalidResponse`, `Cycle`, and `LimitExceeded`. On some platforms a stopped endpoint may time out before its socket reports it unavailable; both outcomes are bounded.
+Each call builds a new graph and leaves local definitions intact. Responses must match the request, protocol version, envelope and YAML identity. Invalid definitions are rejected. A failure on one branch does not remove successful siblings. Caller cancellation propagates; request deadlines become structured `Timeout` failures. Other categories include `NotFound`, `AmbiguousVersion`, `Unavailable`, `InvalidResponse`, `Cycle`, and `LimitExceeded`. On some platforms a stopped endpoint may time out before its socket reports it unavailable; both outcomes are bounded.
 
 Discovery uses deterministic depth-first traversal, ancestor cycle checks, successful-response reuse per endpoint/request identity, a request limit, and a depth limit (root depth 0). The defaults are 4 levels and 32 requests. Configuration is limited to depth 1..16, requests 1..256, and per-request timeout at most one minute. Previously discovered identities are not recursively revisited; conflicting content for the same identity/version is rejected.
 
 `OverallTimeout` bounds the entire discovery operation (default 15 seconds, configurable from greater than zero up to five minutes). A linked operation deadline cancels an active request even when its per-request timeout is longer. Traversal stops globally after budget exhaustion, preserving already validated definitions and edges and returning a structured `OverallTimeout` failure for the interrupted/pending reference. Remaining references are not requested and their edges may be absent from the partial result. A per-request `Timeout` alone permits traversal to continue while overall time remains. Caller cancellation during an active call still propagates as `OperationCanceledException`. Discovery never updates the local registry. The sequential implementation retains its depth/request/cycle limits; synchronous parsing is bounded by definition-size limits and checks the deadline before accepting a response.
 
-Endpoints are absolute HTTP(S) origins with no credentials, query, fragment, or non-root path. Exact origin allowlisting is deny-by-default and applies to every transitive reference. Redirects and automatic proxy fallback are disabled. Trusting an origin includes trusting its DNS resolution and ownership; choose host-controlled endpoints. YAML and discovery graph contents are configuration, not untrusted request parameters. Protect graph output if it contains private topology. Direct `GrpcRemoteDefinitionClient` is the transport primitive; use `DefinitionDiscovery` for the endpoint policy and response validation.
+Endpoints are absolute HTTP(S) origins with no credentials, query, fragment, or non-root path. Discovery connects directly to origins in the local and published YAML. Published references can therefore cause the host to connect to additional origins. Use YAML from sources you trust. Redirects and automatic proxy fallback are disabled. `DefinitionDiscovery` validates responses and bounds traversal.
 
 ## Executable A/B/C demonstration
 
@@ -222,7 +226,13 @@ The fixture kills and waits for the child process tree in `DisposeAsync`, includ
 
 Bu paragraf ilk tanım keşfi PoC'sinin tarihsel sample durumudur: o aşamada `/demo/purchase-definition` ve `/demo/definition-graph` örnek uçları, `bigPicture: []` ve Dashboard değişikliği olmaması geçerliydi. Güncel Order → Return ilişkisi, demo adresi ve Dashboard grafiği için bu belgenin başındaki **Güncel process ilişkisi uzantısı** bölümüne bakın.
 
-The sample accepts the host-controlled `SagaFlow:DefinitionDirectory` setting (default `saga`) and `SagaFlow:PublishBigPictureSources` (default false). These permit the cross-process fixture to load a temporary definition directory and explicitly publish its safe topology; neither can be supplied through an RPC or HTTP query.
+The samples use `SagaFlow:Publication:Enabled` and `SagaFlow:Publication:IncludeBigPictureSources` in place of the former flat `PublishDefinitions` and `PublishBigPictureSources` keys. Order's Discovery and Domain launch profiles enable publication. All profiles discover remote definitions from their YAML references. Where a sample previously accepted `SagaFlow:DefinitionDirectory`, set `SagaFlow:DefinitionPath` to the intended YAML file. The cross-process fixture uses these settings to select one temporary file and explicitly publish its topology.
+
+Order PoC ayarları (2026-11-09) iki JSON dosyasında doğrulandı. Odak testlerinde **40 geçti, 0 başarısız, 0 atlandı** (Hosting 30, Samples 10). Solution build **0 uyarı, 0 hata**. Gerçek Order süreçleri varsayılan yerel grafik ve kapalı gRPC yayını ile isteğe bağlı Order → Return keşfini doğruladı. Procurement ve PostgreSQL süreç regresyonları da geçti. Tam .NET paketi ve tarayıcı testleri bu değişiklik için tekrarlanmadı. `git diff --check` geçti. Log `.artifacts/order-poc-settings-focused.log`.
+
+YAML adresiyle keşif (2026-11-09) odak testlerinde **49 geçti, 0 başarısız, 0 atlandı** (Engine 5, Hosting 34, Samples 10). Solution build **0 uyarı, 0 hata**. Gerçek HTTP/2 testleri varsayılan keşifle YAML adresine bağlanmayı, zincirleme keşfi, gRPC yayınının tüm yerel tanımları listelemesini ve uzak tanımların yayın dışında kalmasını sınadı. Procurement ve PostgreSQL süreç regresyonları geçti. Örnek JSON dosyaları ve `git diff --check` doğrulandı. Log `.artifacts/yaml-discovery-focused.log`.
+
+Tam izole .NET koşusunda **727 geçti, 0 başarısız, 0 atlandı** (Core 2, Engine 320, Hosting 89, RabbitMQ 72, Samples 223, PostgreSQL 21). Gerçek RabbitMQ vhost’u ve ayrı PostgreSQL sunucusu kullanıldı. Bu koşuda tarayıcı kabulü çalıştırılmadı. Log `.artifacts/yaml-discovery-full.log`.
 
 ## Dependencies and verification
 
@@ -318,7 +328,7 @@ GET {dashboardPath}/api/instances/{instanceId}/relationships
 
 `instanceId` is required and always **local**. Optional domain/process/version filters apply exactly to that local owner, not to the remote end of the relationship. Mismatching identity or missing instance returns 404. `perspective` is optional and case-sensitive (`Source` or `Target`); invalid values, negative/noninteger offset, or limit outside 1..100 return 400. Defaults: offset 0, limit 50. Response: `{ localInstanceId, items, nextOffset }`, where nextOffset is null on the last page. Ordering is incoming Target first, then source steps in definition order. A plain local Saga returns an empty items array; pagination does not turn a static definition reference into a runtime edge. Only GET is supported (405 otherwise).
 
-Both the automatic embedded middleware (including a configured Dashboard path) and explicit `/sagaflow` endpoint mapping share this handler. Existing instance list/detail DTOs are unchanged. This is a bounded **single-instance read**, not a process-wide or global relationship index. It snapshots at most one local Saga via `FindAsync`; existing store snapshot cost depends on that instance's size, and offset pagination is not a cross-request transactional snapshot. The existing unpaged instance list API is not redesigned here.
+Both the automatic Dashboard routes (including a configured Dashboard path) and explicit `/sagaflow` endpoint mapping share this handler. Existing instance list/detail DTOs are unchanged. This is a bounded **single-instance read**, not a process-wide or global relationship index. It snapshots at most one local Saga via `FindAsync`; existing store snapshot cost depends on that instance's size, and offset pagination is not a cross-request transactional snapshot. The existing unpaged instance list API is not redesigned here.
 
 Each item contains `invocationId`, `perspective`, source/target `{domain,process,version}`, `sourceSagaInstanceId`, `sourceStep`, `sourceCorrelationId`, nullable `targetSagaInstanceId`, `targetCorrelationId`, `lastKnownStatus`, `targetLocalStatus`, `createdAt`, `updatedAt`, `lastObservedAt`, and nullable `reconciliation {reason,requiredAt}`. Invocation ID is the logical relationship identity; preserve perspective/local owner when displaying observations from different hosts. Different invocations between identical definitions are not collapsed. Existing engine dedup/claim semantics remain responsible for one invocation per executable step and one incoming target claim. No cross-host merge service exists.
 

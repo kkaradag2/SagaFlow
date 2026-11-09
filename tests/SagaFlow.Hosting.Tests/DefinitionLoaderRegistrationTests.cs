@@ -35,7 +35,7 @@ public sealed class DefinitionLoaderRegistrationTests
             builder.Services.AddSagaFlow(options =>
             {
                 if (directoryMode) options.LoadFromDirectory(directory);
-                else options.LoadFromYaml(firstPath);
+                else options.LoadConfiguration(firstPath);
             });
             if (!registerBeforeSagaFlow) builder.Services.AddSingleton<ISagaDefinitionLoader>(loader);
             await using var app = builder.Build();

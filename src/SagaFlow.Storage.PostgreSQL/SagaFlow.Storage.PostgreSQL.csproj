@@ -8,6 +8,7 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.4" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
     <ProjectReference Include="..\SagaFlow.Core\SagaFlow.Core.csproj" />
+    <ProjectReference Include="..\SagaFlow.Hosting\SagaFlow.Hosting.csproj" />
     <EmbeddedResource Include="Schema\V001.sql" LogicalName="SagaFlow.PostgreSQL.V001.sql" />
   </ItemGroup>
 </Project>

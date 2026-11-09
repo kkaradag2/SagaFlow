@@ -10,6 +10,37 @@ namespace SagaFlow.Hosting.Tests;
 
 public sealed class StorageProviderRegistrationTests
 {
+    [Fact]
+    public void UnifiedOptionsRejectMultipleSelections()
+    {
+        var services = new ServiceCollection();
+        var error = Assert.Throws<InvalidOperationException>(() => services.AddSagaFlow(options =>
+        {
+            options.Storage.UseInMemory();
+            options.Storage.UseInMemory();
+        }));
+        Assert.Contains("Choose exactly one provider", error.Message);
+    }
+
+    [Fact]
+    public async Task UnifiedInMemorySelectionSharesTheStoreAndPersistsStateAcrossScopes()
+    {
+        var builder = CreateBuilder();
+        builder.Services.AddSagaFlow(options => options.Storage.UseInMemory());
+        using var host = builder.Build();
+        await host.StartAsync();
+
+        using var first = host.Services.CreateScope();
+        using var second = host.Services.CreateScope();
+        var store = Assert.IsType<InMemorySagaStateStore>(first.ServiceProvider.GetRequiredService<ISagaStateStore>());
+        var instance = new SagaFlow.Core.State.SagaInstance();
+        await store.SaveAsync(instance);
+        var secondStore = second.ServiceProvider.GetRequiredService<ISagaStateStore>();
+        Assert.Same(store, secondStore);
+        Assert.Equal(instance.Id, (await secondStore.FindAsync(instance.Id))!.Id);
+        await host.StopAsync();
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

@@ -40,13 +40,11 @@ public sealed partial class ProcessInvocationIntegrationTests
             server.Listen(IPAddress.Loopback, 0, endpoint => { endpoint.Protocols = HttpProtocols.Http1; http = endpoint; });
             server.Listen(IPAddress.Loopback, 0, endpoint => { endpoint.Protocols = HttpProtocols.Http2; grpc = endpoint; });
         });
-        builder.Services.AddSagaFlowInMemoryStorage();
         builder.Services.AddSagaFlow(options =>
         {
+            options.Storage.UseInMemory();
+            options.UseDashboard();
             options.Publication.Enabled = true;
-            foreach (var definition in definitions) options.Publication.PublishedDefinitions.Add(ProcessDefinitionId.From(definition));
-            options.Discovery.AllowInsecureHttp = true;
-            foreach (var reference in definitions.SelectMany(d => d.BigPicture)) options.Discovery.AllowedEndpoints.Add(reference.Endpoint);
             options.Discovery.RequestTimeout = TimeSpan.FromSeconds(1);
         });
         builder.Services.AddScoped<IProcessInvocationPolicy, Policy>();
@@ -63,7 +61,7 @@ public sealed partial class ProcessInvocationIntegrationTests
         });
         var app = builder.Build();
         app.Services.GetRequiredService<ProcessDefinitionRegistry>().RegisterLocalBatch(definitions);
-        app.MapSagaFlowDashboard(); app.MapSagaFlowDefinitionDiscovery();
+        app.MapSagaFlowDefinitionDiscovery();
         try { await app.StartAsync(); }
         catch { await app.DisposeAsync(); throw; }
         return new(app, $"http://127.0.0.1:{http!.IPEndPoint!.Port}/", $"http://127.0.0.1:{grpc!.IPEndPoint!.Port}/");

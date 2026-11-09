@@ -10,7 +10,7 @@ public sealed class GrpcRemoteDefinitionClient : IRemoteDefinitionClient
 {
     public async Task<RemoteDefinitionEnvelope> GetAsync(Uri endpoint, BigPictureSourceDefinition source, TimeSpan timeout, CancellationToken cancellationToken)
     {
-        // No redirects or proxy fallback to an origin not approved by discovery policy.
+        // Connect directly to the origin declared in the definition.
         using var handler = new SocketsHttpHandler { AllowAutoRedirect = false, UseProxy = false };
         using var channel = GrpcChannel.ForAddress(endpoint, new GrpcChannelOptions { HttpHandler = handler, MaxReceiveMessageSize = 2 * 1_048_576 });
         var client = new ProcessDefinitions.ProcessDefinitionsClient(channel);

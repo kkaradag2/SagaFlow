@@ -56,13 +56,13 @@ public sealed class InstanceTraceabilityApiTests
     {
         var builder = WebApplication.CreateBuilder(); builder.Logging.ClearProviders(); builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Services.AddSagaFlowInMemoryStorage();
-        builder.Services.AddSagaFlow(); builder.Services.AddSingleton<Bus>(); builder.Services.AddSingleton<Probe>();
+        builder.Services.AddSagaFlow(options => options.UseDashboard()); builder.Services.AddSingleton<Bus>(); builder.Services.AddSingleton<Probe>();
         builder.Services.AddSingleton<ISagaMessageBus>(p => p.GetRequiredService<Bus>());
         builder.Services.AddSingleton<IProcessInvocationBus>(p => p.GetRequiredService<Bus>());
         builder.Services.AddScoped<ProcessInvocationPublisher>();
         if (source) builder.Services.AddScoped<ILocalSagaStepHandler, Handler>();
         var app = builder.Build(); app.Services.GetRequiredService<ProcessDefinitionRegistry>().RegisterLocalBatch([Definition(source)]);
-        app.MapSagaFlowDashboard(); await app.StartAsync(); return app;
+        await app.StartAsync(); return app;
     }
     private static HttpClient Client(WebApplication app) => new() { BaseAddress = new(app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single()) };
     private static async Task<JsonElement> Detail(HttpClient client, string id)

@@ -5,7 +5,7 @@
       "launchBrowser": true,
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
-        "SagaFlow__PublishDefinitions": "true"
+        "SagaFlow__Publication__Enabled": "true"
       },
       "applicationUrl": "https://localhost:65305;http://localhost:65307"
     },
@@ -14,7 +14,7 @@
       "launchBrowser": false,
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
-        "SagaFlow__PublishDefinitions": "true"
+        "SagaFlow__Publication__Enabled": "true"
       },
       "applicationUrl": "https://localhost:65305;http://localhost:65307"
     }

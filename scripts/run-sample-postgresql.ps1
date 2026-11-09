@@ -13,6 +13,12 @@ $projectName = "SagaFlow.$domainName"
 $projectDirectory = Join-Path $repoRoot "samples/${domainName}Process/$projectName"
 $profile = if ($domainName -eq 'Order') { 'SagaFlow.Order.Domain' } else { $projectName }
 
+$registration = Get-Content -Raw -LiteralPath (Join-Path $projectDirectory 'Program.cs')
+if ($registration -notmatch '(?m)^\s*options\.Storage\.UsePostgreSql\(' -or
+    $registration -match '(?m)^\s*options\.Storage\.UseInMemory\(') {
+    throw "Select UsePostgreSql in $projectName/Program.cs before running this launcher. Comment out UseInMemory and uncomment the PostgreSQL registration block."
+}
+
 $composeJson = docker compose -f $composeFile config --format json
 if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the sample Compose configuration.' }
 $compose = $composeJson | Out-String | ConvertFrom-Json
@@ -33,17 +39,14 @@ $connection['Database'] = $database
 $connection['Username'] = $database
 $connection['Password'] = $password
 
-$previousProvider = $env:SagaFlow__Storage__Provider
-$previousConnection = $env:SagaFlow__Storage__ConnectionString
+$previousConnection = $env:ConnectionStrings__SagaFlow
 Push-Location $projectDirectory
 try {
-    $env:SagaFlow__Storage__Provider = 'PostgreSQL'
-    $env:SagaFlow__Storage__ConnectionString = $connection.ConnectionString
+    $env:ConnectionStrings__SagaFlow = $connection.ConnectionString
     dotnet run --project "$projectName.csproj" --launch-profile $profile
     if ($LASTEXITCODE -ne 0) { throw "$projectName exited with code $LASTEXITCODE." }
 }
 finally {
-    $env:SagaFlow__Storage__Provider = $previousProvider
-    $env:SagaFlow__Storage__ConnectionString = $previousConnection
+    $env:ConnectionStrings__SagaFlow = $previousConnection
     Pop-Location
 }

@@ -1,8 +1,9 @@
 using SagaFlow.Engine.Coordination;
 using SagaFlow.Hosting.DependencyInjection;
-using SagaFlow.Samples;
 using SagaFlow.Hosting.Endpoints;
 using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
+using SagaFlow.Storage.InMemory.DependencyInjection;
+using SagaFlow.Storage.PostgreSQL.DependencyInjection;
 
 namespace SagaFlow.Procurement;
 
@@ -11,26 +12,39 @@ public partial class ProcurementProgram
     public static async Task Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
-        builder.Services.AddControllers(); builder.Services.AddEndpointsApiExplorer(); builder.Services.AddSwaggerGen();
-        builder.Services.AddSingleton(TimeProvider.System); builder.Services.AddSingleton<PurchaseRepository>();
-        builder.Services.AddScoped<ProcurementService>(); builder.Services.AddScoped<ILocalSagaStepHandler, ProcurementOrderStep>();
+        AddDomainServices(builder.Services);
         builder.Services.AddSagaFlow(options =>
         {
-            options.LoadFromDirectory(builder.Configuration["SagaFlow:DefinitionDirectory"] ?? "saga");
-            options.Publication.Enabled = builder.Configuration.GetValue<bool>("SagaFlow:PublishDefinitions");
-            options.Publication.IncludeBigPictureSources = builder.Configuration.GetValue<bool>("SagaFlow:PublishBigPictureSources");
-            options.Publication.PublishedDefinitions.Add(new("procurement", "procurement-process", "1.0"));
-            foreach (var endpoint in builder.Configuration.GetSection("SagaFlow:Discovery:AllowedEndpoints").Get<string[]>() ?? [])
-                options.Discovery.AllowedEndpoints.Add(endpoint);
-            options.Discovery.AllowInsecureHttp = builder.Configuration.GetValue<bool>("SagaFlow:Discovery:AllowInsecureHttp");
-            options.Dashboard.DescribeDomainStarter = instance => new() { OperationName = "CreatePurchaseRequest", RollbackOperationName = "Local failure review",
-                Result = instance.Context.Clone() };
+            options.LoadConfiguration("saga/procurement-process.yaml");
+
+            options.Storage.UseInMemory();
+
+            // Alternative: PostgreSQL
+            // options.Storage.UsePostgreSql(storage =>
+            // {
+            //     storage.ConnectionString = builder.Configuration
+            //         .GetConnectionString("SagaFlow");
+            // });
+
+            options.Messaging.UseRabbitMq(rabbit =>
+            {
+                rabbit.ConnectionString = builder.Configuration
+                    .GetConnectionString("RabbitMq");
+            });
+
+            options.UseDashboard();
         });
-        await SampleSagaStorage.ConfigureAsync(builder, "procurement");
-        if (builder.Configuration.GetValue("RabbitMq:Enabled", true)) builder.Services.AddSagaFlowRabbitMq(builder.Configuration.GetRequiredSection("RabbitMq"));
+
         var app = builder.Build();
         if (app.Environment.IsDevelopment()) { app.UseSwagger(); app.UseSwaggerUI(); }
-        if (builder.Configuration.GetValue<bool>("SagaFlow:PublishDefinitions")) app.MapSagaFlowDefinitionDiscovery();
+        app.MapSagaFlowDefinitionDiscoveryIfEnabled();
         app.MapControllers(); await app.RunAsync();
+    }
+
+    internal static void AddDomainServices(IServiceCollection services)
+    {
+        services.AddControllers(); services.AddEndpointsApiExplorer(); services.AddSwaggerGen();
+        services.AddSingleton(TimeProvider.System); services.AddSingleton<PurchaseRepository>();
+        services.AddScoped<ProcurementService>(); services.AddScoped<ILocalSagaStepHandler, ProcurementOrderStep>();
     }
 }

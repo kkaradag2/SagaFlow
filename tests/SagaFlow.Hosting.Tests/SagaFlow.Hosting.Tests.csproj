@@ -24,13 +24,14 @@
     <ProjectReference Include="..\..\src\SagaFlow.Engine\SagaFlow.Engine.csproj" />
     <ProjectReference Include="..\..\src\SagaFlow.Core\SagaFlow.Core.csproj" />
     <ProjectReference Include="..\..\src\SagaFlow.Storage.InMemory\SagaFlow.Storage.InMemory.csproj" />
-    <ProjectReference Include="..\..\samples\OrderProcess\SagaFlow.Order\SagaFlow.Order.csproj" ReferenceOutputAssembly="false" />
-    <ProjectReference Include="..\..\samples\ReturnProcess\SagaFlow.Return\SagaFlow.Return.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\samples\OrderProcess\SagaFlow.Order\SagaFlow.Order.csproj" ReferenceOutputAssembly="false" Private="false" />
+    <ProjectReference Include="..\..\samples\ReturnProcess\SagaFlow.Return\SagaFlow.Return.csproj" ReferenceOutputAssembly="false" Private="false" />
   </ItemGroup>
 
   <Target Name="CopyDiscoveryProcessFixture" AfterTargets="Build">
     <ItemGroup>
-      <DiscoveryProcessFixture Include="$(MSBuildProjectDirectory)\..\..\samples\OrderProcess\SagaFlow.Order\bin\$(Configuration)\$(TargetFramework)\**\*" />
+      <DiscoveryProcessFixture Condition="'$(UseArtifactsOutput)' == 'true'" Include="$(ArtifactsPath)\bin\SagaFlow.Order\$(ArtifactsPivots)\**\*" />
+      <DiscoveryProcessFixture Condition="'$(UseArtifactsOutput)' != 'true'" Include="$(MSBuildProjectDirectory)\..\..\samples\OrderProcess\SagaFlow.Order\bin\$(Configuration)\$(TargetFramework)\**\*" />
     </ItemGroup>
     <Copy SourceFiles="@(DiscoveryProcessFixture)" DestinationFiles="@(DiscoveryProcessFixture->'$(OutDir)DiscoveryProcessFixture\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>

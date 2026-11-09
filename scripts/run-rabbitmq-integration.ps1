@@ -10,6 +10,7 @@ $composeFile = Join-Path $repoRoot 'samples/docker-compose.yml'
 $artifacts = Join-Path $repoRoot '.artifacts/rabbitmq-isolated'
 $testVhost = 'sagaflow-tests-' + [Guid]::NewGuid().ToString('N')
 $created = $false
+$previousRabbitMqConnection = $env:ConnectionStrings__RabbitMq
 
 if ([string]::IsNullOrWhiteSpace($env:SAGAFLOW_RABBITMQ_USERNAME) -or
     [string]::IsNullOrWhiteSpace($env:SAGAFLOW_RABBITMQ_PASSWORD)) {
@@ -31,6 +32,10 @@ try {
     $env:RabbitMq__UserName = $env:SAGAFLOW_RABBITMQ_USERNAME
     $env:RabbitMq__Password = $env:SAGAFLOW_RABBITMQ_PASSWORD
     $env:RabbitMq__HostName = if ($env:SAGAFLOW_RABBITMQ_HOST) { $env:SAGAFLOW_RABBITMQ_HOST } else { 'localhost' }
+    $rabbitUser = [Uri]::EscapeDataString($env:RabbitMq__UserName)
+    $rabbitPassword = [Uri]::EscapeDataString($env:RabbitMq__Password)
+    $rabbitPort = if ($env:RabbitMq__Port) { $env:RabbitMq__Port } else { 5672 }
+    $env:ConnectionStrings__RabbitMq = [UriBuilder]::new('amqp', $env:RabbitMq__HostName, $rabbitPort, $testVhost).Uri.AbsoluteUri.Replace('amqp://', "amqp://${rabbitUser}:${rabbitPassword}@")
     $env:SAGAFLOW_RABBITMQ_INTEGRATION = 'true'
     $env:SAGAFLOW_SAMPLE_RABBITMQ_INTEGRATION = 'true'
 
@@ -48,6 +53,7 @@ try {
     finally { Pop-Location }
 }
 finally {
+    $env:ConnectionStrings__RabbitMq = $previousRabbitMqConnection
     if ($created) {
         docker compose -f $composeFile exec -T rabbitmq rabbitmqctl delete_vhost $testVhost
         if ($LASTEXITCODE -ne 0) { Write-Warning "Test vhost $testVhost requires manual removal." }

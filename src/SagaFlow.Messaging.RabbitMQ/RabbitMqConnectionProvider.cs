@@ -39,18 +39,7 @@ internal sealed class RabbitMqConnectionProvider : IAsyncDisposable
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (_connection is { IsOpen: true }) return _connection;
 
-            var factory = new ConnectionFactory
-            {
-                HostName = _options!.HostName,
-                Port = _options.Port,
-                UserName = _options.UserName,
-                Password = _options.Password,
-                VirtualHost = _options.VirtualHost,
-                ClientProvidedName = _options.ClientProvidedName,
-                AutomaticRecoveryEnabled = true,
-                TopologyRecoveryEnabled = true
-            };
-
+            var factory = _options!.CreateConnectionFactory();
             _connection = await factory.CreateConnectionAsync(cancellationToken);
             return _connection;
         }

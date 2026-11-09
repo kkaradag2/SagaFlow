@@ -15,7 +15,10 @@ using SagaFlow.Order.Services;
 using SagaFlow.Procurement;
 using SagaFlow.Returns;
 using SagaFlow.Storage.InMemory;
+using SagaFlow.Storage.InMemory.DependencyInjection;
 using SagaFlow.Storage.PostgreSQL;
+using SagaFlow.Storage.PostgreSQL.DependencyInjection;
+using SagaFlow.Hosting.DependencyInjection;
 using Xunit.Abstractions;
 
 namespace SagaFlow.Samples.Tests;
@@ -42,14 +45,14 @@ public sealed class SamplePostgreSqlTests(ITestOutputHelper output)
     }
 
     [Theory]
-    [InlineData("Unknown", null, "Set SagaFlow:Storage:Provider for order to InMemory or PostgreSQL.")]
-    [InlineData("PostgreSQL", null, "Set SagaFlow:Storage:ConnectionString for order when using PostgreSQL.")]
-    [InlineData("PostgreSQL", "invalid", "valid PostgreSQL connection string for order")]
-    [InlineData("PostgreSQL", "Host=localhost;Database=sagaflow_return;Username=sagaflow_return", "Database and Username set to 'sagaflow_order'")]
-    public async Task InvalidStorageConfigurationFailsBeforeServingRequests(string provider, string? connection, string expected)
+    [InlineData(null, "Set the PostgreSQL ConnectionString")]
+    [InlineData(" ", "Set the PostgreSQL ConnectionString")]
+    [InlineData("invalid", "valid Npgsql connection string")]
+    [InlineData("Host=localhost;Username=sagaflow_order", "Specify Host and Database")]
+    public async Task InvalidStorageConfigurationFailsBeforeServingRequests(string? connection, string expected)
     {
         await using var host = SampleDomainProcess.Start("Order", SampleDomainProcess.AllocateEndpoints(1)[0],
-            StorageSettings(provider, connection));
+            StorageSettings(connection));
         Assert.Contains(expected, await host.WaitForStartupFailureAsync());
     }
 
@@ -58,10 +61,30 @@ public sealed class SamplePostgreSqlTests(ITestOutputHelper output)
     {
         var port = new Uri(SampleDomainProcess.AllocateEndpoints(1)[0]).Port;
         await using var host = SampleDomainProcess.Start("Order", SampleDomainProcess.AllocateEndpoints(1)[0],
-            StorageSettings("PostgreSQL", $"Host=127.0.0.1;Port={port};Database=sagaflow_order;Username=sagaflow_order;Timeout=1"));
+            StorageSettings($"Host=127.0.0.1;Port={port};Database=sagaflow_order;Username=sagaflow_order;Timeout=1"));
         var diagnostics = await host.WaitForStartupFailureAsync();
-        Assert.Contains("Cannot initialize SagaFlow PostgreSQL storage for order in 'sagaflow_order'", diagnostics);
+        Assert.Contains("Cannot initialize SagaFlow PostgreSQL storage.", diagnostics);
         Assert.Contains("Check PostgreSQL readiness, credentials, and schema version", diagnostics);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ConflictingFluentStorageSelectionsIdentifyBothProviders(bool inMemoryFirst)
+    {
+        var services = new ServiceCollection();
+        var error = Assert.Throws<InvalidOperationException>(() => services.AddSagaFlow(options =>
+        {
+            void SelectPostgreSql() => options.Storage.UsePostgreSql(storage =>
+                storage.ConnectionString = "Host=localhost;Database=sagaflow_order");
+            if (inMemoryFirst) options.Storage.UseInMemory();
+            SelectPostgreSql();
+            if (!inMemoryFirst) options.Storage.UseInMemory();
+        }));
+        Assert.Contains("Choose exactly one provider in options.Storage", error.Message);
+        Assert.Contains(nameof(InMemoryStorageServiceCollectionExtensions.UseInMemory), error.Message);
+        Assert.Contains(nameof(PostgreSqlStorageServiceCollectionExtensions.UsePostgreSql), error.Message);
+        Assert.DoesNotContain(services, service => service.ServiceType == typeof(ISagaStateStore));
     }
 
     [SamplePostgreSqlRabbitMqFact]
@@ -76,9 +99,18 @@ public sealed class SamplePostgreSqlTests(ITestOutputHelper output)
             var returns = Domain.Create("Return", endpoints[0], endpoints[1]);
             var orders = Domain.Create("Order", endpoints[2], endpoints[3]);
             var procurement = Domain.Create("Procurement", endpoints[4]);
+            var foreignConnection = new NpgsqlConnectionStringBuilder(orders.ConnectionString)
+            {
+                Database = new NpgsqlConnectionStringBuilder(returns.ConnectionString).Database
+            };
+            await using (var deniedHost = SampleDomainProcess.Start("Order", endpoints[2], StorageSettings(foreignConnection.ConnectionString)))
+            {
+                var diagnostics = await deniedHost.WaitForStartupFailureAsync();
+                Assert.Contains("Cannot initialize SagaFlow PostgreSQL storage.", diagnostics);
+                Assert.Contains(PostgresErrorCodes.InsufficientPrivilege, diagnostics);
+            }
             await UseTestDefinitionAsync(root, orders, "order-process.yaml", "https://localhost:65305", endpoints[1]);
             await UseTestDefinitionAsync(root, procurement, "procurement-process.yaml", "https://localhost:50823", endpoints[3]);
-            procurement.Settings["SagaFlow__Discovery__AllowedEndpoints__1"] = endpoints[1];
 
             var before = new List<(Domain Owner, SagaInstance Snapshot, string Detail, int ProcessId)>();
             await using var approvals = new WebApplicationFactory<ManagerApprovalProgram>();
@@ -201,17 +233,17 @@ public sealed class SamplePostgreSqlTests(ITestOutputHelper output)
         }
     }
 
-    private static Dictionary<string, string?> StorageSettings(string provider, string? connection) => new()
+    private static Dictionary<string, string?> StorageSettings(string? connection) => new()
     {
-        ["SagaFlow__Storage__Provider"] = provider,
-        ["SagaFlow__Storage__ConnectionString"] = connection,
+        // Explicitly override the sample template when testing missing connection settings.
+        ["ConnectionStrings__SagaFlow"] = connection ?? string.Empty,
         ["RabbitMq__Enabled"] = "false"
     };
 
     private static async Task AssertInMemoryAsync<T>() where T : class
     {
         await using var factory = new WebApplicationFactory<T>().WithWebHostBuilder(builder => builder
-            .UseSetting("RabbitMq:Enabled", "false").UseSetting("SagaFlow:Storage:Provider", "InMemory"));
+            .UseSetting("RabbitMq:Enabled", "false"));
         using var client = factory.CreateClient();
         Assert.IsType<InMemorySagaStateStore>(factory.Services.GetRequiredService<ISagaStateStore>());
         Assert.Equal("[]", (await client.GetStringAsync("/sagaflow/api/instances")).Trim());
@@ -223,9 +255,7 @@ public sealed class SamplePostgreSqlTests(ITestOutputHelper output)
         var yaml = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, file));
         Assert.Contains(original, yaml);
         await File.WriteAllTextAsync(Path.Combine(directory.FullName, file), yaml.Replace(original, endpoint, StringComparison.Ordinal));
-        domain.Settings["SagaFlow__DefinitionDirectory"] = directory.FullName;
-        domain.Settings["SagaFlow__Discovery__AllowedEndpoints__0"] = endpoint;
-        domain.Settings["SagaFlow__Discovery__AllowInsecureHttp"] = "true";
+        domain.Settings["SagaFlow__DefinitionPath"] = Path.Combine(directory.FullName, file);
     }
 
     private static async Task AssertGraphAsync(HttpClient client, string domain, string[] expectedDomains, params string[] edges)
@@ -294,11 +324,11 @@ public sealed class SamplePostgreSqlTests(ITestOutputHelper output)
                 Password = Environment.GetEnvironmentVariable($"SAGAFLOW_POSTGRES_{name.ToUpperInvariant()}_PASSWORD")
                     ?? $"sagaflow-{name.ToLowerInvariant()}-dev"
             }.ConnectionString;
-            var config = StorageSettings("PostgreSQL", connection);
+            var config = StorageSettings(connection);
             config["RabbitMq__Enabled"] = "true";
             config["RabbitMq__EnableProcessInvocations"] = (name != "Return").ToString();
-            config["SagaFlow__PublishDefinitions"] = "true";
-            config["SagaFlow__PublishBigPictureSources"] = "true";
+            config["SagaFlow__Publication__Enabled"] = "true";
+            config["SagaFlow__Publication__IncludeBigPictureSources"] = "true";
             if (grpcEndpoint is not null)
             {
                 config["Kestrel__Endpoints__Grpc__Url"] = grpcEndpoint;

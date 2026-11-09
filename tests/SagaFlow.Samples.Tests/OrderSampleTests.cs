@@ -188,11 +188,10 @@ public sealed class OrderSampleTests
         Assert.Equal(expectedStatus, root.GetProperty("status").GetString());
         Assert.Equal("order", root.GetProperty("definitionDomain").GetString());
         var starter = root.GetProperty("domainStarter");
-        Assert.Equal("CreateOrder", starter.GetProperty("operationName").GetString());
-        Assert.Equal("CancelOrder", starter.GetProperty("rollbackOperationName").GetString());
-        Assert.Equal("Completed", starter.GetProperty("status").GetString());
-        Assert.Equal(result.OrderId, starter.GetProperty("result").GetProperty("id").GetGuid());
-        foreach (var property in new[] { "input", "startedAt", "completedAt" })
+        Assert.Equal("Local operation", starter.GetProperty("operationName").GetString());
+        Assert.Equal("Local rollback", starter.GetProperty("rollbackOperationName").GetString());
+        Assert.Equal(result.OrderId, (await factory.Services.GetRequiredService<IOrderRepository>().FindAsync(result.OrderId))!.Id);
+        foreach (var property in new[] { "status", "result", "input", "startedAt", "completedAt" })
             Assert.Equal(JsonValueKind.Null, starter.GetProperty(property).ValueKind);
         Assert.Equal(new[] { "payment", "inventory", "managerNotification", "managerApproval", "shipment", "notification" },
             root.GetProperty("steps").EnumerateArray().Select(step => step.GetProperty("stepName").GetString()));
