@@ -16,6 +16,7 @@ using SagaFlow.Engine.Coordination;
 using SagaFlow.Engine.Messaging;
 using SagaFlow.Engine.ProcessDefinition;
 using SagaFlow.Hosting.DependencyInjection;
+using SagaFlow.Storage.InMemory.DependencyInjection;
 using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
 
 namespace SagaFlow.Messaging.RabbitMQ.Tests;
@@ -515,6 +516,7 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
     private async Task<WebApplication> StartDashboard(SagaDefinition definition, string? target = null, Action<IServiceCollection>? configure = null)
     {
         var builder = WebApplication.CreateBuilder(); builder.Logging.ClearProviders(); builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Services.AddSagaFlowInMemoryStorage();
         builder.Services.AddSagaFlow(); builder.Services.AddScoped<IProcessInvocationPolicy, Policy>();
         if (target is not null) { builder.Services.AddSingleton(new Target(target, false)); builder.Services.AddScoped<ILocalSagaStepHandler, Handler>(); }
         builder.Services.AddSagaFlowRabbitMq(options =>
@@ -570,6 +572,7 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
     private async Task<IHost> Start(SagaDefinition definition, string? target = null, bool failHandler = false)
     {
         var builder = Host.CreateApplicationBuilder(); builder.Logging.ClearProviders();
+        builder.Services.AddSagaFlowInMemoryStorage();
         builder.Services.AddSagaFlow();
         builder.Services.AddScoped<IProcessInvocationPolicy, Policy>();
         if (target is not null)

@@ -6,4 +6,6 @@ SagaFlow.Hosting provides in-process ASP.NET Core integration for embedding Saga
 
 See [YAML and gRPC documentation](../../docs/03-yaml-definition-discovery.md) for configuration, endpoint trust, Protobuf contracts, and the executable three-domain demonstration.
 
-`ISagaFlow`/`SagaCoordinator` and the outcome entry point are scoped; the default `ISagaStateStore` is a replaceable singleton InMemory adapter. `StartAsync(payload)` requires exactly one local process definition and an application-supplied `ISagaMessageBus`; no transport is silently substituted. See [runtime integration and lifetime details](../../docs/04-local-saga-coordination.md).
+`ISagaFlow`, `SagaCoordinator`, and the outcome entry point are scoped. The application must register exactly one unkeyed singleton `ISagaStateStore`. Reference `SagaFlow.Storage.InMemory` and call `AddSagaFlowInMemoryStorage()` from `SagaFlow.Storage.InMemory.DependencyInjection`, or register a custom store with `AddSingleton<ISagaStateStore, TStore>()`. Either registration can come before or after `AddSagaFlow()`.
+
+`StartAsync(payload)` requires exactly one local process definition and an application-supplied `ISagaMessageBus`. See [runtime integration and lifetime details](../../docs/04-local-saga-coordination.md).

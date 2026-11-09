@@ -10,6 +10,7 @@ using SagaFlow.Core.Messages;
 using SagaFlow.Core.State;
 using SagaFlow.Storage.InMemory;
 using SagaFlow.Hosting.DependencyInjection;
+using SagaFlow.Storage.InMemory.DependencyInjection;
 using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
 
 namespace SagaFlow.Messaging.RabbitMQ.Tests;
@@ -69,6 +70,7 @@ public sealed partial class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixt
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
         builder.Services.AddSingleton(broker.Connection);
+        builder.Services.AddSagaFlowInMemoryStorage();
         builder.Services.AddSagaFlow(options => options.LoadFromYaml(definitionPath));
         builder.Services.AddSagaFlowRabbitMq();
         var host = builder.Build();
@@ -708,6 +710,7 @@ public sealed partial class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixt
         builder.Logging.ClearProviders();
         builder.Services.AddSingleton(connection ?? broker.Connection);
         if (store is not null) builder.Services.AddSingleton(store);
+        else builder.Services.AddSagaFlowInMemoryStorage();
         builder.Services.AddSagaFlow(options => options.LoadFromYaml(definitionPath));
         builder.Services.AddSagaFlowRabbitMqUsingHostConnection(options =>
         {
@@ -725,6 +728,7 @@ public sealed partial class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixt
         var definitionPath = await WriteDefinitionAsync();
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
+        builder.Services.AddSagaFlowInMemoryStorage();
         builder.Services.AddSagaFlow(options => options.LoadFromYaml(definitionPath));
         builder.Services.AddSagaFlowRabbitMq(options =>
         {

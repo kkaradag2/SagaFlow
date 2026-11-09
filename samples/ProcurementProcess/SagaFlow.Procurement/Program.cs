@@ -1,5 +1,6 @@
 using SagaFlow.Engine.Coordination;
 using SagaFlow.Hosting.DependencyInjection;
+using SagaFlow.Storage.InMemory.DependencyInjection;
 using SagaFlow.Hosting.Endpoints;
 using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
 
@@ -25,6 +26,7 @@ public partial class ProcurementProgram
             options.Dashboard.DescribeDomainStarter = instance => new() { OperationName = "CreatePurchaseRequest", RollbackOperationName = "Local failure review",
                 Result = instance.Context.Clone() };
         });
+        builder.Services.AddSagaFlowInMemoryStorage();
         if (builder.Configuration.GetValue("RabbitMq:Enabled", true)) builder.Services.AddSagaFlowRabbitMq(builder.Configuration.GetRequiredSection("RabbitMq"));
         var app = builder.Build();
         if (app.Environment.IsDevelopment()) { app.UseSwagger(); app.UseSwaggerUI(); }

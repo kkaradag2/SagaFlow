@@ -1,4 +1,5 @@
 using SagaFlow.Hosting.DependencyInjection;
+using SagaFlow.Storage.InMemory.DependencyInjection;
 using SagaFlow.Hosting.Endpoints;
 using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
 using SagaFlow.Returns;
@@ -20,6 +21,7 @@ public partial class ReturnProgram
             options.Publication.Enabled = builder.Configuration.GetValue<bool>("SagaFlow:PublishDefinitions");
             options.Publication.PublishedDefinitions.Add(new("return", "return-process", "1.0"));
         });
+        builder.Services.AddSagaFlowInMemoryStorage();
         if (builder.Configuration.GetValue("RabbitMq:Enabled", true))
             builder.Services.AddSagaFlowRabbitMq(builder.Configuration.GetRequiredSection("RabbitMq"));
         var app = builder.Build();

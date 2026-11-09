@@ -17,6 +17,7 @@ using SagaFlow.Storage.InMemory;
 using SagaFlow.Engine.ProcessDefinition;
 using SagaFlow.Engine.Timeouts;
 using SagaFlow.Hosting.DependencyInjection;
+using SagaFlow.Storage.InMemory.DependencyInjection;
 using SagaFlow.Hosting.Dashboard;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
@@ -358,11 +359,12 @@ public sealed class LocalSagaCoordinationHostingTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task StoreAdapterCanBeReplacedBeforeOrAfterSagaFlowRegistration(bool registerFirst)
+    public async Task CustomStoreCanBeRegisteredBeforeOrAfterSagaFlowRegistration(bool registerFirst)
     {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         builder.Host.UseDefaultServiceProvider(options => { options.ValidateScopes = true; options.ValidateOnBuild = true; });
+        builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0));
         var services = builder.Services;
         var replacement = new TrackingStore();
         if (registerFirst) services.AddSingleton<ISagaStateStore>(replacement);
@@ -372,6 +374,7 @@ public sealed class LocalSagaCoordinationHostingTests
         await using var app = builder.Build();
         var provider = app.Services;
         provider.GetRequiredService<ProcessDefinitionRegistry>().RegisterLocalBatch([new DefinitionYamlCodec().Parse(Yaml)]);
+        await app.StartAsync();
         using var scope = provider.CreateScope();
         var id = await scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { id = 1 });
         Assert.Same(replacement, scope.ServiceProvider.GetRequiredService<ISagaStateStore>());
@@ -379,6 +382,7 @@ public sealed class LocalSagaCoordinationHostingTests
         Assert.Equal(1, replacement.Updates);
         Assert.NotNull(await ((ISagaStateStore)replacement).FindAsync(id));
         Assert.Single(Assert.IsType<ScopedTransport>(scope.ServiceProvider.GetRequiredService<ISagaMessageBus>()).Commands);
+        await app.StopAsync();
     }
 
     private const string Yaml = """
@@ -455,6 +459,7 @@ public sealed class LocalSagaCoordinationHostingTests
             builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0));
             var bus = new TestTransport();
             if (registerTransport) builder.Services.AddSingleton<ISagaMessageBus>(bus);
+            builder.Services.AddSagaFlowInMemoryStorage();
             builder.Services.AddSagaFlow(options =>
             {
                 options.LoadFromDirectory(directory);

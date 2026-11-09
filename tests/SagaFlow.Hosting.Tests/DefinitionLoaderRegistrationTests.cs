@@ -7,6 +7,7 @@ using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.Definitions;
 using SagaFlow.Engine.ProcessDefinition;
 using SagaFlow.Hosting.DependencyInjection;
+using SagaFlow.Storage.InMemory.DependencyInjection;
 
 namespace SagaFlow.Hosting.Tests;
 
@@ -30,6 +31,7 @@ public sealed class DefinitionLoaderRegistrationTests
             builder.Logging.ClearProviders();
             builder.WebHost.ConfigureKestrel(k => k.Listen(IPAddress.Loopback, 0));
             if (registerBeforeSagaFlow) builder.Services.AddSingleton<ISagaDefinitionLoader>(loader);
+            builder.Services.AddSagaFlowInMemoryStorage();
             builder.Services.AddSagaFlow(options =>
             {
                 if (directoryMode) options.LoadFromDirectory(directory);

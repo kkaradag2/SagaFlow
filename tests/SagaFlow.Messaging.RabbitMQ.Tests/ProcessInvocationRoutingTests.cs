@@ -4,6 +4,7 @@ using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.Messages;
 using SagaFlow.Engine.Messaging;
 using SagaFlow.Hosting.DependencyInjection;
+using SagaFlow.Storage.InMemory.DependencyInjection;
 using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
 namespace SagaFlow.Messaging.RabbitMQ.Tests;
 public sealed class ProcessInvocationRoutingTests
@@ -23,13 +24,18 @@ public sealed class ProcessInvocationRoutingTests
     [Fact]
     public void OptInRegistersGenericInvocationServicesAndDefaultKeepsParticipantTransport()
     {
-        var builder = Host.CreateApplicationBuilder(); builder.Services.AddSagaFlow();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSagaFlow();
+        builder.Services.AddSagaFlowInMemoryStorage();
         builder.Services.AddSagaFlowRabbitMq(options => options.EnableProcessInvocations = true);
         using var host = builder.Build();
         Assert.NotNull(host.Services.GetRequiredService<IProcessInvocationBus>());
         using var scope = host.Services.CreateScope();
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<ProcessInvocationReceiver>());
-        var plain = Host.CreateApplicationBuilder(); plain.Services.AddSagaFlow(); plain.Services.AddSagaFlowRabbitMq(_ => { });
+        var plain = Host.CreateApplicationBuilder();
+        plain.Services.AddSagaFlow();
+        plain.Services.AddSagaFlowInMemoryStorage();
+        plain.Services.AddSagaFlowRabbitMq(_ => { });
         using var plainHost = plain.Build();
         Assert.Null(plainHost.Services.GetService<IProcessInvocationBus>());
         Assert.NotNull(plainHost.Services.GetRequiredService<ISagaMessageBus>());

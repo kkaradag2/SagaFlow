@@ -15,6 +15,7 @@ using SagaFlow.Engine.Coordination;
 using SagaFlow.Engine.Discovery;
 using SagaFlow.Engine.ProcessDefinition;
 using SagaFlow.Hosting.DependencyInjection;
+using SagaFlow.Storage.InMemory.DependencyInjection;
 using SagaFlow.Hosting.Endpoints;
 using SagaFlow.Hosting.Grpc.V1;
 
@@ -317,6 +318,7 @@ public sealed class DefinitionDiscoveryIntegrationTests
     {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
+        builder.Services.AddSagaFlowInMemoryStorage();
         builder.Services.AddSagaFlow(o => { o.Publication.Enabled = true; o.Publication.PublishedDefinitions.Add(new("absent", "absent", "1.0")); });
         await using var app = builder.Build();
         app.MapSagaFlowDefinitionDiscovery();
@@ -328,6 +330,7 @@ public sealed class DefinitionDiscoveryIntegrationTests
     public async Task EnabledPublicationWithoutMappingFailsStartup()
     {
         var builder = Builder();
+        builder.Services.AddSagaFlowInMemoryStorage();
         builder.Services.AddSagaFlow(o => { o.Publication.Enabled = true; o.Publication.PublishedDefinitions.Add(new("order", "order-process", "1.0")); });
         await using var app = builder.Build();
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => app.StartAsync());
@@ -394,6 +397,7 @@ public sealed class DefinitionDiscoveryIntegrationTests
             versions ??= ["1.0"];
             foreach (var version in versions)
                 await File.WriteAllTextAsync(Path.Combine(directory, version + ".yaml"), new DefinitionYamlCodec().Serialize(Definition(domain, process, references, version)));
+            builder.Services.AddSagaFlowInMemoryStorage();
             builder.Services.AddSagaFlow(options =>
             {
                 options.LoadFromDirectory(directory);
