@@ -1,0 +1,34 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "Order",
+      "Group": "SagaFlow",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "sagaflow_order",
+      "Username": "sagaflow_order",
+      "DBRestriction": "sagaflow_order",
+      "ConnectionParameters": { "sslmode": "prefer" }
+    },
+    "2": {
+      "Name": "Return",
+      "Group": "SagaFlow",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "sagaflow_return",
+      "Username": "sagaflow_return",
+      "DBRestriction": "sagaflow_return",
+      "ConnectionParameters": { "sslmode": "prefer" }
+    },
+    "3": {
+      "Name": "Procurement",
+      "Group": "SagaFlow",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "sagaflow_procurement",
+      "Username": "sagaflow_procurement",
+      "DBRestriction": "sagaflow_procurement",
+      "ConnectionParameters": { "sslmode": "prefer" }
+    }
+  }
+}

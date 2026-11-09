@@ -1,6 +1,7 @@
 param(
     [switch]$TestsOnly,
-    [string]$Filter
+    [string]$Filter,
+    [string]$Logger = 'console;verbosity=minimal'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,7 +17,7 @@ if ([string]::IsNullOrWhiteSpace($env:SAGAFLOW_RABBITMQ_USERNAME) -or
 }
 
 try {
-    docker compose -f $composeFile up -d --wait
+    docker compose -f $composeFile up -d --wait rabbitmq
     if ($LASTEXITCODE -ne 0) { throw 'RabbitMQ Compose service did not become healthy.' }
 
     docker compose -f $composeFile exec -T rabbitmq rabbitmqctl add_vhost $testVhost
@@ -39,7 +40,7 @@ try {
             dotnet build SagaFlow.slnx --artifacts-path $artifacts --verbosity quiet
             if ($LASTEXITCODE -ne 0) { throw 'Full solution build failed.' }
         }
-        $testArgs = @('test', 'SagaFlow.slnx', '--artifacts-path', $artifacts, '--no-build', '--no-restore', '--logger', 'console;verbosity=minimal', '-m:1')
+        $testArgs = @('test', 'SagaFlow.slnx', '--artifacts-path', $artifacts, '--no-build', '--no-restore', '--logger', $Logger, '-m:1')
         if ($Filter) { $testArgs += @('--filter', $Filter) }
         dotnet @testArgs
         if ($LASTEXITCODE -ne 0) { throw 'Full solution tests failed.' }

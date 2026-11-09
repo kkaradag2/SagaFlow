@@ -1,5 +1,5 @@
 using SagaFlow.Hosting.DependencyInjection;
-using SagaFlow.Storage.InMemory.DependencyInjection;
+using SagaFlow.Samples;
 using SagaFlow.Hosting.Endpoints;
 using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
 using SagaFlow.Returns;
@@ -7,7 +7,7 @@ using SagaFlow.Returns;
 
 public partial class ReturnProgram
 {
-    public static void Main(string[] args)
+    public static async Task Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
         builder.Services.AddControllers();
@@ -21,13 +21,13 @@ public partial class ReturnProgram
             options.Publication.Enabled = builder.Configuration.GetValue<bool>("SagaFlow:PublishDefinitions");
             options.Publication.PublishedDefinitions.Add(new("return", "return-process", "1.0"));
         });
-        builder.Services.AddSagaFlowInMemoryStorage();
+        await SampleSagaStorage.ConfigureAsync(builder, "return");
         if (builder.Configuration.GetValue("RabbitMq:Enabled", true))
             builder.Services.AddSagaFlowRabbitMq(builder.Configuration.GetRequiredSection("RabbitMq"));
         var app = builder.Build();
         if (app.Environment.IsDevelopment()) { app.UseSwagger(); app.UseSwaggerUI(); }
         if (builder.Configuration.GetValue<bool>("SagaFlow:PublishDefinitions")) app.MapSagaFlowDefinitionDiscovery();
         app.MapControllers();
-        app.Run();
+        await app.RunAsync();
     }
 }

@@ -17,5 +17,43 @@ services:
       retries: 12
       start_period: 10s
 
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${SAGAFLOW_POSTGRES_ADMIN_USER:-postgres}
+      POSTGRES_PASSWORD: ${SAGAFLOW_POSTGRES_ADMIN_PASSWORD:-sagaflow-admin-dev}
+      POSTGRES_DB: postgres
+      SAGAFLOW_POSTGRES_ORDER_PASSWORD: ${SAGAFLOW_POSTGRES_ORDER_PASSWORD:-sagaflow-order-dev}
+      SAGAFLOW_POSTGRES_RETURN_PASSWORD: ${SAGAFLOW_POSTGRES_RETURN_PASSWORD:-sagaflow-return-dev}
+      SAGAFLOW_POSTGRES_PROCUREMENT_PASSWORD: ${SAGAFLOW_POSTGRES_PROCUREMENT_PASSWORD:-sagaflow-procurement-dev}
+    ports:
+      - "127.0.0.1:${SAGAFLOW_POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - sagaflow-postgres-data:/var/lib/postgresql/data
+      - ./postgres/init-domains.sql:/docker-entrypoint-initdb.d/10-sagaflow-domains.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d postgres"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  pgadmin:
+    image: dpage/pgadmin4:9.19
+    profiles: ["pgadmin"]
+    environment:
+      # Local development defaults. Override these before creating the pgAdmin volume.
+      PGADMIN_DEFAULT_EMAIL: ${SAGAFLOW_PGADMIN_EMAIL:-pgadmin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${SAGAFLOW_PGADMIN_PASSWORD:-sagaflow-pgadmin-dev}
+      PGADMIN_DISABLE_POSTFIX: "1"
+      PGADMIN_LISTEN_ADDRESS: "0.0.0.0"
+    ports:
+      - "127.0.0.1:${SAGAFLOW_PGADMIN_PORT:-5050}:80"
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+      - ./pgadmin/servers.json:/pgadmin4/servers.json:ro
+
 volumes:
   sagaflow-rabbitmq-data:
+  sagaflow-postgres-data:
+  pgadmin-data:

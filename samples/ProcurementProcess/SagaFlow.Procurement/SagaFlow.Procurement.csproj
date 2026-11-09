@@ -4,6 +4,8 @@
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.2.3" />
     <ProjectReference Include="../../../src/SagaFlow.Hosting/SagaFlow.Hosting.csproj" />
     <ProjectReference Include="../../../src/SagaFlow.Storage.InMemory/SagaFlow.Storage.InMemory.csproj" />
+    <ProjectReference Include="../../../src/SagaFlow.Storage.PostgreSQL/SagaFlow.Storage.PostgreSQL.csproj" />
+    <Compile Include="../../DomainStarters/Shared/SampleSagaStorage.cs" Link="SampleSagaStorage.cs" />
     <ProjectReference Include="../../../src/SagaFlow.Messaging.RabbitMQ/SagaFlow.Messaging.RabbitMQ.csproj" />
   </ItemGroup>
 </Project>

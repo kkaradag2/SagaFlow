@@ -3,7 +3,7 @@ using FluentValidation;
 using FluentValidation.AspNetCore;
 using Microsoft.AspNetCore.Mvc;
 using SagaFlow.Hosting.DependencyInjection;
-using SagaFlow.Storage.InMemory.DependencyInjection;
+using SagaFlow.Samples;
 using SagaFlow.Hosting.Dashboard;
 using SagaFlow.Hosting.Endpoints;
 using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
@@ -80,7 +80,7 @@ builder.Services.AddSagaFlow(options =>
             }
             : null;
 });
-builder.Services.AddSagaFlowInMemoryStorage();
+await SampleSagaStorage.ConfigureAsync(builder, "order");
 if (builder.Configuration.GetValue("RabbitMq:Enabled", true))
     builder.Services.AddSagaFlowRabbitMq(builder.Configuration.GetRequiredSection("RabbitMq"));
 
@@ -95,7 +95,7 @@ if (app.Environment.IsDevelopment())
 if (publishDefinitions) app.MapSagaFlowDefinitionDiscovery();
 app.MapControllers();
 
-app.Run();
+await app.RunAsync();
 
 static string ToJsonFieldPath(string field) =>
     string.Join('.', field.Split('.').Select(JsonNamingPolicy.CamelCase.ConvertName));
