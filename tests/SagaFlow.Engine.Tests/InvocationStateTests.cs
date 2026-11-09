@@ -3,7 +3,7 @@ using SagaFlow.Core.Definitions;
 using SagaFlow.Core.Messages;
 using SagaFlow.Core.State;
 using SagaFlow.Engine.Coordination;
-using SagaFlow.Engine.Persistence.InMemory;
+using SagaFlow.Storage.InMemory;
 using SagaFlow.Engine.ProcessDefinition;
 
 namespace SagaFlow.Engine.Tests;

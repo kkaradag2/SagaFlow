@@ -1,5 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="SagaFlow.Engine" />
+    <InternalsVisibleTo Include="SagaFlow.Storage.InMemory" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>

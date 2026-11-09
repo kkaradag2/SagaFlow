@@ -1,6 +1,4 @@
-using SagaFlow.Core.State;
-
-namespace SagaFlow.Engine.ContextState;
+namespace SagaFlow.Core.State;
 
 internal static class SagaStateSnapshot
 {

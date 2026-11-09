@@ -7,7 +7,7 @@ using SagaFlow.Hosting.Definitions;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using SagaFlow.Engine.ContextState;
 using SagaFlow.Engine.Messaging;
-using SagaFlow.Engine.Persistence.InMemory;
+using SagaFlow.Storage.InMemory;
 using SagaFlow.Hosting.Dashboard;
 using Microsoft.AspNetCore.Hosting;
 using SagaFlow.Engine.Timeouts;

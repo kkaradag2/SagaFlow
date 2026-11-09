@@ -1,7 +1,7 @@
 using System.Text.Json;
 using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.State;
-using SagaFlow.Engine.Persistence.InMemory;
+using SagaFlow.Storage.InMemory;
 
 namespace SagaFlow.Engine.Tests;
 

@@ -7,7 +7,7 @@ using SagaFlow.Core.State;
 using SagaFlow.Engine.ContextState;
 using SagaFlow.Engine.Coordination;
 using SagaFlow.Engine.Messaging;
-using SagaFlow.Engine.Persistence.InMemory;
+using SagaFlow.Storage.InMemory;
 using SagaFlow.Engine.ProcessDefinition;
 using SagaFlow.Engine.Notifications;
 using SagaFlow.Engine.Consistency;

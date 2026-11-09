@@ -24,6 +24,7 @@
     <Project Path="src/SagaFlow.Dashboard/SagaFlow.Dashboard.csproj" />
     <Project Path="src/SagaFlow.Engine/SagaFlow.Engine.csproj" />
     <Project Path="src/SagaFlow.Messaging.RabbitMQ/SagaFlow.Messaging.RabbitMQ.csproj" />
+    <Project Path="src/SagaFlow.Storage.InMemory/SagaFlow.Storage.InMemory.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/SagaFlow.Hosting.Tests/SagaFlow.Hosting.Tests.csproj" />
