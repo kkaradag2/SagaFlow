@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using SagaFlow.Engine.Coordination;
 using SagaFlow.Hosting.DependencyInjection;
+using SagaFlow.Storage.InMemory.DependencyInjection;
 
 namespace SagaFlow.Hosting.Tests;
 
@@ -11,6 +12,7 @@ public sealed class HostingRegistrationSmokeTests
     {
         var services = new ServiceCollection();
 
+        services.AddSagaFlowInMemoryStorage();
         services.AddSagaFlow(options => options.LoadFromYaml("saga/purchase-process.yaml"));
 
         using var provider = services.BuildServiceProvider();

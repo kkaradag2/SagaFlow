@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using SagaFlow.Hosting.DependencyInjection;
+using SagaFlow.Storage.InMemory.DependencyInjection;
 using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
 
 namespace SagaFlow.Messaging.RabbitMQ.Tests;
@@ -23,6 +24,7 @@ public sealed class RabbitMqRegistrationTests
         }).Build();
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSagaFlowInMemoryStorage();
         services.AddSagaFlow();
 
         services.AddSagaFlowRabbitMq(configuration.GetRequiredSection("RabbitMq"));

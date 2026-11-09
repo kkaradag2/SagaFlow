@@ -7,7 +7,6 @@ using SagaFlow.Hosting.Definitions;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using SagaFlow.Engine.ContextState;
 using SagaFlow.Engine.Messaging;
-using SagaFlow.Storage.InMemory;
 using SagaFlow.Hosting.Dashboard;
 using Microsoft.AspNetCore.Hosting;
 using SagaFlow.Engine.Timeouts;
@@ -43,7 +42,6 @@ public static class SagaFlowServiceCollectionExtensions
 
         services.AddSingleton(options);
         services.TryAddSingleton<ISagaDefinitionLoader, YamlSagaDefinitionLoader>();
-        services.TryAddSingleton<ISagaStateStore, InMemorySagaStateStore>();
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton<ISagaClock>(provider => new SystemSagaClock(provider.GetRequiredService<TimeProvider>()));
         services.AddSingleton<SagaTimeoutDetector>();
@@ -70,7 +68,12 @@ public static class SagaFlowServiceCollectionExtensions
         services.AddSingleton(discovery);
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IStartupFilter, SagaFlowDashboardStartupFilter>());
         services.AddHostedService<DefinitionLoadingService>();
-        services.AddHostedService<SagaTimeoutDetectionService>();
+        services.AddHostedService(provider =>
+        {
+            // The timeout worker requires the store at construction. Validate before DI resolves it.
+            StorageProviderValidation.Validate(services, provider);
+            return ActivatorUtilities.CreateInstance<SagaTimeoutDetectionService>(provider);
+        });
         if (publication.Enabled) services.AddGrpc();
 
         return services;

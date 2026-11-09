@@ -6,6 +6,7 @@ using SagaFlow.Core.Messages;
 using SagaFlow.Engine.Coordination;
 using SagaFlow.Engine.ProcessDefinition;
 using SagaFlow.Hosting.DependencyInjection;
+using SagaFlow.Storage.InMemory.DependencyInjection;
 
 namespace SagaFlow.Hosting.Tests;
 public sealed class InvocationExecutionTests
@@ -16,6 +17,7 @@ public sealed class InvocationExecutionTests
     public async Task EngineCreatesIsolatedScopesAndStableLocalRegistrations(bool fail)
     {
         var services = new ServiceCollection();
+        services.AddSagaFlowInMemoryStorage();
         services.AddSagaFlow();
         services.AddSingleton<ISagaMessageBus, Bus>();
         services.AddScoped<ILocalSagaStepHandler, Handler>();

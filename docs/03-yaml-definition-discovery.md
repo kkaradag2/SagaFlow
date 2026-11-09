@@ -135,6 +135,7 @@ Hosted startup resolves `ISagaDefinitionLoader` from DI and calls its `LoadAsync
 ```csharp
 using SagaFlow.Hosting.DependencyInjection;
 using SagaFlow.Hosting.Endpoints;
+using SagaFlow.Storage.InMemory.DependencyInjection;
 
 builder.Services.AddSagaFlow(options =>
 {
@@ -152,6 +153,7 @@ builder.Services.AddSagaFlow(options =>
     options.Discovery.MaximumDepth = 4;
     options.Discovery.MaximumRequests = 32;
 });
+builder.Services.AddSagaFlowInMemoryStorage();
 
 var app = builder.Build();
 app.MapSagaFlowDefinitionDiscovery();

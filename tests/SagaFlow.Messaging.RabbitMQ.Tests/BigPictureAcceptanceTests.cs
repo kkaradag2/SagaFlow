@@ -16,6 +16,7 @@ using SagaFlow.Engine.Messaging;
 using SagaFlow.Engine.Notifications;
 using SagaFlow.Engine.ProcessDefinition;
 using SagaFlow.Hosting.DependencyInjection;
+using SagaFlow.Storage.InMemory.DependencyInjection;
 using SagaFlow.Hosting.Endpoints;
 using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
 
@@ -39,6 +40,7 @@ public sealed partial class ProcessInvocationIntegrationTests
             server.Listen(IPAddress.Loopback, 0, endpoint => { endpoint.Protocols = HttpProtocols.Http1; http = endpoint; });
             server.Listen(IPAddress.Loopback, 0, endpoint => { endpoint.Protocols = HttpProtocols.Http2; grpc = endpoint; });
         });
+        builder.Services.AddSagaFlowInMemoryStorage();
         builder.Services.AddSagaFlow(options =>
         {
             options.Publication.Enabled = true;

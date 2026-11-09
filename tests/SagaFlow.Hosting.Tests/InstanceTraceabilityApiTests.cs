@@ -15,6 +15,7 @@ using SagaFlow.Engine.Coordination;
 using SagaFlow.Engine.Messaging;
 using SagaFlow.Engine.ProcessDefinition;
 using SagaFlow.Hosting.DependencyInjection;
+using SagaFlow.Storage.InMemory.DependencyInjection;
 using SagaFlow.Hosting.Endpoints;
 
 namespace SagaFlow.Hosting.Tests;
@@ -54,6 +55,7 @@ public sealed class InstanceTraceabilityApiTests
     private static async Task<WebApplication> Host(bool source)
     {
         var builder = WebApplication.CreateBuilder(); builder.Logging.ClearProviders(); builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Services.AddSagaFlowInMemoryStorage();
         builder.Services.AddSagaFlow(); builder.Services.AddSingleton<Bus>(); builder.Services.AddSingleton<Probe>();
         builder.Services.AddSingleton<ISagaMessageBus>(p => p.GetRequiredService<Bus>());
         builder.Services.AddSingleton<IProcessInvocationBus>(p => p.GetRequiredService<Bus>());

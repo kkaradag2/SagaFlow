@@ -58,13 +58,20 @@ The internal structure of SagaFlow intentionally follows the six feature groups 
 ## Intended Usage
 
 ```csharp
+using SagaFlow.Hosting.DependencyInjection;
+using SagaFlow.Storage.InMemory.DependencyInjection;
+
 builder.Services.AddSagaFlow(options =>
 {
     options.LoadFromYaml("saga/order-process.yaml");
     // Dashboard is enabled by default at /sagaflow.
     // options.Dashboard.Path = "/dashboard";
 });
+builder.Services.AddSagaFlowInMemoryStorage();
 ```
+
+Reference `SagaFlow.Storage.InMemory` to select InMemory. You can register it before or after
+`AddSagaFlow()`. To use a custom provider, register one unkeyed singleton `ISagaStateStore` instead.
 
 `AddSagaFlow()` automatically hosts the read-only dashboard and its state API. Set
 `options.Dashboard.Enabled = false` to disable it. `UseSagaFlowDashboard()` remains

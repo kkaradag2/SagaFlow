@@ -3,6 +3,7 @@ using FluentValidation;
 using FluentValidation.AspNetCore;
 using Microsoft.AspNetCore.Mvc;
 using SagaFlow.Hosting.DependencyInjection;
+using SagaFlow.Storage.InMemory.DependencyInjection;
 using SagaFlow.Hosting.Dashboard;
 using SagaFlow.Hosting.Endpoints;
 using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
@@ -79,6 +80,7 @@ builder.Services.AddSagaFlow(options =>
             }
             : null;
 });
+builder.Services.AddSagaFlowInMemoryStorage();
 if (builder.Configuration.GetValue("RabbitMq:Enabled", true))
     builder.Services.AddSagaFlowRabbitMq(builder.Configuration.GetRequiredSection("RabbitMq"));
 
