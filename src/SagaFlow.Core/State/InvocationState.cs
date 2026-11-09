@@ -6,7 +6,8 @@ public sealed record InvocationProgress(ExternalProcessStatus Status, string? Ta
     DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, DateTimeOffset? LastObservedAt, string? RejectionReason = null);
 
 /// <summary>Source linkage owned by the accepting local target instance. No access to source state is required.</summary>
-public sealed record IncomingInvocation(ProcessInvocationIdentity Identity, DateTimeOffset CreatedAt, DateTimeOffset AcceptedAt, System.Text.Json.JsonElement? Payload = null);
+public sealed record IncomingInvocation(ProcessInvocationIdentity Identity, DateTimeOffset CreatedAt, DateTimeOffset AcceptedAt,
+    System.Text.Json.JsonElement? Payload = null, InvocationMessage? RequestMessage = null);
 
 /// <summary>Local publish attempt only. Requested does not assert broker confirmation or business acceptance.</summary>
 public sealed record InvocationPublication(string? ActiveAttemptId, DateTimeOffset AttemptedAt, string? LastError);

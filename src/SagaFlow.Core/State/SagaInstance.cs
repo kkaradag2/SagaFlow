@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace SagaFlow.Core.State;
 
@@ -6,6 +7,9 @@ public sealed class SagaInstance
 {
     public SagaFlow.Core.Messages.ProcessInvocationTerminalOutcome? InvocationTerminalOutcome { get; set; }
     public IncomingInvocation? IncomingInvocation { get; set; }
+    /// <summary>The reported participant outcome preserved when the execution history was missing.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SagaFlow.Core.Messages.SagaOutcomeEvent? RecoveryOutcome { get; init; }
     public string Id { get; init; } = Guid.NewGuid().ToString("N");
 
     public string DefinitionName { get; init; } = string.Empty;

@@ -19,5 +19,8 @@
     <ProjectReference Include="..\..\src\SagaFlow.Messaging.RabbitMQ\SagaFlow.Messaging.RabbitMQ.csproj" />
     <ProjectReference Include="..\..\src\SagaFlow.Hosting\SagaFlow.Hosting.csproj" />
     <ProjectReference Include="..\..\src\SagaFlow.Storage.InMemory\SagaFlow.Storage.InMemory.csproj" />
+    <ProjectReference Include="..\..\src\SagaFlow.Storage.PostgreSQL\SagaFlow.Storage.PostgreSQL.csproj" />
+    <ProjectReference Include="..\..\samples\Participants\Shared\SagaFlow.SampleParticipant.Messaging.csproj" />
+    <Compile Include="..\SagaFlow.Storage.PostgreSQL.Tests\PostgreSqlTestDatabase.cs" Link="PostgreSqlTestDatabase.cs" />
   </ItemGroup>
 </Project>

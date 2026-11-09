@@ -107,6 +107,47 @@ public sealed partial class CrossDomainCoordinationTests
     }
 
     [Fact]
+    public async Task ParticipantContinuationRequiresAuthoritativeSourceWithOutgoingInvocation()
+    {
+        var s = new Setup();
+        var source = await s.Start();
+        await s.Finish(ExternalProcessStatus.Completed);
+        var command = Assert.Single(s.Source.Bus.Commands);
+        var before = (await s.Source.Store.FindAsync(source.Id))!;
+        Assert.NotNull(before.Steps[0].Invocation);
+        var local = s.Source.Registry.Snapshot().Single(item => item.Origin == DefinitionOrigin.Local).Definition;
+        var captured = Assert.IsType<SagaInstance>(SagaExecutionSnapshotCodec.Restore(command.RecoverySnapshot, command.Headers, local));
+        Assert.Equal(before.Steps[0].Invocation!.Identity, captured.Steps[0].Invocation!.Identity);
+        Assert.Equal(before.Steps[0].InvocationProgress, captured.Steps[0].InvocationProgress);
+        Assert.Null(captured.Steps[0].Result);
+        var recovered = new CoordinationTestFixture(local);
+        var outcome = new SagaOutcomeEvent
+        {
+            Headers = command.Headers, CausationId = command.Headers.CommandId,
+            RecoverySnapshot = command.RecoverySnapshot, Name = "WorkCompleted", IsSuccess = true,
+            Result = JsonSerializer.SerializeToElement(new { receipt = "continued" })
+        };
+
+        var error = await Assert.ThrowsAsync<SagaOutcomeRecoveryRequiredException>(() => recovered.Receiver.ReceiveAsync(outcome));
+        Assert.Contains("cannot prove", error.Message);
+        Assert.Null(await recovered.Store.FindAsync(source.Id));
+        Assert.Empty(recovered.Bus.Commands);
+
+        var checkpoint = (await s.Source.Store.FindAsync(source.Id))!;
+        checkpoint.Revision = 0;
+        await recovered.Store.SaveAsync(checkpoint);
+        await recovered.Receiver.ReceiveAsync(outcome);
+
+        var after = (await recovered.Store.FindAsync(source.Id))!;
+        Assert.Equal(SagaStatus.Completed, after.Status);
+        Assert.Equal(before.Steps[0].Invocation!.Identity, after.Steps[0].Invocation!.Identity);
+        Assert.Equal(before.Steps[0].InvocationProgress, after.Steps[0].InvocationProgress);
+        Assert.Null(after.Steps[0].Result);
+        Assert.Equal("continued", after.Steps[1].Result!.Value.GetProperty("receipt").GetString());
+        Assert.Empty(recovered.Bus.Commands);
+    }
+
+    [Fact]
     public async Task ConcurrentDuplicateRequestsClaimOneInitialDispatch()
     {
         var s = new Setup(); s.SourcePort.Request = _ => Task.CompletedTask;

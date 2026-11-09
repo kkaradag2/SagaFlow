@@ -9,6 +9,11 @@ public interface ISagaStateStore
     /// <summary>Create at revision zero, or replace using an exact current revision. Never silently overwrite stale state.</summary>
     ValueTask SaveAsync(SagaInstance instance, CancellationToken cancellationToken = default);
 
+    /// <summary>Insert a recovered target and its original incoming invocation claim in one atomic operation.
+    /// Returns false when an authoritative instance with the same ID already exists.</summary>
+    ValueTask<bool> TryRecoverIncomingAsync(SagaInstance instance, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Store does not support atomic incoming invocation recovery.");
+
     /// <summary>Finds an isolated snapshot by instance ID, or returns null if the instance is missing.</summary>
     ValueTask<SagaInstance?> FindAsync(string instanceId, CancellationToken cancellationToken = default);
 

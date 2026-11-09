@@ -15,6 +15,32 @@ internal sealed class IncomingInvocationStore(ConcurrentDictionary<string, SagaS
     private bool _claiming;
     private readonly Dictionary<Guid, IncomingInvocationDecision> _decisions = [];
 
+    internal ValueTask<bool> TryRecoverAsync(SagaInstance instance, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(instance);
+        var incoming = instance.IncomingInvocation ?? throw new InvalidOperationException("Incoming recovery requires provenance.");
+        if (instance.Revision != 0 || incoming.RequestMessage?.Identity != incoming.Identity || incoming.Payload is null ||
+            incoming.RequestMessage.OccurredAt != incoming.CreatedAt ||
+            new ProcessIdentity(instance.DefinitionDomain, instance.DefinitionName, instance.DefinitionVersion) != incoming.Identity.Target)
+            throw new InvalidOperationException("Incoming recovery evidence is incomplete or conflicting.");
+        var key = Guid.Parse(incoming.Identity.InvocationId);
+        lock (_incomingGate)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (instances.ContainsKey(instance.Id)) return ValueTask.FromResult(false);
+            if (_incoming.ContainsKey(key)) throw new InvalidOperationException("Invocation belongs to another Saga.");
+            if (_decisions.TryGetValue(key, out var decision) &&
+                (decision.RejectionReason is not null || decision.Request.Identity != incoming.Identity ||
+                 decision.Request.Payload.GetRawText() != incoming.Payload.Value.GetRawText()))
+                throw new InvalidOperationException("Incoming admission conflicts with recovered evidence.");
+            var snapshot = SagaStateSnapshot.Copy(instance);
+            snapshot.Revision = 1;
+            if (!instances.TryAdd(snapshot.Id, new SagaStateEntry(snapshot))) return ValueTask.FromResult(false);
+            _incoming.Add(key, snapshot.Id);
+            return ValueTask.FromResult(true);
+        }
+    }
+
     /// <summary>Reads the recorded reply and request identity for a redelivered invocation.</summary>
     internal ValueTask<IncomingInvocationDecision?> FindIncomingDecisionAsync(string invocationId, CancellationToken cancellationToken = default)
     {
@@ -111,7 +137,8 @@ internal sealed class IncomingInvocationStore(ConcurrentDictionary<string, SagaS
                         || new ProcessIdentity(working.DefinitionDomain, working.DefinitionName, working.DefinitionVersion) != request.Identity.Target)
                         throw new InvalidOperationException("Invalid target state/process identity for incoming invocation.");
                     if (targetId is null && working.Revision != 0) throw new InvalidOperationException("Factory must return a new unsaved instance.");
-                    working.IncomingInvocation = new(request.Identity, request.Message.OccurredAt, acceptedAt.ToUniversalTime(), request.Payload.Clone());
+                    working.IncomingInvocation = new(request.Identity, request.Message.OccurredAt, acceptedAt.ToUniversalTime(),
+                        request.Payload.Clone(), request.Message);
                     working.UpdatedAt = acceptedAt.ToUniversalTime();
                     working.Revision = (entry?.State.Revision ?? 0) + 1;
                     var result = SagaStateSnapshot.Copy(working);

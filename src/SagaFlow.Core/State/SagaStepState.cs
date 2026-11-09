@@ -25,4 +25,4 @@ public sealed class SagaStepState
     public SagaStepStatus Status { get; set; } = SagaStepStatus.Pending;
 }
 
-public enum SagaStepStatus { Pending, Dispatched, Completed, Failed, TimedOut }
+public enum SagaStepStatus { Pending, Dispatched, Completed, Failed, TimedOut, Unknown }

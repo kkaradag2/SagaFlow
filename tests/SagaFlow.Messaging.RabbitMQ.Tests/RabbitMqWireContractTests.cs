@@ -111,7 +111,8 @@ public sealed partial class RabbitMqTransportIntegrationTests
         var id = await StartSagaAsync(runtime.Host, new { product = "sku", quantity = 3 });
         var command = await GetMessageAsync(runtime.Topology.CommandQueue);
         var before = (await FindSagaAsync(runtime.Host, id))!;
-        foreach (var key in command.BasicProperties.Headers!.Keys.Where(key => key.StartsWith("sf-", StringComparison.Ordinal)).Append("sf-causation-id").Append("sf-outcome"))
+        foreach (var key in command.BasicProperties.Headers!.Keys.Where(key => key.StartsWith("sf-", StringComparison.Ordinal)
+            && key != "sf-ex-state-snapshot").Append("sf-causation-id").Append("sf-outcome"))
         {
             var missing = EchoOutcome(command);
             missing.Headers!.Remove(key);
@@ -136,7 +137,10 @@ public sealed partial class RabbitMqTransportIntegrationTests
         await PublishRawAsync(command.BasicProperties.ReplyTo!, "{\"name\":\"WorkCompleted\",\"isSuccess\":true,\"headers\":{}}"u8.ToArray());
         await WaitForConsumerAsync(runtime.Topology.OutcomeQueue);
         Assert.Equal(before.Revision, (await FindSagaAsync(runtime.Host, id))!.Revision);
-        await PublishRawAsync(command.BasicProperties.ReplyTo!, "[17,\"business-result\"]"u8.ToArray(), EchoOutcome(command));
+        // The snapshot is required only when the authoritative instance is missing.
+        var withoutSnapshot = EchoOutcome(command);
+        withoutSnapshot.Headers!.Remove("sf-ex-state-snapshot");
+        await PublishRawAsync(command.BasicProperties.ReplyTo!, "[17,\"business-result\"]"u8.ToArray(), withoutSnapshot);
         await WaitUntilAsync(async () => (await FindSagaAsync(runtime.Host, id))?.Status == SagaStatus.Completed);
     }
 

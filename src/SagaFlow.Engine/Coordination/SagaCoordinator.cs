@@ -108,11 +108,19 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
         if (outcome.Result.ValueKind == System.Text.Json.JsonValueKind.Undefined)
             throw new InvalidSagaOutcomeException("Outcome result must be valid JSON.");
 
-        (SagaCommand? Command, string? Error, bool Changed) decision;
-        try
-        {
-            decision = await store.UpdateAsync(outcome.Headers.SagaInstanceId, instance =>
+        var canRecover = externalIdentity is null && outcome.Headers.ProtocolVersion == 1;
+        // Only a missing row before the callback can enter recovery.
+        var found = false;
+        ValueTask<(SagaCommand? Command, string? Error, bool Changed)> UpdateOutcomeAsync() =>
+            store.UpdateAsync(outcome.Headers.SagaInstanceId, instance =>
             {
+                found = true;
+                return ApplyOutcome(instance);
+            }, cancellationToken);
+        (SagaCommand? Command, string? Error, bool Changed) ApplyOutcome(SagaInstance instance)
+        {
+                if (externalIdentity is null && instance.Status == SagaStatus.RecoveryRequired)
+                    OutcomeStateRecovery.PreservePendingReconciliation(instance, outcome);
                 if (outcome.Headers.CorrelationId != instance.CorrelationId)
                     throw new InvalidSagaOutcomeException("Outcome correlation does not match the Saga instance.");
                 if (outcome.Headers.IsCompensation)
@@ -177,7 +185,19 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
                     return (Command: (SagaCommand?)null, Error: error, Changed: true);
                 }
                 return (Command: (SagaCommand?)executor.Prepare(instance, outcome.MessageId), Error: (string?)null, Changed: true);
-            }, cancellationToken);
+        }
+
+        (SagaCommand? Command, string? Error, bool Changed) decision;
+        try
+        {
+            try { decision = await UpdateOutcomeAsync(); }
+            catch (KeyNotFoundException) when (canRecover && !found)
+            {
+                await new OutcomeStateRecovery(definitions, store, clock, changes)
+                    .PreserveIfMissingAsync(outcome, cancellationToken);
+                // Re-enter only when another writer made state available during the missing-row check.
+                decision = await UpdateOutcomeAsync();
+            }
             if (decision.Changed && changes is not null) await changes.PublishAsync(outcome.Headers.SagaInstanceId);
         }
         catch (DuplicateSagaOutcomeException)
@@ -185,6 +205,10 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
             // A prior terminal notification may have failed after the local outcome committed.
             await NotifyTerminalAsync(outcome.Headers.SagaInstanceId, cancellationToken);
             throw;
+        }
+        catch (KeyNotFoundException) when (canRecover && !found)
+        {
+            throw new SagaOutcomeRecoveryRequiredException("Saga state disappeared again during recovery. The outcome requires preservation.");
         }
         catch (KeyNotFoundException error)
         {

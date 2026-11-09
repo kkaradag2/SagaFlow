@@ -49,7 +49,16 @@ public sealed class CompensationManager(
 
     public async Task PublishPreparedAsync(SagaCommand command, CancellationToken cancellationToken)
     {
-        try { await dispatcher.PublishAsync(command, cancellationToken); }
+        try
+        {
+            var snapshot = await store.FindAsync(command.Headers.SagaInstanceId, cancellationToken)
+                ?? throw new KeyNotFoundException("Saga disappeared before compensation publication.");
+            await dispatcher.PublishAsync(new SagaCommand
+            {
+                Name = command.Name, Payload = command.Payload, TimeToLive = command.TimeToLive,
+                Headers = command.Headers, RecoverySnapshot = SagaExecutionSnapshotCodec.Capture(snapshot)
+            }, cancellationToken);
+        }
         catch (Exception error)
         {
             await store.UpdateAsync(command.Headers.SagaInstanceId, instance =>
