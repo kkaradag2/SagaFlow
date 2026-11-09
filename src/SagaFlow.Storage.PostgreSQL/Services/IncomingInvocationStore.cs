@@ -100,7 +100,8 @@ internal sealed class IncomingInvocationStore(StorageDatabase database)
             if (working.Revision != 0) throw new InvalidOperationException("Factory must return a new unsaved instance.");
             context.Instances.Add(target);
         }
-        working.IncomingInvocation = new(request.Identity, request.Message.OccurredAt, acceptedAt.ToUniversalTime(), request.Payload.Clone());
+        working.IncomingInvocation = new(request.Identity, request.Message.OccurredAt, acceptedAt.ToUniversalTime(),
+            request.Payload.Clone(), request.Message);
         working.UpdatedAt = acceptedAt.ToUniversalTime();
         target.Write(working);
         row.TargetId = target.Id;

@@ -52,7 +52,11 @@ public sealed class SagaStepExecutor(ISagaStateStore store, CommandDispatcher di
                     throw new InvalidOperationException("External step requires a handler invocation and an enabled process transport.");
                 return; // Dispatched is the asynchronous external wait state; no participant command is sent.
             }
-            await dispatcher.PublishAsync(command, cancellationToken);
+            await dispatcher.PublishAsync(new SagaCommand
+            {
+                Name = command.Name, Payload = command.Payload, TimeToLive = command.TimeToLive,
+                Headers = command.Headers, RecoverySnapshot = SagaExecutionSnapshotCodec.Capture(snapshot)
+            }, cancellationToken);
         }
         catch (ProcessInvocationPublishException) { throw; }
         catch (Exception error)

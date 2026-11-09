@@ -245,6 +245,12 @@ internal sealed class RabbitMqTransport(
             logger.LogWarning(error, "Saga outcome {MessageId} arrived after timeout and will remain queued for explicit resolution.", delivery.BasicProperties.MessageId);
             await channel.BasicNackAsync(delivery.DeliveryTag, multiple: false, requeue: true, CancellationToken.None);
         }
+        catch (SagaOutcomeRecoveryRequiredException error)
+        {
+            logger.LogWarning(error, "Saga outcome {MessageId} requires recovery reconciliation.", delivery.BasicProperties.MessageId);
+            var reason = error.IsConflictingEvidence ? "outcome-recovery-conflict" : "outcome-recovery-required";
+            await QuarantineOutcomeAsync(channel, delivery, reason);
+        }
         catch (InvalidSagaOutcomeException error)
         {
             logger.LogWarning(error, "Rejecting invalid Saga outcome {MessageId}.", delivery.BasicProperties.MessageId);
@@ -266,7 +272,8 @@ internal sealed class RabbitMqTransport(
         }
     }
 
-    private async Task QuarantineOutcomeAsync(IChannel consumer, BasicDeliverEventArgs delivery)
+    private async Task QuarantineOutcomeAsync(IChannel consumer, BasicDeliverEventArgs delivery,
+        string reason = "missing-or-unsupported-wire-version")
     {
         try
         {
@@ -274,13 +281,13 @@ internal sealed class RabbitMqTransport(
             try
             {
                 await RabbitMqQuarantine.TransferAsync(_publisherChannel ?? throw new InvalidOperationException("Publisher is closed."),
-                    _outcomeQueue!, delivery, _consumerCancellation.Token);
+                    _outcomeQueue!, delivery, _consumerCancellation.Token, reason);
             }
             finally { _publishGate.Release(); }
             await consumer.BasicAckAsync(delivery.DeliveryTag, false, _consumerCancellation.Token);
             Interlocked.Increment(ref _quarantineAcknowledgements);
-            logger.LogWarning("Preserved incompatible outcome {MessageId} in {Queue}; no Saga state was applied.",
-                delivery.BasicProperties.MessageId, RabbitMqQuarantine.Queue(_outcomeQueue!));
+            logger.LogWarning("Preserved outcome {MessageId} in {Queue} for {Reason}.",
+                delivery.BasicProperties.MessageId, RabbitMqQuarantine.Queue(_outcomeQueue!), reason);
         }
         catch (OperationCanceledException) when (_consumerCancellation.IsCancellationRequested) { }
         catch (Exception error)

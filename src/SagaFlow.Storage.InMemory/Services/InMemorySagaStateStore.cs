@@ -28,6 +28,10 @@ public sealed class InMemorySagaStateStore : ISagaStateStore
     public ValueTask<IncomingInvocationDecision> RecordIncomingDecisionAsync(IncomingInvocationDecision decision, CancellationToken cancellationToken = default) =>
         _incomingInvocations.RecordIncomingDecisionAsync(decision, cancellationToken);
 
+    /// <inheritdoc />
+    public ValueTask<bool> TryRecoverIncomingAsync(SagaInstance instance, CancellationToken cancellationToken = default) =>
+        _incomingInvocations.TryRecoverAsync(instance, cancellationToken);
+
     /// <summary>Claims an incoming invocation and creates its target on the first delivery.</summary>
     public ValueTask<SagaInstance> GetOrCreateIncomingAsync(ProcessInvocationRequest request, Func<SagaInstance> create,
         DateTimeOffset acceptedAt, CancellationToken cancellationToken = default) =>
@@ -43,7 +47,8 @@ public sealed class InMemorySagaStateStore : ISagaStateStore
     {
         if (ReferenceEquals(before, after)) return;
         if (before is null || after is null || before.Identity != after.Identity || before.CreatedAt != after.CreatedAt
-            || before.AcceptedAt != after.AcceptedAt || before.Payload?.GetRawText() != after.Payload?.GetRawText())
+            || before.AcceptedAt != after.AcceptedAt || before.Payload?.GetRawText() != after.Payload?.GetRawText()
+            || before.RequestMessage != after.RequestMessage)
             throw new InvalidOperationException("Incoming provenance may only be changed by the atomic claim operation.");
     }
 

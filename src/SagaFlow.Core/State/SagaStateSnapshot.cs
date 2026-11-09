@@ -8,6 +8,11 @@ internal static class SagaStateSnapshot
         DefinitionVersion = state.DefinitionVersion, CorrelationId = state.CorrelationId,
         CurrentStep = state.CurrentStep, Status = state.Status, Context = state.Context.Clone(), PayloadType = state.PayloadType,
         CreatedAt = state.CreatedAt, UpdatedAt = state.UpdatedAt, FailureReason = state.FailureReason, Revision = state.Revision,
+        RecoveryOutcome = state.RecoveryOutcome is { } outcome ? new()
+        {
+            MessageId = outcome.MessageId, CausationId = outcome.CausationId, Name = outcome.Name,
+            Headers = outcome.Headers, IsSuccess = outcome.IsSuccess, Result = outcome.Result.Clone()
+        } : null,
         Steps = Array.AsReadOnly(state.Steps.Select(step => new SagaStepState
         {
             Execution = step.Execution,

@@ -21,11 +21,13 @@ internal static class RabbitMqQuarantine
 
     /// <summary>Caller must use publisher confirms AND confirmation tracking, and ACK the source only after this returns.
     /// A lost confirm/ACK can yield multiple preserved copies. No automatic replay or dedup is performed here.</summary>
-    internal static ValueTask TransferAsync(IChannel publisher, string sourceQueue, BasicDeliverEventArgs delivery, CancellationToken ct) =>
-        TransferAsync(publisher, sourceQueue, delivery.Exchange, delivery.RoutingKey, delivery.BasicProperties, delivery.Body, ct);
+    internal static ValueTask TransferAsync(IChannel publisher, string sourceQueue, BasicDeliverEventArgs delivery, CancellationToken ct,
+        string reason = "missing-or-unsupported-wire-version") =>
+        TransferAsync(publisher, sourceQueue, delivery.Exchange, delivery.RoutingKey, delivery.BasicProperties, delivery.Body, ct, reason);
 
     internal static ValueTask TransferAsync(IChannel publisher, string sourceQueue, string exchange, string routingKey,
-        IReadOnlyBasicProperties metadata, ReadOnlyMemory<byte> body, CancellationToken ct)
+        IReadOnlyBasicProperties metadata, ReadOnlyMemory<byte> body, CancellationToken ct,
+        string reason = "missing-or-unsupported-wire-version")
     {
         var properties = new BasicProperties(metadata)
         {
@@ -37,7 +39,7 @@ internal static class RabbitMqQuarantine
         properties.Headers["sf-quarantine-source"] = sourceQueue;
         properties.Headers["sf-quarantine-exchange"] = exchange;
         properties.Headers["sf-quarantine-routing-key"] = routingKey;
-        properties.Headers["sf-quarantine-reason"] = "missing-or-unsupported-wire-version";
+        properties.Headers["sf-quarantine-reason"] = reason;
         if (metadata.Expiration is not null) properties.Headers["sf-quarantine-original-expiration"] = metadata.Expiration;
         return publisher.BasicPublishAsync("", Queue(sourceQueue), mandatory: true, properties, body, ct);
     }

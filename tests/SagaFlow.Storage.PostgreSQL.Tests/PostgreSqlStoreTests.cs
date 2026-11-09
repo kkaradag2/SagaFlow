@@ -76,7 +76,8 @@ public sealed class PostgreSqlStoreTests : IAsyncLifetime
         Assert.Null(expected.IncomingInvocation);
         expected.Revision = 1;
         expected.UpdatedAt = Now.ToUniversalTime();
-        expected.IncomingInvocation = new(incoming.Identity, incoming.Message.OccurredAt, Now.ToUniversalTime(), incoming.Payload);
+        expected.IncomingInvocation = new(incoming.Identity, incoming.Message.OccurredAt, Now.ToUniversalTime(),
+            incoming.Payload, incoming.Message);
         var saved = Assert.IsType<SagaInstance>(await OpenStore().FindAsync(expected.Id));
         Assert.Equal(JsonSerializer.Serialize(expected), JsonSerializer.Serialize(saved));
         Assert.Equal(Now.Offset, saved.CreatedAt.Offset);

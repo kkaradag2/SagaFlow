@@ -13,7 +13,8 @@ internal static class RabbitMqMessageSerializer
     {
         "sf-ex-saga-id", "sf-ex-correlation-id", "sf-ex-domain", "sf-ex-process", "sf-ex-process-version",
         "sf-ex-step-id", "sf-ex-execution-id", "sf-ex-command-id", "sf-ex-command-type", "sf-ex-kind",
-        "sf-ex-created-at", "sf-ex-reply-to", "sf-ex-forward-execution-id", "sf-ex-cause-id"
+        "sf-ex-created-at", "sf-ex-reply-to", "sf-ex-forward-execution-id", "sf-ex-cause-id",
+        "sf-ex-state-snapshot"
     };
     public static byte[] Serialize(SagaCommand command) => JsonSerializer.SerializeToUtf8Bytes(command.Payload);
     public static byte[] Serialize(SagaOutcomeEvent outcome) => JsonSerializer.SerializeToUtf8Bytes(outcome.Result);
@@ -25,6 +26,12 @@ internal static class RabbitMqMessageSerializer
         _ = ReadContext(properties);
         if (command.Name != command.Headers.CommandName)
             throw new JsonException("Command type conflicts with its execution context.");
+        if (command.RecoverySnapshot is { } snapshot)
+        {
+            if (snapshot.Length is 0 or > SagaCommand.MaximumRecoverySnapshotBytes)
+                throw new JsonException("Execution snapshot exceeds the AMQP metadata limit.");
+            properties.Headers!["sf-ex-state-snapshot"] = snapshot.ToArray();
+        }
         return properties;
     }
 
@@ -33,6 +40,7 @@ internal static class RabbitMqMessageSerializer
         var properties = Properties(outcome.Headers, string.IsNullOrWhiteSpace(outcome.Name) ? "outcome" : outcome.Name,
             outcome.MessageId, outcome.CausationId ?? outcome.Headers.CommandId, null);
         properties.Headers!["sf-outcome"] = outcome.IsSuccess ? "success" : "failure";
+        if (outcome.RecoverySnapshot is { } snapshot) properties.Headers["sf-ex-state-snapshot"] = snapshot.ToArray();
         return properties;
     }
 
@@ -84,7 +92,10 @@ internal static class RabbitMqMessageSerializer
         return new()
         {
             Name = properties.Type!, MessageId = properties.MessageId!, CausationId = headers.CommandId,
-            Headers = headers, IsSuccess = status == "success", Result = JsonSerializer.Deserialize<JsonElement>(body)
+            Headers = headers, IsSuccess = status == "success", Result = JsonSerializer.Deserialize<JsonElement>(body),
+            RecoverySnapshot = properties.Headers is not null &&
+                properties.Headers.TryGetValue("sf-ex-state-snapshot", out var rawSnapshot) && rawSnapshot is byte[] snapshot
+                ? snapshot.ToArray() : null
         };
     }
 

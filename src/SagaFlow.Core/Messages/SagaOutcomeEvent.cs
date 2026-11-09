@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace SagaFlow.Core.Messages;
 
@@ -12,4 +13,8 @@ public sealed class SagaOutcomeEvent
     public JsonElement Result { get; init; } = JsonSerializer.SerializeToElement<object?>(null);
 
     public SagaMessageHeaders Headers { get; init; } = new();
+
+    /// <summary>Opaque Engine metadata echoed by the participant, never part of its result JSON.</summary>
+    [JsonIgnore]
+    public byte[]? RecoverySnapshot { get; init; }
 }

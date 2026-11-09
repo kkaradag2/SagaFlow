@@ -23,14 +23,16 @@ public sealed class SagaInstanceManager(ISagaClock clock)
             CorrelationId = Guid.NewGuid().ToString("N"), Status = SagaStatus.Running,
             CurrentStep = definition.Steps[0].Name, Context = context,
             PayloadType = typeof(TPayload).AssemblyQualifiedName, CreatedAt = now, UpdatedAt = now,
-            Steps = Array.AsReadOnly(definition.Steps.Select(step => new SagaStepState
-            {
-                StepName = step.Name,
-                Command = step.Command, External = step.External,
-                TimeoutLimit = step.TimeoutLimit is null ? null
-                    : ProcessDefinitionValidator.TryParseDuration(step.TimeoutLimit, out var timeout) ? timeout
-                    : throw new InvalidOperationException($"Step '{step.Name}' has an invalid validated timeout limit.")
-            }).ToArray())
+            Steps = CreateStepStates(definition, SagaStepStatus.Pending)
         };
     }
+
+    internal static IReadOnlyList<SagaStepState> CreateStepStates(SagaDefinition definition, SagaStepStatus status) =>
+        Array.AsReadOnly(definition.Steps.Select(step => new SagaStepState
+        {
+            StepName = step.Name, Command = step.Command, External = step.External, Status = status,
+            TimeoutLimit = step.TimeoutLimit is null ? null
+                : ProcessDefinitionValidator.TryParseDuration(step.TimeoutLimit, out var timeout) ? timeout
+                : throw new InvalidOperationException($"Step '{step.Name}' has an invalid validated timeout limit.")
+        }).ToArray());
 }

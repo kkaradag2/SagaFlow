@@ -22,6 +22,43 @@ public sealed class PostgreSqlSagaStateStore : ISagaStateStore
     }
 
     /// <inheritdoc />
+    public async ValueTask<bool> TryRecoverIncomingAsync(SagaInstance instance, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(instance);
+        var incoming = instance.IncomingInvocation ?? throw new InvalidOperationException("Incoming recovery requires provenance.");
+        if (instance.Revision != 0 || incoming.RequestMessage?.Identity != incoming.Identity || incoming.Payload is null ||
+            incoming.RequestMessage.OccurredAt != incoming.CreatedAt ||
+            new ProcessIdentity(instance.DefinitionDomain, instance.DefinitionName, instance.DefinitionVersion) != incoming.Identity.Target)
+            throw new InvalidOperationException("Incoming recovery evidence is incomplete or conflicting.");
+
+        await using var context = _database.Open(cancellationToken);
+        await using var transaction = await context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+        var claim = await context.LockInvocationAsync(Guid.Parse(incoming.Identity.InvocationId), cancellationToken);
+        if (claim.TargetId is not null)
+        {
+            if (claim.TargetId == instance.Id && await context.Instances.AsNoTracking().AnyAsync(row => row.Id == instance.Id, cancellationToken))
+                return false;
+            throw new InvalidOperationException("Incoming invocation claim conflicts with recovered Saga state.");
+        }
+        if (claim.Decision is not null)
+        {
+            var decision = StorageJson.Read<IncomingInvocationDecision>(claim.Decision);
+            if (decision.RejectionReason is not null || decision.Request.Identity != incoming.Identity ||
+                decision.Request.Payload.GetRawText() != incoming.Payload.Value.GetRawText())
+                throw new InvalidOperationException("Incoming admission conflicts with recovered evidence.");
+        }
+        var snapshot = StorageJson.Read<SagaInstance>(StorageJson.Write(instance));
+        var row = new SagaRow { Id = snapshot.Id };
+        row.Write(snapshot);
+        context.Instances.Add(row);
+        claim.TargetId = row.Id;
+        try { await context.SaveChangesAsync(cancellationToken); }
+        catch (DbUpdateException error) when (StorageDatabase.IsInstanceCollision(error)) { return false; }
+        await StorageDatabase.CommitAsync(transaction, cancellationToken);
+        return true;
+    }
+
+    /// <inheritdoc />
     public async ValueTask SaveAsync(SagaInstance instance, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(instance);
@@ -131,7 +168,8 @@ public sealed class PostgreSqlSagaStateStore : ISagaStateStore
     {
         if (ReferenceEquals(before, after)) return;
         if (before is null || after is null || before.Identity != after.Identity || before.CreatedAt != after.CreatedAt
-            || before.AcceptedAt != after.AcceptedAt || before.Payload?.GetRawText() != after.Payload?.GetRawText())
+            || before.AcceptedAt != after.AcceptedAt || before.Payload?.GetRawText() != after.Payload?.GetRawText()
+            || before.RequestMessage != after.RequestMessage)
             throw new InvalidOperationException("Incoming provenance may only be changed by the atomic claim operation.");
     }
 }
