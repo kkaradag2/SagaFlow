@@ -268,7 +268,35 @@ PBI-01 ile [`InMemorySagaStateStore`](../src/SagaFlow.Storage.InMemory/Services/
 
 Yeni `UpdateAsync<TResult>` senkron ve side-effect-free callback ile atomik değişiklik yapar. Callback bağımsız çalışma kopyasını alır; exception veya iptal varsa değişiklik commit edilmez. Callback içinde I/O, await veya nested state write yapılmamalıdır; aynı instance'a nested write açıkça reddedilir. Mesaj publish bu callback'in dışındadır, dolayısıyla transport senkron olarak outcome döndürse de store kilidinde deadlock oluşmaz.
 
-Save, Find ve Update commit sınırlarında listeler, step/compensation nesneleri ve JSON değerleri deep-copy edilir. Dışarı dönen veya callback'ten tutulan referanslar kayıtlı state'i değiştiremez. `Revision` her başarılı yazmada artar. Coordinator yalnızca portu kullanır; gelecekte database adapter'ı aynı atomic-update/optimistic concurrency semantiğini sağlamalıdır. Şu anda database, migration, distributed lock veya restart recovery yoktur.
+Save, Find ve Update commit sınırlarında listeler, step/compensation nesneleri ve JSON değerleri deep-copy edilir. Dışarı dönen veya callback'ten tutulan referanslar kayıtlı state'i değiştiremez. `Revision` her başarılı yazmada artar. Coordinator yalnızca portu kullanır. InMemory state process ömrüyle sınırlıdır.
+
+## PostgreSQL Store ve concurrency
+
+PostgreSqlSagaStateStore, Core sözleşmesini EF Core ve Npgsql ile uygular. Her çağrı ayrı bir context kullanır. `sagaflow.instances` tablosu Saga kimliğini ve revision'ı ayrı sütunlarda, aggregate'i JSON olarak saklar. İç JSON değerleri ham metin olarak kodlanır. Böylece duplicate kontrolü için boşluk, escape ve sayı yazımı ile opsiyonel alanlarda yokluk ve JSON null ayrımı korunur. [Store](../src/SagaFlow.Storage.PostgreSQL/Services/PostgreSqlSagaStateStore.cs) · [Serializer](../src/SagaFlow.Storage.PostgreSQL/Persistence/StorageJson.cs)
+
+`SaveAsync` revision 0 ile ekler ve kaydı revision 1 yapar. Mevcut satırın değiştirilmesi için `FOR UPDATE` altında revision eşleşmesi gerekir. `UpdateAsync` callback'i kilitli satırın bağımsız kopyasında bir kez çalıştırır. Callback hatası veya commit öncesi iptal transaction'ı geri alır. `FindAsync` ve `ListAsync` commit edilmiş snapshot'ları döndürür. Liste, tüm kayıtları okuyup oluşturulma zamanı azalan ve kimlik ordinal artan sırada döndürür.
+
+Claim ve admission, UUID başına tek satırı kilitler. Claim gerekiyorsa ardından Saga satırını kilitler. Hedef snapshot'ı ve claim tek transaction'da commit edilir. Hedef sütunu unique ve Saga tablosuna foreign key ile bağlıdır. Aynı identity ve ham payload mevcut hedefi veya ilk admission kararını döndürür. Çakışan identity/payload, başka hedefe bağlama veya kabul edilmiş bir claim'i reddetme hata verir. Callback içinden PostgreSQL store çağrıları reddedilir. Commit başladıktan sonra iptal uygulanmaz ve commit sırasında bağlantı kaybı sonucun istemciye belirsiz kalmasına yol açabilir. [Claim ve admission](../src/SagaFlow.Storage.PostgreSQL/Services/IncomingInvocationStore.cs) · [Commit sınırı](../src/SagaFlow.Storage.PostgreSQL/Persistence/StorageDatabase.cs)
+
+### Şema ve kayıt
+
+Uygulamanın mevcut PostgreSQL veritabanında şemayı bir dağıtım adımı olarak `InitializeAsync` ile hazırlayın. Başlatıcı `V001.sql` dosyasını transaction içinde uygular, sürümü `sagaflow.schema_version` tablosunda kaydeder ve eşzamanlı başlatıcıları PostgreSQL advisory lock ile sıralar. Tekrar çağrı mevcut sürümü doğrular. Desteklenmeyen sürüm hata verir. Bağlantı ve şema hataları başlatma çağrısında görünür. [Şema başlatıcısı](../src/SagaFlow.Storage.PostgreSQL/Schema/PostgreSqlStorageSchema.cs) · [V001.sql](../src/SagaFlow.Storage.PostgreSQL/Schema/V001.sql)
+
+```csharp
+using SagaFlow.Hosting.DependencyInjection;
+using SagaFlow.Storage.PostgreSQL.DependencyInjection;
+using SagaFlow.Storage.PostgreSQL.Schema;
+
+// Run explicitly as part of database provisioning.
+await PostgreSqlStorageSchema.InitializeAsync(connectionString);
+
+builder.Services.AddSagaFlow(options => options.LoadFromDirectory("saga"));
+builder.Services.AddSagaFlowPostgreSqlStorage(connectionString);
+```
+
+Kayıt iki sırada da çalışır ve `Host` ile `Database` ayarlarını doğrular. Bağlantı, şema başlatılırken veya ilk store çağrısında açılır. Şema başlatıcısı DDL yetkisi gerektirir. Bir veritabanındaki `sagaflow` şeması tek bir mantıksal store'dur ve kendi içinde domain ayrımı uygulamaz. Örnek uygulamalar InMemory kullanır. PostgreSQL kayıtları yeni host tarafından okunabilir. Otomatik Saga devam ettirme ayrı bir iş kalemidir.
+
+Gerçek veritabanı testleri için `SAGAFLOW_POSTGRESQL_TEST_CONNECTION` ortam değişkenini, test veritabanı oluşturabilen bir rol ile ayrılmış bir PostgreSQL sunucusuna yöneltin. Fixture her test için benzersiz bir veritabanı oluşturup siler. Ortam değişkeni yoksa PostgreSQL entegrasyon testleri açık skip nedeni ile işaretlenir. [Test fixture'ı](../tests/SagaFlow.Storage.PostgreSQL.Tests/PostgreSqlTestDatabase.cs)
 
 ## DI kayıtları
 
@@ -301,6 +329,8 @@ PBI-01 (2026-11-09) odak koşusunda 58 test geçti (Engine 26, Hosting 23, Rabbi
 Model ve servis ayrımı sonrası `./scripts/run-rabbitmq-integration.ps1` tekrar çalıştırıldı. 662 test geçti (Core 2, Engine 320, Hosting 64, RabbitMQ 62, Samples 214). Derlemede 0 uyarı ve 0 hata, testlerde 0 başarısız ve 0 atlanan vaka kaydedildi. Test vhost'u temizlendi. İsteğe bağlı Chrome kontrolleri çalıştırılmadı. Log `.artifacts/pbi01-organization-full.log`.
 
 PBI-03 (2026-11-09) ilk odak derlemesi, test yardımcısında derleme zamanı sabiti olmayan varsayılan parametre nedeniyle `CS1736` ile durdu. Bu denemede 0 uyarı, 1 hata vardı ve testler başlamadı (`.artifacts/pbi03-focused-initial.log`). Düzeltmeden sonra odak koşusunda 51 test geçti (Engine 8, Hosting 35, Samples 8). [Kayıt testleri](../tests/SagaFlow.Hosting.Tests/StorageProviderRegistrationTests.cs) iki kayıt sırasını, singleton paylaşımını, tekrar ve çakışmaları, eksik kaydı, geçersiz yaşam süresini ve factory hatalarını sınadı. [Özel store testi](../tests/SagaFlow.Hosting.Tests/LocalSagaCoordinationHostingTests.cs) iki kayıt sırasında da host startup ve Saga çalıştırmayı doğruladı. Gerçek RabbitMQ ile [Order](../tests/SagaFlow.Samples.Tests/SampleRabbitMqEndToEndTests.cs), [Return](../tests/SagaFlow.Samples.Tests/ReturnRabbitMqEndToEndTests.cs) ve [Procurement](../tests/SagaFlow.Samples.Tests/ProcurementRabbitMqTests.cs) geçti. [İzole runner](../scripts/run-rabbitmq-integration.ps1) tam koşuda 673 test geçirdi (Core 2, Engine 320, Hosting 75, RabbitMQ 62, Samples 214). Son iki derlemede 0 uyarı ve 0 hata, son iki test koşusunda 0 başarısız ve 0 atlanan vaka kaydedildi. Test vhost'ları temizlendi. İsteğe bağlı Chrome kontrolleri çalıştırılmadı. Loglar `.artifacts/pbi03-focused.log` ve `.artifacts/pbi03-full.log`.
+
+PBI-02 (2026-11-09) geçici PostgreSQL 17.11 sunucusunda doğrulandı. İlk bağımsız sağlayıcı derlemesi DI Abstractions sürüm düşüşü nedeniyle `NU1605` ile durdu (0 uyarı, 1 hata). Sürüm hizalaması sonrası ilk sağlayıcı koşusunda 16 test geçti. Genişletilmiş ilk odak koşusunda 62 geçti, 1 başarısız ve 0 atlandı. Erişilemeyen sunucu testinde Npgsql exception'ı EF Core tarafından iç exception olarak taşındı. Assertion düzeltildikten sonra odak koşusunda 63 test geçti (sağlayıcı 18, Engine 11, Hosting 34). Tam izole koşuda 691 geçti (Core 2, Engine 320, Hosting 75, RabbitMQ 62, Samples 214, PostgreSQL 18). Son iki koşuda 0 başarısız, 0 atlandı. Solution derlemesi 0 uyarı, 0 hata. PostgreSQL testleri iki store ve bağımsız veritabanı oturumlarıyla yarışları, kilit beklerken iptali, database hatasında rollback'i ve yeni hosttan state okumayı sınadı. İsteğe bağlı Chrome kontrolleri çalıştırılmadı. Loglar `.artifacts/pbi02-postgresql.log`, `.artifacts/pbi02-focused-initial.log`, `.artifacts/pbi02-focused.log` ve `.artifacts/pbi02-full.log`. [PostgreSQL testleri](../tests/SagaFlow.Storage.PostgreSQL.Tests/PostgreSqlStoreTests.cs) · [DI ve erişim testleri](../tests/SagaFlow.Storage.PostgreSQL.Tests/PostgreSqlRegistrationTests.cs)
 
 İlk runtime geliştirmesinin referansı: solution build sıfır uyarı ve sıfır hatayla geçti. Toplam 157 test geçti (Core 1, Engine 121, Hosting 35); başarısız veya atlanan test yok. Önceki 98 test korundu; 59 yeni davranış vakası eklendi. Testler 2 ve 10 adımlı akışları, conditional/else dallarını, ters compensation planını, 500 eşzamanlı atomik state güncellemesini, 30 eşzamanlı duplicate outcome'u, scoped DI, transport hataları ve cancellation sınırlarını kapsar.
 

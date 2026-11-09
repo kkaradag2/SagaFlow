@@ -25,6 +25,7 @@
     <Project Path="src/SagaFlow.Engine/SagaFlow.Engine.csproj" />
     <Project Path="src/SagaFlow.Messaging.RabbitMQ/SagaFlow.Messaging.RabbitMQ.csproj" />
     <Project Path="src/SagaFlow.Storage.InMemory/SagaFlow.Storage.InMemory.csproj" />
+    <Project Path="src/SagaFlow.Storage.PostgreSQL/SagaFlow.Storage.PostgreSQL.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/SagaFlow.Hosting.Tests/SagaFlow.Hosting.Tests.csproj" />
@@ -32,5 +33,6 @@
     <Project Path="tests/SagaFlow.Engine.Tests/SagaFlow.Engine.Tests.csproj" />
     <Project Path="tests/SagaFlow.Samples.Tests/SagaFlow.Samples.Tests.csproj" />
     <Project Path="tests/SagaFlow.Messaging.RabbitMQ.Tests/SagaFlow.Messaging.RabbitMQ.Tests.csproj" />
+    <Project Path="tests/SagaFlow.Storage.PostgreSQL.Tests/SagaFlow.Storage.PostgreSQL.Tests.csproj" />
   </Folder>
 </Solution>
