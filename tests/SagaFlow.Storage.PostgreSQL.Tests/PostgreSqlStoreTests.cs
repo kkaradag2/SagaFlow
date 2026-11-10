@@ -5,8 +5,12 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using SagaFlow.Core.Abstractions;
+using SagaFlow.Core.Definitions;
 using SagaFlow.Core.Messages;
 using SagaFlow.Core.State;
+using SagaFlow.Engine.ContextState;
+using SagaFlow.Engine.Messaging;
+using SagaFlow.Engine.ProcessDefinition;
 using SagaFlow.Hosting.DependencyInjection;
 using SagaFlow.Storage.PostgreSQL.DependencyInjection;
 using SagaFlow.Storage.PostgreSQL.Schema;
@@ -18,6 +22,367 @@ public sealed class PostgreSqlStoreTests : IAsyncLifetime
     private static readonly DateTimeOffset Now = new DateTimeOffset(2026, 11, 9, 12, 0, 0, TimeSpan.FromHours(3)).AddTicks(7);
     private readonly PostgreSqlTestDatabase _database = new();
     private ISagaStateStore OpenStore() => new PostgreSqlSagaStateStore(_database.ConnectionString);
+
+    [PostgreSqlFact]
+    public async Task OutboxCommitRollbackAndConcurrentClaimsUseOneTransaction()
+    {
+        var store = OpenStore();
+        var state = Target();
+        await store.SaveAsync(state);
+        var created = DateTimeOffset.UtcNow.AddMinutes(-1);
+        OutboxMessage Message(string id) => new()
+        {
+            MessageId = id, Name = "Work", Destination = "work", Body = [123, 125], RecoverySnapshot = [1],
+            Headers = new() { ProtocolVersion = 1, SagaInstanceId = state.Id, StepId = "work",
+                CommandId = id, CommandName = "Work", ExecutionId = "execution", CreatedAt = created }
+        };
+
+        await Assert.ThrowsAsync<IOException>(async () => await store.UpdateWithOutboxAsync<int>(state.Id, working =>
+        {
+            working.CurrentStep = "uncommitted";
+            throw new IOException("before commit");
+        }));
+        Assert.Null((await store.FindAsync(state.Id))!.CurrentStep);
+
+        await store.UpdateWithOutboxAsync(state.Id, working =>
+        {
+            working.CurrentStep = "work";
+            return (true, Message("command"));
+        });
+        Assert.Equal("work", (await store.FindAsync(state.Id))!.CurrentStep);
+        await Assert.ThrowsAnyAsync<Exception>(async () => await store.UpdateWithOutboxAsync(state.Id, working =>
+        {
+            working.CurrentStep = "wrong";
+            return (true, Message("command"));
+        }));
+        Assert.Equal("work", (await store.FindAsync(state.Id))!.CurrentStep);
+
+        var a = OpenStore();
+        var b = OpenStore();
+        var slowClock = DateTimeOffset.UtcNow.AddHours(-12);
+        var fastClock = DateTimeOffset.UtcNow.AddHours(12);
+        var lease = TimeSpan.FromMinutes(1);
+        await using var connection = new NpgsqlConnection(_database.ConnectionString);
+        await connection.OpenAsync();
+        await using var timeQuery = new NpgsqlCommand("SELECT clock_timestamp()", connection);
+        var before = new DateTimeOffset((DateTime)(await timeQuery.ExecuteScalarAsync())!);
+        var claimed = await Task.WhenAll(a.ClaimOutboxAsync("a", slowClock, lease, 1).AsTask(),
+            b.ClaimOutboxAsync("b", fastClock, lease, 1).AsTask());
+        var first = Assert.Single(claimed.SelectMany(x => x));
+        var after = new DateTimeOffset((DateTime)(await timeQuery.ExecuteScalarAsync())!);
+        Assert.InRange(first.LeaseUntil, before + lease, after + lease);
+        Assert.Empty(await b.ClaimOutboxAsync("c", fastClock.AddHours(1), lease, 1));
+
+        // Move the stored lease past PostgreSQL's clock without advancing a dispatcher clock.
+        await PostgreSqlTestDatabase.ExecuteAsync(_database.ConnectionString, """
+            UPDATE sagaflow.outbox SET lease_until = clock_timestamp() - interval '1 second'
+            WHERE message_id = 'command'
+            """);
+        var recovered = Assert.Single(await a.ClaimOutboxAsync("c", slowClock, lease, 1));
+        Assert.Equal("command", recovered.Message.MessageId);
+        Assert.Equal(2, recovered.Attempts);
+        await Assert.ThrowsAsync<OutboxClaimLostException>(async () =>
+            await a.MarkOutboxPublishedAsync("command", first.Owner, DateTimeOffset.UtcNow));
+        await Assert.ThrowsAsync<OutboxClaimLostException>(async () =>
+            await a.ReleaseOutboxAsync("command", first.Owner, DateTimeOffset.UtcNow));
+        await b.MarkOutboxPublishedAsync("command", "c", DateTimeOffset.UtcNow);
+        Assert.Empty(await a.ClaimOutboxAsync("d", DateTimeOffset.UtcNow.AddMinutes(5), TimeSpan.FromMinutes(1), 1));
+    }
+
+    [PostgreSqlFact]
+    public async Task InvocationAdmissionAndResponseShareOneTransactionAcrossConnections()
+    {
+        var store = OpenStore();
+        var request = Request();
+        var seed = new SagaInstance { Id = request.Identity.SourceSagaInstanceId };
+        await store.SaveAsync(seed);
+        await store.UpdateWithOutboxAsync(seed.Id, _ => (true, OutboxMessage.FromInvocation(request)));
+        static OutboxMessage Response(IncomingInvocationDecision stored, string? id) => id is null
+            ? OutboxMessage.FromInvocation(new ProcessInvocationRejected(stored.Reply, stored.RejectionReason!))
+            : OutboxMessage.FromInvocation(new ProcessInvocationAccepted(stored.Reply, id));
+
+        foreach (var reason in new string?[] { null, "Rejected" })
+        {
+            var collision = new IncomingInvocationDecision(request, reason, request.Message);
+            await Assert.ThrowsAsync<DbUpdateException>(async () => await store.AdmitWithOutboxAsync(collision, Target, Response));
+            Assert.Null(await store.FindIncomingDecisionAsync(request.Identity.InvocationId));
+            Assert.Equal(seed.Id, Assert.Single(await store.ListAsync()).Id);
+        }
+
+        var results = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ =>
+            OpenStore().AdmitWithOutboxAsync(Decision(request, null), Target, Response).AsTask()));
+        var first = results[0];
+        Assert.All(results, result =>
+        {
+            Assert.Equal(first.TargetId, result.TargetId);
+            Assert.Equal(first.Decision.Reply, result.Decision.Reply);
+        });
+        Assert.Equal(request.Identity, (await store.FindAsync(first.TargetId!))!.IncomingInvocation!.Identity);
+        var conflicting = new ProcessInvocationRequest(request.Identity, Parse("""{"amount":2}"""));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await store.AdmitWithOutboxAsync(Decision(conflicting, "Rejected"), Target, Response));
+        var rejected = Request();
+        var rejection = await store.AdmitWithOutboxAsync(Decision(rejected, "Rejected"),
+            () => throw new InvalidOperationException("A rejection must not create a target"), Response);
+        Assert.Null(rejection.TargetId);
+        Assert.Equal(2, (await store.ListAsync()).Count);
+        var rows = await store.ClaimOutboxAsync("inspect", DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1), 8);
+        Assert.Equal(3, rows.Count);
+        Assert.Equal(new ProcessInvocationAccepted(first.Decision.Reply, first.TargetId!),
+            Assert.Single(rows, row => row.Message.MessageId == first.Decision.Reply.MessageId).Message.ToInvocation());
+        Assert.Equal(new ProcessInvocationRejected(rejection.Decision.Reply, "Rejected"),
+            Assert.Single(rows, row => row.Message.MessageId == rejection.Decision.Reply.MessageId).Message.ToInvocation());
+    }
+
+    [PostgreSqlFact]
+    public async Task InvocationRequestAndTerminalStateRollBackWhenOutboxInsertFails()
+    {
+        var store = OpenStore();
+        var request = Request();
+        var source = new SagaInstance { Id = request.Identity.SourceSagaInstanceId, Status = SagaStatus.Running };
+        await store.SaveAsync(source);
+        await store.UpdateWithOutboxAsync(source.Id, state =>
+        {
+            state.CurrentStep = "invoke";
+            return (true, OutboxMessage.FromInvocation(request));
+        });
+        await Assert.ThrowsAsync<DbUpdateException>(async () => await store.UpdateWithOutboxAsync(source.Id, state =>
+        {
+            state.CurrentStep = "changed";
+            return (true, OutboxMessage.FromInvocation(request));
+        }));
+        Assert.Equal("invoke", (await store.FindAsync(source.Id))!.CurrentStep);
+
+        var target = await store.GetOrCreateIncomingAsync(request, Target, Now);
+        var collision = new ProcessInvocationTerminalOutcome(request.Message, target.Id, ExternalProcessStatus.Completed);
+        async ValueTask Finish(ProcessInvocationTerminalOutcome response) => await store.UpdateWithOutboxAsync(target.Id, state =>
+        {
+            state.Status = SagaStatus.Completed;
+            state.InvocationTerminalOutcome = response;
+            state.InvocationTerminalQueued = true;
+            return (true, OutboxMessage.FromInvocation(response));
+        });
+        await Assert.ThrowsAsync<DbUpdateException>(async () => await Finish(collision));
+        var unchanged = (await store.FindAsync(target.Id))!;
+        Assert.Equal(SagaStatus.Running, unchanged.Status);
+        Assert.Null(unchanged.InvocationTerminalOutcome);
+        Assert.False(unchanged.InvocationTerminalQueued);
+
+        var terminal = new ProcessInvocationTerminalOutcome(
+            new(request.Identity, Guid.NewGuid().ToString("N"), Now), target.Id, ExternalProcessStatus.Completed);
+        await Finish(terminal);
+        Assert.Equal(terminal, (await store.FindAsync(target.Id))!.InvocationTerminalOutcome);
+        var rows = await OpenStore().ClaimOutboxAsync("new-dispatcher", DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1), 4);
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(terminal, Assert.Single(rows, row => row.Message.MessageId == terminal.Message.MessageId).Message.ToInvocation());
+    }
+
+    [PostgreSqlFact]
+    public async Task ExplicitTerminalCommitRejectsBypassesAndRollsBackFailedInsertBeforeConcurrentRetry()
+    {
+        var store = OpenStore();
+        var target = await store.GetOrCreateIncomingAsync(Request(), Target, Now);
+        await store.UpdateAsync(target.Id, state => { state.CurrentStep = "work"; return true; });
+        var before = (await store.FindAsync(target.Id))!;
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await store.UpdateAsync(target.Id,
+            state => state.Status = SagaStatus.Failed));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await store.UpdateWithOutboxAsync(target.Id,
+            state => (state.Status = SagaStatus.Failed, (OutboxMessage?)null)));
+        var direct = (await store.FindAsync(target.Id))!;
+        direct.Status = SagaStatus.Failed;
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await store.SaveAsync(direct));
+
+        var registry = new ProcessDefinitionRegistry();
+        registry.RegisterLocalBatch([new SagaDefinition
+        {
+            Domain = target.DefinitionDomain, Name = target.DefinitionName, Version = target.DefinitionVersion,
+            Steps = [new() { Name = "work", Command = "Work", Transitions = [new() { Event = "success", NextStep = "completed" }] }]
+        }]);
+        var bus = new UnavailableInvocationBus();
+        var clock = new SystemSagaClock(TimeProvider.System);
+        var dispatcher = new CommandDispatcher(invocationBus: bus);
+        var publisher = new ProcessInvocationPublisher(store, bus, registry, clock, dispatcher);
+        await PostgreSqlTestDatabase.ExecuteAsync(_database.ConnectionString, """
+            ALTER TABLE sagaflow.outbox ADD CONSTRAINT test_reject_terminal
+            CHECK (document->>'Name' <> 'ProcessInvocationTerminalOutcome')
+            """);
+        await Assert.ThrowsAsync<DbUpdateException>(() => publisher.TransitionTerminalAsync(target.Id, SagaStatus.Failed,
+            state => state.FailureReason = "must roll back"));
+        var unchanged = (await store.FindAsync(target.Id))!;
+        Assert.Equal(before.Revision, unchanged.Revision);
+        Assert.Equal(SagaStatus.Running, unchanged.Status);
+        Assert.Equal("work", unchanged.CurrentStep);
+        Assert.Null(unchanged.FailureReason);
+        Assert.Null(unchanged.InvocationTerminalOutcome);
+        Assert.False(unchanged.InvocationTerminalQueued);
+        Assert.Empty(await store.ClaimOutboxAsync("check", DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1), 2));
+
+        await PostgreSqlTestDatabase.ExecuteAsync(_database.ConnectionString,
+            "ALTER TABLE sagaflow.outbox DROP CONSTRAINT test_reject_terminal");
+        var mutations = 0;
+        await Task.WhenAll(Enumerable.Range(0, 8).Select(_ =>
+            new ProcessInvocationPublisher(OpenStore(), bus, registry, clock, dispatcher)
+                .TransitionTerminalAsync(target.Id, SagaStatus.Failed, state =>
+                {
+                    Interlocked.Increment(ref mutations);
+                    state.FailureReason = "explicit failure";
+                })));
+        var terminal = (await store.FindAsync(target.Id))!;
+        Assert.Equal(before.Revision + 8, terminal.Revision);
+        Assert.Equal(1, mutations);
+        Assert.Equal(SagaStatus.Failed, terminal.Status);
+        Assert.Null(terminal.CurrentStep);
+        Assert.Equal("explicit failure", terminal.FailureReason);
+        Assert.True(terminal.InvocationTerminalQueued);
+        Assert.Equal(ExternalProcessStatus.Failed, terminal.InvocationTerminalOutcome!.Status);
+        await using var connection = new NpgsqlConnection(_database.ConnectionString);
+        await connection.OpenAsync();
+        await using var query = new NpgsqlCommand("SELECT message_id, published_at FROM sagaflow.outbox", connection);
+        await using var rows = await query.ExecuteReaderAsync();
+        Assert.True(await rows.ReadAsync());
+        Assert.Equal(terminal.InvocationTerminalOutcome.Message.MessageId, rows.GetString(0));
+        Assert.True(rows.IsDBNull(1));
+        Assert.False(await rows.ReadAsync());
+    }
+
+    private sealed class UnavailableInvocationBus : IProcessInvocationBus
+    {
+        public ValueTask PublishOutboxAsync(OutboxMessage message, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException(new IOException("Broker unavailable"));
+        public ValueTask PublishAsync(ProcessInvocationRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+        public ValueTask PublishAsync(ProcessInvocationAccepted accepted, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+        public ValueTask PublishAsync(ProcessInvocationRejected rejected, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+        public ValueTask PublishAsync(ProcessInvocationTerminalOutcome outcome, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
+
+    [PostgreSqlFact]
+    public async Task ExistingVersionOneSchemaMigratesWithoutReplacingSagaRows()
+    {
+        await using var legacy = new PostgreSqlTestDatabase();
+        await legacy.CreateAsync();
+        await PostgreSqlTestDatabase.ExecuteAsync(legacy.ConnectionString, "CREATE SCHEMA sagaflow; CREATE TABLE sagaflow.schema_version (singleton boolean PRIMARY KEY CHECK (singleton), version integer NOT NULL CHECK (version > 0)); INSERT INTO sagaflow.schema_version VALUES (true, 1)");
+        using (var script = typeof(PostgreSqlStorageSchema).Assembly.GetManifestResourceStream("SagaFlow.PostgreSQL.V001.sql")!)
+        using (var reader = new StreamReader(script))
+            await PostgreSqlTestDatabase.ExecuteAsync(legacy.ConnectionString, await reader.ReadToEndAsync());
+        var store = new PostgreSqlSagaStateStore(legacy.ConnectionString);
+        var state = Target();
+        await store.SaveAsync(state);
+        await PostgreSqlStorageSchema.InitializeAsync(legacy.ConnectionString);
+        Assert.Equal(1, (await store.FindAsync(state.Id))!.Revision);
+        Assert.Empty(await store.ClaimOutboxAsync("owner", DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1), 1));
+    }
+
+    [PostgreSqlFact]
+    public async Task ConcurrentDispatchersRespectLiveLeaseAndRecoverExpiredPublication()
+    {
+        var store = OpenStore();
+        var state = Target();
+        await store.SaveAsync(state);
+        var created = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var message = new OutboxMessage
+        {
+            MessageId = "stable", Name = "Work", Destination = "work", Body = [123, 125], RecoverySnapshot = [1],
+            Headers = new() { ProtocolVersion = 1, SagaInstanceId = state.Id, StepId = "work", CommandId = "stable",
+                CommandName = "Work", ExecutionId = "stable-execution", CreatedAt = created }
+        };
+        await store.UpdateWithOutboxAsync(state.Id, working => { working.CurrentStep = "work"; return (true, message); });
+        var confirmFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstBus = new OutboxRecordingBus(confirmFirst.Task);
+        var nextBus = new OutboxRecordingBus();
+        var first = new CommandDispatcher(firstBus);
+        var next = new CommandDispatcher(nextBus);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var inFlight = first.DispatchOutboxAsync(OpenStore(), deadline.Token);
+        try
+        {
+            await firstBus.Published.Task.WaitAsync(deadline.Token);
+            await next.DispatchOutboxAsync(OpenStore(), deadline.Token);
+            Assert.Empty(nextBus.Commands);
+            // Simulate a lease expiring while the first dispatcher still waits for confirmation.
+            await PostgreSqlTestDatabase.ExecuteAsync(_database.ConnectionString, """
+                UPDATE sagaflow.outbox SET lease_until = clock_timestamp() - interval '1 second'
+                WHERE message_id = 'stable'
+                """);
+            await next.DispatchOutboxAsync(OpenStore(), deadline.Token);
+        }
+        finally
+        {
+            confirmFirst.TrySetResult();
+            await inFlight;
+        }
+
+        var original = Assert.Single(firstBus.Commands);
+        var replay = Assert.Single(nextBus.Commands);
+        Assert.Equal(original.Headers, replay.Headers);
+        Assert.Equal(original.RecoverySnapshot, replay.RecoverySnapshot);
+        Assert.All(new[] { original, replay }, command =>
+        {
+            Assert.Equal("stable", command.Headers.CommandId);
+            Assert.Equal("stable-execution", command.Headers.ExecutionId);
+            Assert.Equal("{}", command.Payload.GetRawText());
+        });
+        Assert.Empty(await OpenStore().ClaimOutboxAsync("later", DateTimeOffset.UtcNow.AddMinutes(5), TimeSpan.FromMinutes(1), 1));
+    }
+
+    [PostgreSqlFact]
+    public async Task NewHostDispatchesCommittedCommandAfterPreviousHostStoppedBeforePublish()
+    {
+        const string preparationOwner = "preparation";
+        var store = OpenStore();
+        var state = Target();
+        await store.SaveAsync(state);
+        var message = new OutboxMessage
+        {
+            MessageId = "restart-command", Name = "Work", Destination = "work", Body = [123, 125], RecoverySnapshot = [1],
+            PreparationOwner = preparationOwner,
+            Headers = new() { ProtocolVersion = 1, SagaInstanceId = state.Id, StepId = "work", CommandId = "restart-command",
+                CommandName = "Work", ExecutionId = "restart-execution", CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-1) }
+        };
+        await store.UpdateWithOutboxAsync(state.Id, working => { working.CurrentStep = "work"; return (true, message); });
+        Assert.Empty(await OpenStore().ClaimOutboxAsync("another-dispatcher", DateTimeOffset.UtcNow.AddMinutes(5),
+            TimeSpan.FromMinutes(1), 1));
+        await store.ReleaseOutboxAsync(message.MessageId, preparationOwner, DateTimeOffset.UtcNow);
+        var bus = new OutboxRecordingBus();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Logging.ClearProviders();
+        builder.Services.AddSagaFlow(options => options.Storage.UsePostgreSql(storage =>
+            storage.ConnectionString = _database.ConnectionString));
+        builder.Services.AddSingleton<ISagaMessageBus>(bus);
+        using var restarted = builder.Build();
+        await restarted.StartAsync();
+        await bus.Published.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await using (var connection = new NpgsqlConnection(_database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var check = new NpgsqlCommand("SELECT published_at IS NOT NULL FROM sagaflow.outbox WHERE message_id = 'restart-command'", connection);
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            while (!((bool?)await check.ExecuteScalarAsync(deadline.Token) ?? false))
+                await Task.Delay(50, deadline.Token);
+        }
+        await restarted.StopAsync();
+        var command = Assert.Single(bus.Commands);
+        Assert.Equal(message.MessageId, command.Headers.CommandId);
+        Assert.Equal(message.Headers.ExecutionId, command.Headers.ExecutionId);
+        Assert.Empty(await store.ClaimOutboxAsync("later", DateTimeOffset.UtcNow.AddMinutes(5), TimeSpan.FromMinutes(1), 1));
+    }
+
+    private sealed class OutboxRecordingBus(Task? confirmation = null) : ISagaMessageBus
+    {
+        public List<SagaCommand> Commands { get; } = [];
+        public TaskCompletionSource Published { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ValueTask PublishOutboxAsync(OutboxMessage message, CancellationToken ct = default) =>
+            PublishAsync(message.ToCommand(), ct);
+        public ValueTask PublishAsync(SagaCommand command, CancellationToken ct = default)
+        {
+            Commands.Add(command);
+            Published.TrySetResult();
+            return confirmation is null ? ValueTask.CompletedTask : new ValueTask(confirmation.WaitAsync(ct));
+        }
+    }
 
     public async Task InitializeAsync()
     {
@@ -65,16 +430,29 @@ public sealed class PostgreSqlStoreTests : IAsyncLifetime
                 StepId = "work", Command = "Undo", ExecutionOrder = 1, Execution = headers with { IsCompensation = true },
                 Status = SagaCompensationStatus.Completed, StartedAt = Now, CompletedAt = Now.AddSeconds(3), Result = payload
             }],
-            DomainRollback = new() { Status = SagaDomainRollbackStatus.Failed, StartedAt = Now, CompletedAt = Now.AddSeconds(4), Error = "rollback failed" },
-            InvocationTerminalOutcome = new(new(incoming.Identity, Guid.NewGuid().ToString("N"), Now, incoming.Message.MessageId),
-                candidate.Id, ExternalProcessStatus.Compensated)
+            DomainRollback = new() { Status = SagaDomainRollbackStatus.Failed, StartedAt = Now, CompletedAt = Now.AddSeconds(4), Error = "rollback failed" }
         };
 
         var store = OpenStore();
         await store.GetOrCreateIncomingAsync(incoming, () => expected, Now);
         Assert.Equal(0, expected.Revision);
         Assert.Null(expected.IncomingInvocation);
-        expected.Revision = 1;
+        var terminal = new ProcessInvocationTerminalOutcome(
+            new(incoming.Identity, Guid.NewGuid().ToString("N"), Now, incoming.Message.MessageId),
+            candidate.Id, ExternalProcessStatus.Compensated);
+        await store.UpdateWithOutboxAsync(expected.Id, working =>
+        {
+            working.Status = SagaStatus.Compensated;
+            working.CurrentStep = null;
+            working.InvocationTerminalOutcome = terminal;
+            working.InvocationTerminalQueued = true;
+            return (true, OutboxMessage.FromInvocation(terminal));
+        });
+        expected.Revision = 2;
+        expected.Status = SagaStatus.Compensated;
+        expected.CurrentStep = null;
+        expected.InvocationTerminalOutcome = terminal;
+        expected.InvocationTerminalQueued = true;
         expected.UpdatedAt = Now.ToUniversalTime();
         expected.IncomingInvocation = new(incoming.Identity, incoming.Message.OccurredAt, Now.ToUniversalTime(),
             incoming.Payload, incoming.Message);
@@ -381,9 +759,9 @@ public sealed class PostgreSqlStoreTests : IAsyncLifetime
         await store.SaveAsync(instance);
         await PostgreSqlStorageSchema.InitializeAsync(empty.ConnectionString);
         Assert.NotNull(await store.FindAsync(instance.Id));
-        await PostgreSqlTestDatabase.ExecuteAsync(empty.ConnectionString, "UPDATE sagaflow.schema_version SET version = 2");
+        await PostgreSqlTestDatabase.ExecuteAsync(empty.ConnectionString, "UPDATE sagaflow.schema_version SET version = 3");
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => PostgreSqlStorageSchema.InitializeAsync(empty.ConnectionString));
-        Assert.Contains("schema version 2", error.Message);
+        Assert.Contains("schema version 3", error.Message);
         Assert.NotNull(await store.FindAsync(instance.Id));
     }
 
@@ -435,10 +813,10 @@ public sealed class PostgreSqlStoreTests : IAsyncLifetime
             await host.StopAsync();
         }
 
-        await PostgreSqlTestDatabase.ExecuteAsync(empty.ConnectionString, "UPDATE sagaflow.schema_version SET version = 2");
+        await PostgreSqlTestDatabase.ExecuteAsync(empty.ConnectionString, "UPDATE sagaflow.schema_version SET version = 3");
         using var incompatibleHost = BuildHost();
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => incompatibleHost.StartAsync());
-        Assert.Contains("schema version 2", error.InnerException!.Message);
+        Assert.Contains("schema version 3", error.InnerException!.Message);
         Assert.NotNull(await incompatibleHost.Services.GetRequiredService<ISagaStateStore>().FindAsync(instance.Id));
     }
 

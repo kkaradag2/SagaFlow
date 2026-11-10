@@ -7,7 +7,7 @@ namespace SagaFlow.Storage.PostgreSQL.Schema;
 /// <summary>Explicitly provisions and verifies the supported SagaFlow PostgreSQL schema.</summary>
 public static class PostgreSqlStorageSchema
 {
-    private const int CurrentVersion = 1;
+    private const int CurrentVersion = 2;
 
     /// <summary>Applies the initial schema transactionally, or verifies the previously initialized version.</summary>
     public static async Task InitializeAsync(string connectionString, CancellationToken cancellationToken = default)
@@ -32,8 +32,14 @@ public static class PostgreSqlStorageSchema
                 ?? throw new InvalidOperationException("The SagaFlow PostgreSQL schema script is missing.");
             using var reader = new StreamReader(script);
             await context.Database.ExecuteSqlRawAsync(await reader.ReadToEndAsync(cancellationToken), cancellationToken);
+            await ApplyV002Async(context, cancellationToken);
             await context.Database.ExecuteSqlInterpolatedAsync(
                 $"INSERT INTO sagaflow.schema_version (singleton, version) VALUES (true, {CurrentVersion})", cancellationToken);
+        }
+        else if (versions.Single() == 1)
+        {
+            await ApplyV002Async(context, cancellationToken);
+            await context.Database.ExecuteSqlRawAsync("UPDATE sagaflow.schema_version SET version = 2", cancellationToken);
         }
         else if (versions.Single() != CurrentVersion)
         {
@@ -41,5 +47,13 @@ public static class PostgreSqlStorageSchema
         }
 
         await StorageDatabase.CommitAsync(transaction, cancellationToken);
+    }
+
+    private static async Task ApplyV002Async(StorageContext context, CancellationToken cancellationToken)
+    {
+        using var script = typeof(PostgreSqlStorageSchema).Assembly.GetManifestResourceStream("SagaFlow.PostgreSQL.V002.sql")
+            ?? throw new InvalidOperationException("The SagaFlow PostgreSQL outbox schema script is missing.");
+        using var reader = new StreamReader(script);
+        await context.Database.ExecuteSqlRawAsync(await reader.ReadToEndAsync(cancellationToken), cancellationToken);
     }
 }

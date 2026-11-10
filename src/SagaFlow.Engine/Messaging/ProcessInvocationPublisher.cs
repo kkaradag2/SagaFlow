@@ -6,26 +6,31 @@ using SagaFlow.Engine.Notifications;
 namespace SagaFlow.Engine.Messaging;
 
 public sealed class ProcessInvocationPublishException(string sourceInstanceId, string invocationId, Exception inner)
-    : Exception("Invocation publication failed or is uncertain; explicit retry must retain its identity.", inner)
+    : Exception("Invocation outbox processing failed; retry must retain its identity.", inner)
 {
     public string SourceInstanceId { get; } = sourceInstanceId;
     public string InvocationId { get; } = invocationId;
 }
 
-public sealed class ProcessInvocationPublisher(ISagaStateStore store, IProcessInvocationBus bus, ProcessDefinitionRegistry definitions, ISagaClock clock, SagaStateChangePublisher? changes = null)
+public sealed class ProcessInvocationPublisher(ISagaStateStore store, IProcessInvocationBus bus, ProcessDefinitionRegistry definitions, ISagaClock clock,
+    CommandDispatcher dispatcher, SagaStateChangePublisher? changes = null)
 {
     public async Task PublishForStepAsync(string instanceId, string stepId, CancellationToken cancellationToken = default)
     {
         var instance = await store.FindAsync(instanceId, cancellationToken) ?? throw new KeyNotFoundException("Source Saga not found.");
         var request = instance.Steps.Single(s => s.StepId == stepId).Invocation;
-        if (request is not null) await PublishAsync(instanceId, request.Identity.InvocationId, false, cancellationToken);
+        if (request is null) return;
+        try { await PublishAsync(instanceId, request.Identity.InvocationId, false, cancellationToken); }
+        catch (Exception error) when (error is not (InvalidOperationException or ArgumentException or OperationCanceledException))
+        {
+            throw new ProcessInvocationPublishException(instanceId, request.Identity.InvocationId, error);
+        }
     }
 
-    /// <summary>Requested retries are explicit. A reservation authorizes one in-flight attempt at its atomic linearization point.</summary>
+    /// <summary>Atomically queues the stable request. A retry runs the dispatcher for eligible entries.</summary>
     public async Task PublishAsync(string instanceId, string invocationId, bool retry = false, CancellationToken cancellationToken = default)
     {
-        var attempt = Guid.NewGuid().ToString("N");
-        var request = await store.UpdateAsync(instanceId, instance =>
+        await store.UpdateWithOutboxAsync(instanceId, instance =>
         {
             var step = instance.Steps.SingleOrDefault(s => s.Invocation?.Identity.InvocationId == invocationId)
                 ?? throw new KeyNotFoundException("Invocation not found.");
@@ -36,59 +41,62 @@ public sealed class ProcessInvocationPublisher(ISagaStateStore store, IProcessIn
                 || new ProcessIdentity(instance.DefinitionDomain, instance.DefinitionName, instance.DefinitionVersion) != identity.Source
                 || definitions.Find(new(identity.Source.Domain, identity.Source.Process, identity.Source.Version))?.Origin != DefinitionOrigin.Local)
                 throw new InvalidOperationException("Source Saga/step is not eligible for publication.");
-            if (step.Publication?.ActiveAttemptId is not null) throw new InvalidOperationException("An invocation publish is already in flight.");
             if (progress.Status != ExternalProcessStatus.Prepared && !(retry && progress.Status == ExternalProcessStatus.Requested))
                 throw new InvalidOperationException("Only Prepared or explicitly retried Requested invocations can be published.");
+            if (step.Publication?.Queued == true) return (false, (OutboxMessage?)null);
             step.InvocationProgress = progress with { Status = ExternalProcessStatus.Requested, UpdatedAt = clock.UtcNow };
-            step.Publication = new(attempt, clock.UtcNow, null);
-            return step.Invocation;
+            step.Publication = new(null, clock.UtcNow, null, Queued: true);
+            return (true, bus.PrepareOutbox(OutboxMessage.FromInvocation(step.Invocation)));
         }, cancellationToken);
         if (changes is not null) await changes.PublishAsync(instanceId);
-        Exception? failure = null;
-        try { await bus.PublishAsync(request, cancellationToken); }
-        catch (Exception error) { failure = error; }
-        // Do not roll back Requested: delivery may already have happened, and an acceptance may already have arrived.
-        try
-        {
-            await store.UpdateAsync(instanceId, instance =>
-            {
-                var step = instance.Steps.Single(s => s.Invocation?.Identity.InvocationId == invocationId);
-                if (step.Publication?.ActiveAttemptId != attempt) throw new InvalidOperationException("Publish claim changed unexpectedly.");
-                step.Publication = new(null, step.Publication.AttemptedAt, failure?.Message);
-                return true;
-            }, CancellationToken.None);
-        }
-        catch (Exception bookkeepingFailure)
-        {
-            throw new ProcessInvocationPublishException(instanceId, invocationId,
-                failure is null ? bookkeepingFailure : new AggregateException(failure, bookkeepingFailure));
-        }
-        if (changes is not null) await changes.PublishAsync(instanceId);
-        if (failure is not null) throw new ProcessInvocationPublishException(instanceId, invocationId, failure);
+        await dispatcher.DispatchOutboxAsync(store, cancellationToken);
     }
 
-    /// <summary>Explicit future hook: only an actual terminal target state can produce this message. No automatic terminal hook.</summary>
-    public async Task PublishTerminalAsync(string targetInstanceId, CancellationToken cancellationToken = default)
+    /// <summary>Commits an incoming Saga's terminal state, application changes, and Terminal response together.
+    /// The optional synchronous mutation must perform no I/O. A repeated transition to the same status skips the mutation.</summary>
+    public async Task TransitionTerminalAsync(string targetInstanceId, SagaStatus terminalStatus,
+        Action<SagaInstance>? mutate = null, CancellationToken cancellationToken = default)
     {
-        var outcome = await store.UpdateAsync(targetInstanceId, instance =>
+        if (IncomingTerminalWrite.ResponseStatus(terminalStatus) is null)
+            throw new ArgumentOutOfRangeException(nameof(terminalStatus));
+
+        await store.UpdateWithOutboxAsync(targetInstanceId, instance =>
         {
-            var incoming = instance.IncomingInvocation ?? throw new InvalidOperationException("Target has no incoming invocation.");
-            var status = instance.Status switch
+            if (instance.IncomingInvocation is null) throw new InvalidOperationException("Target Saga has no incoming invocation.");
+            if (IncomingTerminalWrite.ResponseStatus(instance.Status) is not null)
             {
-                SagaStatus.Completed => ExternalProcessStatus.Completed,
-                SagaStatus.Failed => ExternalProcessStatus.Failed,
-                SagaStatus.Compensated => ExternalProcessStatus.Compensated,
-                _ => throw new InvalidOperationException("Target Saga is not terminal.")
-            };
-            var target = incoming.Identity.Target;
-            if (new ProcessIdentity(instance.DefinitionDomain, instance.DefinitionName, instance.DefinitionVersion) != target
-                || definitions.Find(new(target.Domain, target.Process, target.Version))?.Origin != DefinitionOrigin.Local)
-                throw new InvalidOperationException("Target process is not locally owned.");
-            if (instance.InvocationTerminalOutcome is { } existing && existing.Status != status)
-                throw new InvalidOperationException("Conflicting terminal outcome.");
-            return instance.InvocationTerminalOutcome ??= new(new(incoming.Identity, Guid.NewGuid().ToString("N"), clock.UtcNow), instance.Id, status);
+                if (instance.Status != terminalStatus || !instance.InvocationTerminalQueued)
+                    throw new InvalidOperationException("Target Saga already has a conflicting or unqueued terminal state.");
+                return (false, PrepareTerminal(instance));
+            }
+
+            mutate?.Invoke(instance);
+            if (instance.InvocationTerminalOutcome is not null || instance.InvocationTerminalQueued)
+                throw new InvalidOperationException("Terminal response metadata is owned by SagaFlow.");
+            instance.Status = terminalStatus;
+            instance.CurrentStep = null;
+            instance.UpdatedAt = clock.UtcNow;
+            return (true, PrepareTerminal(instance));
         }, cancellationToken);
         if (changes is not null) await changes.PublishAsync(targetInstanceId);
-        await bus.PublishAsync(outcome, cancellationToken);
+        await dispatcher.DispatchOutboxAsync(store, cancellationToken);
+    }
+
+    internal OutboxMessage? PrepareTerminal(SagaInstance instance)
+    {
+        if (instance.IncomingInvocation is not { } incoming) return null;
+        var status = IncomingTerminalWrite.ResponseStatus(instance.Status);
+        if (status is null) return null;
+        var target = incoming.Identity.Target;
+        if (new ProcessIdentity(instance.DefinitionDomain, instance.DefinitionName, instance.DefinitionVersion) != target ||
+            definitions.Find(new(target.Domain, target.Process, target.Version))?.Origin != DefinitionOrigin.Local)
+            throw new InvalidOperationException("Target process is not locally owned.");
+        if (instance.InvocationTerminalOutcome is { } existing && existing.Status != status)
+            throw new InvalidOperationException("Conflicting terminal outcome.");
+        if (instance.InvocationTerminalQueued) return null;
+        var outcome = instance.InvocationTerminalOutcome ??= new(
+            new(incoming.Identity, Guid.NewGuid().ToString("N"), clock.UtcNow), instance.Id, status.Value);
+        instance.InvocationTerminalQueued = true;
+        return bus.PrepareOutbox(OutboxMessage.FromInvocation(outcome));
     }
 }

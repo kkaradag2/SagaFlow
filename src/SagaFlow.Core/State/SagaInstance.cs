@@ -6,6 +6,7 @@ namespace SagaFlow.Core.State;
 public sealed class SagaInstance
 {
     public SagaFlow.Core.Messages.ProcessInvocationTerminalOutcome? InvocationTerminalOutcome { get; set; }
+    public bool InvocationTerminalQueued { get; set; }
     public IncomingInvocation? IncomingInvocation { get; set; }
     /// <summary>The reported participant outcome preserved when the execution history was missing.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

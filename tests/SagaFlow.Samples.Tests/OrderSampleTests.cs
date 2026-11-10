@@ -233,6 +233,8 @@ public sealed class OrderSampleTests
     private sealed class DashboardTestBus : ISagaMessageBus
     {
         public ConcurrentQueue<SagaCommand> Commands { get; } = new();
+        public ValueTask PublishOutboxAsync(OutboxMessage message, CancellationToken cancellationToken = default) =>
+            PublishAsync(message.ToCommand(), cancellationToken);
         public ValueTask PublishAsync(SagaCommand command, CancellationToken cancellationToken = default)
         { Commands.Enqueue(command); return ValueTask.CompletedTask; }
     }

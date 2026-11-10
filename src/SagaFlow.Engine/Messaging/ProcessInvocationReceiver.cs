@@ -15,13 +15,15 @@ public sealed class InvocationOutcomeNotReadyException(string message) : Excepti
 
 public sealed class ProcessInvocationReceiver(ISagaStateStore store, ProcessDefinitionRegistry definitions,
     ProcessInvocationManager manager, IProcessInvocationBus bus, ISagaClock clock, IEnumerable<IProcessInvocationPolicy> policies, SagaCoordinator coordinator,
-    IIncomingInvocationInitializer? initializer = null)
+    CommandDispatcher dispatcher, IIncomingInvocationInitializer? initializer = null)
 {
+
     public async Task ReceiveAsync(ProcessInvocationRequest request, CancellationToken cancellationToken = default)
     {
         request.Message.ValidateAgainst(request.Identity);
         var target = request.Identity.Target;
-        if (definitions.Find(new(target.Domain, target.Process, target.Version))?.Origin != DefinitionOrigin.Local)
+        var definition = definitions.Find(new(target.Domain, target.Process, target.Version));
+        if (definition?.Origin != DefinitionOrigin.Local)
             throw new InvalidOperationException("Request does not address a locally owned target definition/version.");
         var decision = await store.FindIncomingDecisionAsync(request.Identity.InvocationId, cancellationToken);
         if (decision is null)
@@ -40,25 +42,35 @@ public sealed class ProcessInvocationReceiver(ISagaStateStore store, ProcessDefi
                     break;
                 }
             }
-            decision = await store.RecordIncomingDecisionAsync(new(request, reason,
-                new(request.Identity, Guid.NewGuid().ToString("N"), clock.UtcNow, request.Message.MessageId)), cancellationToken);
+            decision = new(request, reason, new(request.Identity, Guid.NewGuid().ToString("N"), clock.UtcNow, request.Message.MessageId));
         }
-        if (decision.Request.Identity != request.Identity || decision.Request.Payload.GetRawText() != request.Payload.GetRawText())
-            throw new InvalidOperationException("Duplicate invocation identity/payload conflict.");
-        if (decision.RejectionReason is { } rejected)
-            await bus.PublishAsync(new ProcessInvocationRejected(decision.Reply, rejected), cancellationToken);
-        else
+        // Always pass the actual delivery so the store can reject conflicting duplicates under the claim lock.
+        var admission = await store.AdmitWithOutboxAsync(decision with { Request = request },
+            () => new SagaInstanceManager(clock).Create(definition.Definition, request.Payload),
+            (stored, targetId) => bus.PrepareOutbox(targetId is null
+                ? OutboxMessage.FromInvocation(new ProcessInvocationRejected(stored.Reply, stored.RejectionReason!))
+                : OutboxMessage.FromInvocation(new ProcessInvocationAccepted(stored.Reply, targetId)) with
+                {
+                    PreparationOwner = initializer is null ? null : InitializationOwner(stored.Reply.MessageId)
+                }), cancellationToken);
+        if (admission.TargetId is { } id && initializer is not null)
         {
-            var instance = await manager.GetOrCreateTargetAsync(request, cancellationToken);
-            if (initializer is not null && instance.Status == SagaStatus.Running && instance.Steps.All(s => s.Status == SagaStepStatus.Pending))
+            var instance = await store.FindAsync(id, cancellationToken) ?? throw new InvalidOperationException("Admitted target is missing.");
+            if (instance.Status == SagaStatus.Running && instance.Steps.All(s => s.Status == SagaStepStatus.Pending))
             {
-                var payload = await initializer.InitializeAsync(request, instance.Id, cancellationToken);
-                await manager.InitializeIncomingPayloadAsync(instance.Id, request, payload, cancellationToken);
+                var payload = await initializer.InitializeAsync(request, id, cancellationToken);
+                await manager.InitializeIncomingPayloadAsync(id, request, payload, cancellationToken);
             }
-            await bus.PublishAsync(new ProcessInvocationAccepted(decision.Reply, instance.Id), cancellationToken);
-            await coordinator.StartIncomingAsync(instance.Id, cancellationToken);
+            var responseId = admission.Decision.Reply.MessageId;
+            try { await store.ReleaseOutboxAsync(responseId, InitializationOwner(responseId), DateTimeOffset.UtcNow, cancellationToken); }
+            catch (OutboxClaimLostException) { /* A matching delivery may already have released this response. */ }
         }
+        await dispatcher.DispatchOutboxAsync(store, cancellationToken);
+        if (admission.TargetId is { } targetId)
+            await coordinator.StartIncomingAsync(targetId, cancellationToken);
     }
+
+    private static string InitializationOwner(string messageId) => $"incoming-initialization:{messageId}";
 
     public async Task ReceiveAsync(ProcessInvocationAccepted accepted, CancellationToken cancellationToken = default)
     {

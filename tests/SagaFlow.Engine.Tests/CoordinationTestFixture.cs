@@ -23,6 +23,7 @@ internal sealed class CoordinationTestFixture
     public ProcessStateManager States { get; } = new();
     public SagaInstanceManager Instances { get; }
     public SagaStepExecutor Executor { get; }
+    public CommandDispatcher Dispatcher { get; }
     public CompensationManager Compensations { get; }
     public SagaCoordinator Coordinator { get; }
     public OutcomeEventReceiver Receiver { get; }
@@ -31,10 +32,11 @@ internal sealed class CoordinationTestFixture
     {
         if (definition is not null) Registry.RegisterLocalBatch([definition]);
         Instances = new(Clock);
-        var dispatcher = new CommandDispatcher(Bus);
-        Executor = new(Store, dispatcher, Clock, changes, execution);
-        Compensations = new(Store, dispatcher, Clock, changes);
-        Coordinator = new(Registry, Store, Instances, Executor, new(), States, Compensations, Clock, changes, services, invocationPublisher: processBus is null ? null : new ProcessInvocationPublisher(Store, processBus, Registry, Clock));
+        var dispatcher = Dispatcher = new CommandDispatcher(Bus, processBus);
+        var publisher = processBus is null ? null : new ProcessInvocationPublisher(Store, processBus, Registry, Clock, dispatcher: dispatcher);
+        Executor = new(Store, dispatcher, Clock, changes, execution, publisher);
+        Compensations = new(dispatcher, Clock);
+        Coordinator = new(Registry, Store, Instances, Executor, new(), States, Compensations, Clock, changes, services, invocationPublisher: publisher);
         Receiver = new(Coordinator);
     }
 
@@ -56,6 +58,8 @@ internal sealed class CoordinationTestFixture
     {
         public ConcurrentQueue<SagaCommand> Commands { get; } = new();
         public Func<SagaCommand, CancellationToken, ValueTask>? OnPublish { get; set; }
+        public ValueTask PublishOutboxAsync(OutboxMessage message, CancellationToken cancellationToken = default) =>
+            PublishAsync(message.ToCommand(), cancellationToken);
         public async ValueTask PublishAsync(SagaCommand command, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();

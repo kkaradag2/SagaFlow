@@ -38,8 +38,18 @@ public sealed class InstanceTraceabilityApiTests
     }
     private sealed class Bus : ISagaMessageBus, IProcessInvocationBus
     {
+        ValueTask IProcessInvocationBus.PublishOutboxAsync(OutboxMessage message, CancellationToken ct) => message.ToInvocation() switch
+        {
+            ProcessInvocationRequest r => PublishAsync(r, ct),
+            ProcessInvocationAccepted a => PublishAsync(a, ct),
+            ProcessInvocationRejected r => PublishAsync(r, ct),
+            ProcessInvocationTerminalOutcome t => PublishAsync(t, ct),
+            _ => throw new InvalidOperationException("Unknown invocation message.")
+        };
+
         public ProcessInvocationRequest? Request { get; private set; }
         public ValueTask PublishAsync(SagaCommand value, CancellationToken ct = default) => ValueTask.CompletedTask;
+        public ValueTask PublishOutboxAsync(OutboxMessage message, CancellationToken ct = default) => ValueTask.CompletedTask;
         public ValueTask PublishAsync(ProcessInvocationRequest value, CancellationToken ct = default) { Request = value; return ValueTask.CompletedTask; }
         public ValueTask PublishAsync(ProcessInvocationAccepted value, CancellationToken ct = default) => ValueTask.CompletedTask;
         public ValueTask PublishAsync(ProcessInvocationRejected value, CancellationToken ct = default) => ValueTask.CompletedTask;

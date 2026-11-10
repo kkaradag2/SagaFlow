@@ -20,6 +20,15 @@ public sealed class IncomingInvocationInitializationTests
     }
     private sealed class Bus : IProcessInvocationBus
     {
+        public ValueTask PublishOutboxAsync(OutboxMessage message, CancellationToken ct) => message.ToInvocation() switch
+        {
+            ProcessInvocationRequest r => PublishAsync(r, ct),
+            ProcessInvocationAccepted a => PublishAsync(a, ct),
+            ProcessInvocationRejected r => PublishAsync(r, ct),
+            ProcessInvocationTerminalOutcome t => PublishAsync(t, ct),
+            _ => throw new InvalidOperationException("Unknown invocation message.")
+        };
+
         public int Accepted, Rejected;
         public ValueTask PublishAsync(ProcessInvocationRequest r, CancellationToken ct = default) => ValueTask.CompletedTask;
         public ValueTask PublishAsync(ProcessInvocationAccepted r, CancellationToken ct = default) { Interlocked.Increment(ref Accepted); return ValueTask.CompletedTask; }
@@ -29,9 +38,9 @@ public sealed class IncomingInvocationInitializationTests
     private static (CoordinationTestFixture Target, ProcessInvocationReceiver Receiver, ProcessInvocationRequest Request, Bus Bus) Setup(Initializer initializer, bool rejected = false)
     {
         var definition = new SagaDefinition { Domain = "target", Name = "process", Version = "1.0", Steps = [new() { Name = "work", Command = "Work", Transitions = [new() { Event = "success", NextStep = "completed" }] }] };
-        var fixture = new CoordinationTestFixture(definition); var bus = new Bus();
+        var bus = new Bus(); var fixture = new CoordinationTestFixture(definition, processBus: bus);
         var receiver = new ProcessInvocationReceiver(fixture.Store, fixture.Registry, new(fixture.Store, fixture.Registry, fixture.Clock), bus,
-            fixture.Clock, [new Policy(rejected)], fixture.Coordinator, initializer);
+            fixture.Clock, [new Policy(rejected)], fixture.Coordinator, fixture.Dispatcher, initializer);
         var request = new ProcessInvocationRequest(new(Guid.NewGuid().ToString("N"), "source-correlation", new("source", "caller", "1.0"),
             "source-saga", "invoke", new("target", "process", "1.0")), JsonSerializer.SerializeToElement(new { original = true }));
         return (fixture, receiver, request, bus);
@@ -76,6 +85,31 @@ public sealed class IncomingInvocationInitializationTests
         var setup = Setup(initializer);
         var first = setup.Receiver.ReceiveAsync(setup.Request); var second = setup.Receiver.ReceiveAsync(setup.Request);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5)); release.TrySetResult(); await Task.WhenAll(first, second);
-        Assert.Single(await setup.Target.Store.ListAsync()); Assert.Single(setup.Target.Bus.Commands); Assert.Equal(2, setup.Bus.Accepted);
+        Assert.Single(await setup.Target.Store.ListAsync()); Assert.Single(setup.Target.Bus.Commands); Assert.Equal(1, setup.Bus.Accepted);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AdmissionOutboxCollisionLeavesNeitherDecisionNorTarget(bool rejected)
+    {
+        var setup = Setup(new Initializer());
+        var store = setup.Target.Store;
+        var request = setup.Request;
+        var seed = new SagaInstance { Id = request.Identity.SourceSagaInstanceId };
+        await store.SaveAsync(seed);
+        await store.UpdateWithOutboxAsync(seed.Id, _ => (true, OutboxMessage.FromInvocation(request)));
+        var decision = new IncomingInvocationDecision(request, rejected ? "Rejected" : null, request.Message);
+
+        await Assert.ThrowsAsync<IOException>(async () => await store.AdmitWithOutboxAsync(decision, () => new SagaInstance
+        {
+            DefinitionDomain = request.Identity.Target.Domain, DefinitionName = request.Identity.Target.Process,
+            DefinitionVersion = request.Identity.Target.Version, Status = SagaStatus.Running
+        }, (stored, id) => id is null
+            ? OutboxMessage.FromInvocation(new ProcessInvocationRejected(stored.Reply, stored.RejectionReason!))
+            : OutboxMessage.FromInvocation(new ProcessInvocationAccepted(stored.Reply, id))));
+
+        Assert.Null(await store.FindIncomingDecisionAsync(request.Identity.InvocationId));
+        Assert.Equal(seed.Id, Assert.Single(await store.ListAsync()).Id);
     }
 }

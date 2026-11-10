@@ -24,6 +24,8 @@ public sealed class ProcurementDomainTests
     private sealed class Bus(bool fail = false) : ISagaMessageBus
     {
         public ConcurrentQueue<SagaCommand> Commands = new();
+        public ValueTask PublishOutboxAsync(OutboxMessage message, CancellationToken ct = default) =>
+            PublishAsync(message.ToCommand(), ct);
         public ValueTask PublishAsync(SagaCommand command, CancellationToken ct = default)
         { if (fail) throw new IOException("Approval unavailable"); Commands.Enqueue(command); return ValueTask.CompletedTask; }
     }
@@ -59,15 +61,18 @@ public sealed class ProcurementDomainTests
         Assert.Empty(await host.Services.GetRequiredService<ISagaStateStore>().ListAsync());
     }
     [Fact]
-    public async Task PreInvocationDispatchFailurePreservesBusinessRequestAndFailedLocalSaga()
+    public async Task PreInvocationDispatchFailurePreservesBusinessRequestAndPendingApprovalCommand()
     {
         await using var host = Host(new Bus(true)); using var client = host.CreateClient(); Load(host);
         var response = await client.PostAsJsonAsync("/purchase-requests", new CreatePurchaseRequest("employee", "customer", [new("product", 1, 10m)]));
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         var id = body.RootElement.GetProperty("purchaseRequestId").GetGuid();
         var view = (await client.GetFromJsonAsync<PurchaseView>($"/purchase-requests/{id}"))!;
-        Assert.Equal("Failed", view.Status); Assert.Equal("Failed", view.SagaStatus); Assert.Null(view.InvocationId);
+        Assert.Equal("AwaitingApproval", view.Status); Assert.Equal("Running", view.SagaStatus); Assert.Null(view.InvocationId);
+        var pending = Assert.Single(await host.Services.GetRequiredService<ISagaStateStore>().ClaimOutboxAsync(
+            "inspection", DateTimeOffset.UtcNow.AddMinutes(2), TimeSpan.FromMinutes(1), 1));
+        Assert.Equal("RequestManagerApproval", pending.Message.Name);
     }
     [Fact]
     public async Task OrderAdmissionRejectsInvalidBusinessDataAndConcurrentDuplicatesCreateOneOrder()

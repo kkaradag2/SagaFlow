@@ -99,8 +99,20 @@ public sealed partial class ProcessInvocationIntegrationTests
             using var failedClient = DashboardClient(failedHost);
             await failedHost.Services.GetRequiredService<RabbitMqTransport>().PublisherChannel!.CloseAsync(CancellationToken.None);
             await using (var scope = failedHost.Services.CreateAsyncScope())
-                await Assert.ThrowsAsync<SagaDispatchException>(() => scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { allow = true }));
+                await scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { allow = true });
             var failedId = (await failedHost.Services.GetRequiredService<ISagaStateStore>().ListAsync()).Single().Id;
+            // Keep the dashboard's reconciliation case explicit; command publication failure is pending Outbox state.
+            await failedHost.Services.GetRequiredService<ISagaStateStore>().UpdateAsync(failedId, state =>
+            {
+                var now = DateTimeOffset.UtcNow;
+                state.Steps[0].Reconciliation = new("Manual reconciliation required by test fixture.", now);
+                state.Steps[0].Status = SagaStepStatus.Failed;
+                state.Status = SagaStatus.Failed;
+                state.CurrentStep = null;
+                state.FailureReason = "Manual reconciliation required by test fixture.";
+                state.UpdatedAt = now;
+                return true;
+            });
             Process? browser = null; Task<string>? stdout = null, stderr = null;
             if (Environment.GetEnvironmentVariable("SAGAFLOW_BROWSER_ACCEPTANCE") == "true")
             {

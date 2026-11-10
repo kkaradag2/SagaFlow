@@ -7,6 +7,7 @@ using SagaFlow.Hosting.Endpoints;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 using RabbitMQ.Client;
 using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.Definitions;
@@ -14,15 +15,161 @@ using SagaFlow.Core.Messages;
 using SagaFlow.Core.State;
 using SagaFlow.Engine.Coordination;
 using SagaFlow.Engine.Messaging;
+using SagaFlow.Engine.Notifications;
 using SagaFlow.Engine.ProcessDefinition;
 using SagaFlow.Hosting.DependencyInjection;
 using SagaFlow.Storage.InMemory.DependencyInjection;
 using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
+using SagaFlow.Storage.PostgreSQL;
+using SagaFlow.Storage.PostgreSQL.DependencyInjection;
+using SagaFlow.Storage.PostgreSQL.Schema;
+using SagaFlow.Storage.PostgreSQL.Tests;
 
 namespace SagaFlow.Messaging.RabbitMQ.Tests;
 [Collection(RabbitMqIntegrationCollection.Name)]
 public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixture broker)
 {
+    [OutcomeRecoveryFact]
+    public async Task ExplicitTerminalCommitSurvivesHostInterruptionBeforePublication()
+    {
+        await using var database = new PostgreSqlTestDatabase();
+        await database.CreateAsync();
+        await PostgreSqlStorageSchema.InitializeAsync(database.ConnectionString);
+        var suffix = Guid.NewGuid().ToString("N");
+        var definition = Definition("target" + suffix, "remote", "targetStep" + suffix);
+        var identity = new ProcessInvocationIdentity(Guid.NewGuid().ToString("N"), "parent-correlation",
+            new("parent" + suffix, "source", "1.0"), Guid.NewGuid().ToString("N"), "invoke",
+            new(definition.Domain, definition.Name, definition.Version));
+        var request = new ProcessInvocationRequest(identity, JsonSerializer.SerializeToElement(new { allow = true }));
+        ProcessInvocationTerminalOutcome response;
+        await using var connection = new NpgsqlConnection(database.ConnectionString);
+        await connection.OpenAsync();
+        await using var published = new NpgsqlCommand("""
+            SELECT published_at IS NOT NULL FROM sagaflow.outbox WHERE message_id = @id
+            """, connection);
+        using (var first = BuildHost(definition, null, false, database.ConnectionString))
+        {
+            await using var scope = first.Services.CreateAsyncScope();
+            var services = scope.ServiceProvider;
+            var target = await services.GetRequiredService<ProcessInvocationManager>().GetOrCreateTargetAsync(request);
+            using var interrupted = new CancellationTokenSource();
+            var publisher = new ProcessInvocationPublisher(services.GetRequiredService<ISagaStateStore>(),
+                services.GetRequiredService<IProcessInvocationBus>(), services.GetRequiredService<ProcessDefinitionRegistry>(),
+                services.GetRequiredService<ISagaClock>(), services.GetRequiredService<CommandDispatcher>(),
+                new SagaStateChangePublisher([new InterruptAfterCommit(interrupted)]));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => publisher.TransitionTerminalAsync(
+                target.Id, SagaStatus.Completed,
+                state => state.Context = JsonSerializer.SerializeToElement(new { result = "explicit" }), interrupted.Token));
+
+            var state = (await new PostgreSqlSagaStateStore(database.ConnectionString).FindAsync(target.Id))!;
+            Assert.Equal(SagaStatus.Completed, state.Status);
+            Assert.Equal("explicit", state.Context.GetProperty("result").GetString());
+            response = Assert.IsType<ProcessInvocationTerminalOutcome>(state.InvocationTerminalOutcome);
+            published.Parameters.AddWithValue("id", response.Message.MessageId);
+            Assert.Equal(false, await published.ExecuteScalarAsync());
+            await using var pending = new NpgsqlCommand("""
+                SELECT owner IS NULL AND attempts = 0 AND published_at IS NULL
+                FROM sagaflow.outbox WHERE message_id = @id
+                """, connection);
+            pending.Parameters.AddWithValue("id", response.Message.MessageId);
+            Assert.Equal(true, await pending.ExecuteScalarAsync());
+        }
+
+        var queue = RabbitMqInvocationTransport.Queue(identity.Source, false);
+        await using var channel = await broker.Connection.CreateChannelAsync(new CreateChannelOptions(true, true));
+        await channel.ExchangeDeclareAsync(RabbitMqInvocationTransport.Exchange, ExchangeType.Direct, durable: true);
+        await channel.QueueDeclareAsync(queue, true, false, false);
+        await channel.QueueBindAsync(queue, RabbitMqInvocationTransport.Exchange, queue);
+        Assert.Equal(0u, await channel.MessageCountAsync(queue));
+        using var restarted = await Start(definition, postgreSql: database.ConnectionString);
+        try
+        {
+            await Wait(async () => Equals(true, await published.ExecuteScalarAsync()));
+            var delivered = Assert.IsType<BasicGetResult>(await channel.BasicGetAsync(queue, autoAck: true));
+            Assert.Equal(response, RabbitMqInvocationSerializer.Read<ProcessInvocationTerminalOutcome>(
+                delivered.Body.Span, delivered.BasicProperties));
+            Assert.Equal(0u, await channel.MessageCountAsync(queue));
+        }
+        finally { await restarted.StopAsync(); }
+    }
+
+    private sealed class InterruptAfterCommit(CancellationTokenSource interruption) : ISagaStateChangeListener
+    {
+        public ValueTask OnStateChangedAsync(SagaStateChanged notification, CancellationToken cancellationToken)
+        {
+            interruption.Cancel();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    [OutcomeRecoveryFact]
+    public async Task ConfirmedButUnmarkedRequestReplaysTheSameWireMessageAndCreatesOneTarget()
+    {
+        await using var parentDatabase = new PostgreSqlTestDatabase();
+        await using var childDatabase = new PostgreSqlTestDatabase();
+        await parentDatabase.CreateAsync();
+        await childDatabase.CreateAsync();
+        var suffix = Guid.NewGuid().ToString("N");
+        var target = Definition("target" + suffix, "remote", "targetStep" + suffix);
+        var source = SourceDefinition(target, suffix);
+        var store = new PostgreSqlSagaStateStore(parentDatabase.ConnectionString);
+        Guid sourceId;
+        using (var first = await Start(source, target.Name, postgreSql: parentDatabase.ConnectionString))
+        {
+            try
+            {
+                await using var scope = first.Services.CreateAsyncScope();
+                sourceId = await scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { allow = true });
+            }
+            finally { await first.StopAsync(); }
+        }
+
+        var request = (await ((ISagaStateStore)store).FindAsync(sourceId))!.Steps[0].Invocation!;
+        var queue = RabbitMqInvocationTransport.Queue(request.Identity.Target, true);
+        await using var channel = await broker.Connection.CreateChannelAsync(new CreateChannelOptions(true, true));
+        await channel.QueueDeclareAsync(queue, true, false, false);
+        await channel.QueueBindAsync(queue, RabbitMqInvocationTransport.Exchange, queue);
+        IReadOnlyList<OutboxClaim> claims = [];
+        await Wait(async () =>
+        {
+            claims = await store.ClaimOutboxAsync("interrupted-confirm", DateTimeOffset.UtcNow, TimeSpan.FromMilliseconds(1), 2);
+            return claims.Count != 0;
+        });
+        var stored = Assert.Single(claims).Message;
+        Assert.Equal(request.Message.MessageId, stored.MessageId);
+        await channel.BasicPublishAsync(stored.Exchange!, stored.Destination, true,
+            RabbitMqInvocationSerializer.Properties((ProcessInvocationRequest)stored.ToInvocation(), request.Message), stored.Body);
+        // The real broker confirmed, but this claim deliberately never marks the row Published.
+
+        using var restarted = await Start(source, target.Name, postgreSql: parentDatabase.ConnectionString);
+        try
+        {
+            await Wait(async () => await channel.MessageCountAsync(queue) == 2);
+            var first = Assert.IsType<BasicGetResult>(await channel.BasicGetAsync(queue, autoAck: false));
+            var replay = Assert.IsType<BasicGetResult>(await channel.BasicGetAsync(queue, autoAck: false));
+            Assert.Equal(stored.Body, first.Body.ToArray());
+            Assert.Equal(first.Body.ToArray(), replay.Body.ToArray());
+            Assert.Equal(request.Message, RabbitMqInvocationSerializer.Read<ProcessInvocationRequest>(replay.Body.Span, replay.BasicProperties).Message);
+            Assert.Equal(first.BasicProperties.ReplyTo, replay.BasicProperties.ReplyTo);
+            Assert.Equal(first.BasicProperties.CorrelationId, replay.BasicProperties.CorrelationId);
+            foreach (var name in first.BasicProperties.Headers!.Keys.Where(key => key.StartsWith("sf-", StringComparison.Ordinal)))
+                Assert.Equal(Assert.IsType<byte[]>(first.BasicProperties.Headers[name]), Assert.IsType<byte[]>(replay.BasicProperties.Headers![name]));
+            await channel.BasicNackAsync(replay.DeliveryTag, multiple: true, requeue: true);
+            using var child = await Start(target, postgreSql: childDatabase.ConnectionString);
+            try
+            {
+                var receiver = child.Services.GetRequiredService<RabbitMqInvocationTransport>();
+                await Wait(async () => receiver.HandledMessageCount == 2 &&
+                    (await ((ISagaStateStore)store).FindAsync(sourceId))!.Steps[0].InvocationProgress!.Status == ExternalProcessStatus.Accepted);
+                var state = Assert.Single(await child.Services.GetRequiredService<ISagaStateStore>().ListAsync());
+                Assert.Equal(request.Message, state.IncomingInvocation!.RequestMessage);
+                Assert.Equal(state.Id, (await ((ISagaStateStore)store).FindAsync(sourceId))!.Steps[0].InvocationProgress!.TargetSagaInstanceId);
+            }
+            finally { await child.StopAsync(); }
+        }
+        finally { await restarted.StopAsync(); }
+    }
+
     [RabbitMqFact]
     public async Task IndependentHostsExchangeRequestsAcceptanceRejectionAndTerminalOutcomes()
     {
@@ -57,13 +204,11 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
             Assert.Equal(targetState.Id, sourceState.Steps[0].InvocationProgress!.TargetSagaInstanceId);
             Assert.All(targetState.Steps, step => Assert.Equal(SagaStepStatus.Dispatched, step.Status));
             Assert.Equal(42, targetState.Context.GetProperty("value").GetInt32());
-            // Explicit actual state change tests the terminal messaging hook; no automatic/synthetic terminal hook is installed.
-            await targetStore.UpdateAsync(targetState.Id, state => { state.Status = SagaStatus.Completed; return true; });
             await using (var scope = targetHost.Services.CreateAsyncScope())
             {
                 var publisher = scope.ServiceProvider.GetRequiredService<ProcessInvocationPublisher>();
-                await publisher.PublishTerminalAsync(targetState.Id);
-                await publisher.PublishTerminalAsync(targetState.Id);
+                await publisher.TransitionTerminalAsync(targetState.Id, SagaStatus.Completed);
+                await publisher.TransitionTerminalAsync(targetState.Id, SagaStatus.Completed);
             }
             await Wait(async () => (await sourceStore.FindAsync(acceptedId))!.Steps[0].InvocationProgress!.Status == ExternalProcessStatus.Completed);
             Assert.Equal(SagaStatus.Running, (await sourceStore.FindAsync(acceptedId))!.Status);
@@ -96,21 +241,22 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
         using var sourceHost = await Start(source, target.Name);
         try
         {
-            ProcessInvocationPublishException failure;
+            Guid id;
             await using (var scope = sourceHost.Services.CreateAsyncScope())
-                failure = await Assert.ThrowsAsync<ProcessInvocationPublishException>(() => scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { allow = true }));
+                id = await scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { allow = true });
             var store = sourceHost.Services.GetRequiredService<ISagaStateStore>();
-            var before = (await store.FindAsync(failure.SourceInstanceId))!;
+            var before = (await store.FindAsync(id))!;
             Assert.Equal(SagaStatus.Running, before.Status);
             Assert.Equal(ExternalProcessStatus.Requested, before.Steps[0].InvocationProgress!.Status);
-            Assert.NotNull(before.Steps[0].Publication!.LastError);
+            Assert.True(before.Steps[0].Publication!.Queued);
+            var pending = await HoldRequestAsync(store, before);
+            Assert.Equal(before.Steps[0].Invocation!.Message.MessageId, pending.Message.MessageId);
             using var targetHost = await Start(target);
             try
             {
-                await using var scope = sourceHost.Services.CreateAsyncScope();
-                await scope.ServiceProvider.GetRequiredService<ProcessInvocationPublisher>().PublishAsync(failure.SourceInstanceId, failure.InvocationId, retry: true);
-                await Wait(async () => (await store.FindAsync(failure.SourceInstanceId))!.Steps[0].InvocationProgress!.Status == ExternalProcessStatus.Accepted);
-                Assert.Equal(before.Steps[0].Invocation!.Message, (await store.FindAsync(failure.SourceInstanceId))!.Steps[0].Invocation!.Message);
+                await store.ReleaseOutboxAsync(pending.Message.MessageId, pending.Owner, DateTimeOffset.UtcNow);
+                await Wait(async () => (await store.FindAsync(id))!.Steps[0].InvocationProgress!.Status == ExternalProcessStatus.Accepted);
+                Assert.Equal(before.Steps[0].Invocation!.Message, (await store.FindAsync(id))!.Steps[0].Invocation!.Message);
                 Assert.Single(await targetHost.Services.GetRequiredService<ISagaStateStore>().ListAsync());
             }
             finally { await targetHost.StopAsync(); }
@@ -133,6 +279,7 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
             await Assert.ThrowsAsync<SagaDispatchException>(() => scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { allow = true }));
             var state = Assert.Single(await sourceHost.Services.GetRequiredService<ISagaStateStore>().ListAsync());
             Assert.Equal(SagaStatus.Failed, state.Status);
+            Assert.Equal(SagaStepStatus.Failed, state.Steps[0].Status);
             Assert.Equal(ExternalProcessStatus.Prepared, state.Steps[0].InvocationProgress!.Status);
             Assert.Null(state.Steps[0].Publication);
             Assert.Empty(await targetHost.Services.GetRequiredService<ISagaStateStore>().ListAsync());
@@ -141,7 +288,7 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
     }
 
     [RabbitMqFact]
-    public async Task ParticipantPublicationFailureAfterRemoteRequestRequiresManualReconciliation()
+    public async Task ParticipantPublicationFailureAfterRemoteRequestRetainsPendingCommand()
     {
         var suffix = Guid.NewGuid().ToString("N");
         var target = Definition("target" + suffix, "remote", "targetStep" + suffix);
@@ -153,18 +300,21 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
             // Only the participant publisher channel is closed: the real invocation RabbitMQ channel stays available.
             await sourceHost.Services.GetRequiredService<RabbitMqTransport>().PublisherChannel!.CloseAsync(CancellationToken.None);
             await using var scope = sourceHost.Services.CreateAsyncScope();
-            await Assert.ThrowsAsync<SagaDispatchException>(() => scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { allow = true }));
+            await scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { allow = true });
             var sourceStore = sourceHost.Services.GetRequiredService<ISagaStateStore>();
             var initial = Assert.Single(await sourceStore.ListAsync());
             await Wait(async () => (await sourceStore.FindAsync(initial.Id))!.Steps[0].InvocationProgress!.Status == ExternalProcessStatus.Accepted);
             var state = (await sourceStore.FindAsync(initial.Id))!;
             var request = state.Steps[0].Invocation!;
-            Assert.Equal(SagaStatus.Failed, state.Status);
-            Assert.Equal(SagaStepStatus.Failed, state.Steps[0].Status);
-            Assert.NotNull(state.Steps[0].Reconciliation);
+            Assert.Equal(SagaStatus.Running, state.Status);
+            Assert.Equal(SagaStepStatus.Dispatched, state.Steps[0].Status);
+            Assert.Null(state.Steps[0].Reconciliation);
+            var pending = Assert.Single(await sourceStore.ClaimOutboxAsync("inspection", DateTimeOffset.UtcNow.AddMinutes(5), TimeSpan.FromMinutes(1), 1));
+            Assert.Equal(state.Steps[0].Execution!.CommandId, pending.Message.MessageId);
             var relationship = await scope.ServiceProvider.GetRequiredService<ProcessInvocationManager>().FindAsync(state.Id, request.Identity.InvocationId);
-            Assert.NotNull(relationship.Reconciliation);
+            Assert.Null(relationship.Reconciliation);
             var targetStore = targetHost.Services.GetRequiredService<ISagaStateStore>();
+            await Wait(async () => (await targetStore.ListAsync()).SingleOrDefault()?.Steps[0].Status == SagaStepStatus.Dispatched);
             var before = Assert.Single(await targetStore.ListAsync());
             Assert.Equal(SagaStatus.Running, before.Status);
             Assert.All(before.Steps, step => Assert.Equal(SagaStepStatus.Dispatched, step.Status));
@@ -173,7 +323,7 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
             await sourceHost.Services.GetRequiredService<IProcessInvocationBus>().PublishAsync(request); // broker duplicate simulation, not a new authorized source attempt
             await Wait(() => Task.FromResult(receiver.HandledMessageCount > handled));
             Assert.Equal(before.Id, Assert.Single(await targetStore.ListAsync()).Id);
-            Assert.NotNull((await sourceStore.FindAsync(state.Id))!.Steps[0].Reconciliation);
+            Assert.Null((await sourceStore.FindAsync(state.Id))!.Steps[0].Reconciliation);
             Assert.Null((await targetStore.FindAsync(before.Id))!.InvocationTerminalOutcome);
         }
         finally { await sourceHost.StopAsync(); await targetHost.StopAsync(); }
@@ -196,19 +346,17 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
         var deferred = RabbitMqInvocationTransport.Queue(new(source.Domain, source.Name, source.Version), false) + ".deferred";
         try
         {
-            await using var scope = sourceHost.Services.CreateAsyncScope();
-            var failure = await Assert.ThrowsAsync<ProcessInvocationPublishException>(() => scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { allow = true }));
-            var request = (await sourceHost.Services.GetRequiredService<ISagaStateStore>().FindAsync(failure.SourceInstanceId))!.Steps[0].Invocation!;
+            var pendingSource = await StartWithHeldRequestAsync(sourceHost);
+            var request = pendingSource.Steps[0].Invocation!;
             targetHost = await Start(target);
             await using var targetScope = targetHost.Services.CreateAsyncScope();
             var targetState = await targetScope.ServiceProvider.GetRequiredService<ProcessInvocationManager>().GetOrCreateTargetAsync(request);
-            await targetHost.Services.GetRequiredService<ISagaStateStore>().UpdateAsync(targetState.Id, state => { state.Status = SagaStatus.Completed; return true; });
             var transport = sourceHost.Services.GetRequiredService<RabbitMqInvocationTransport>();
             await using (var channel = await broker.Connection.CreateChannelAsync())
                 await channel.QueueDeleteAsync(deferred);
-            await targetScope.ServiceProvider.GetRequiredService<ProcessInvocationPublisher>().PublishTerminalAsync(targetState.Id);
+            await targetScope.ServiceProvider.GetRequiredService<ProcessInvocationPublisher>().TransitionTerminalAsync(targetState.Id, SagaStatus.Completed);
             await Wait(() => Task.FromResult(transport.ParkingFailureCount > 0));
-            Assert.Equal(ExternalProcessStatus.Requested, (await sourceHost.Services.GetRequiredService<ISagaStateStore>().FindAsync(failure.SourceInstanceId))!.Steps[0].InvocationProgress!.Status);
+            Assert.Equal(ExternalProcessStatus.Requested, (await sourceHost.Services.GetRequiredService<ISagaStateStore>().FindAsync(pendingSource.Id))!.Steps[0].InvocationProgress!.Status);
             await using (var channel = await broker.Connection.CreateChannelAsync())
                 await channel.QueueDeclareAsync(deferred, durable: true, exclusive: false, autoDelete: false);
             var reconciliation = sourceHost.Services.GetRequiredService<IProcessInvocationReconciliation>();
@@ -218,7 +366,7 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
             Assert.Equal(parked, transport.HandledMessageCount);
             await targetHost.Services.GetRequiredService<IProcessInvocationBus>().PublishAsync(new ProcessInvocationAccepted(
                 new(request.Identity, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow), targetState.Id));
-            await Wait(async () => (await sourceHost.Services.GetRequiredService<ISagaStateStore>().FindAsync(failure.SourceInstanceId))!.Steps[0].InvocationProgress!.Status == ExternalProcessStatus.Completed
+            await Wait(async () => (await sourceHost.Services.GetRequiredService<ISagaStateStore>().FindAsync(pendingSource.Id))!.Steps[0].InvocationProgress!.Status == ExternalProcessStatus.Completed
                 && await reconciliation.GetDeferredCountAsync() == 0);
             Assert.Equal(targetState.Id, Assert.Single(await targetHost.Services.GetRequiredService<ISagaStateStore>().ListAsync()).Id);
         }
@@ -237,13 +385,10 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
         {
             var sourceStore = sourceHost.Services.GetRequiredService<ISagaStateStore>();
             var requests = new List<ProcessInvocationRequest>();
-            await using (var scope = sourceHost.Services.CreateAsyncScope())
+            for (var i = 0; i < 2; i++)
             {
-                for (var i = 0; i < 2; i++)
-                {
-                    var failure = await Assert.ThrowsAsync<ProcessInvocationPublishException>(() => scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { allow = true, value = i }));
-                    requests.Add((await sourceStore.FindAsync(failure.SourceInstanceId))!.Steps[0].Invocation!);
-                }
+                var pendingSource = await StartWithHeldRequestAsync(sourceHost, i);
+                requests.Add(pendingSource.Steps[0].Invocation!);
             }
             Assert.NotEqual(requests[0].Identity.InvocationId, requests[1].Identity.InvocationId);
             Assert.NotEqual(requests[0].Message.MessageId, requests[1].Message.MessageId);
@@ -258,8 +403,7 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
                 {
                     var state = await manager.GetOrCreateTargetAsync(request);
                     targets.Add(state);
-                    await targetStore.UpdateAsync(state.Id, instance => { instance.Status = SagaStatus.Completed; return true; });
-                    await publisher.PublishTerminalAsync(state.Id);
+                    await publisher.TransitionTerminalAsync(state.Id, SagaStatus.Completed);
                 }
             }
             var reconciliation = sourceHost.Services.GetRequiredService<IProcessInvocationReconciliation>();
@@ -298,22 +442,20 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
         IHost? targetHost = null;
         try
         {
-            await using var scope = sourceHost.Services.CreateAsyncScope();
-            var failure = await Assert.ThrowsAsync<ProcessInvocationPublishException>(() => scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { allow = true }));
             var sourceStore = sourceHost.Services.GetRequiredService<ISagaStateStore>();
-            var state = (await sourceStore.FindAsync(failure.SourceInstanceId))!;
+            var state = await StartWithHeldRequestAsync(sourceHost);
             var request = state.Steps[0].Invocation!;
             targetHost = await Start(target);
             await using var targetScope = targetHost.Services.CreateAsyncScope();
             var targetState = await targetScope.ServiceProvider.GetRequiredService<ProcessInvocationManager>().GetOrCreateTargetAsync(request);
             var targetStore = targetHost.Services.GetRequiredService<ISagaStateStore>();
-            await targetStore.UpdateAsync(targetState.Id, instance => { instance.Status = SagaStatus.Completed; return true; });
-            await targetScope.ServiceProvider.GetRequiredService<ProcessInvocationPublisher>().PublishTerminalAsync(targetState.Id);
+            await targetScope.ServiceProvider.GetRequiredService<ProcessInvocationPublisher>().TransitionTerminalAsync(targetState.Id, SagaStatus.Completed);
             var reconciliation = sourceHost.Services.GetRequiredService<IProcessInvocationReconciliation>();
             var transport = sourceHost.Services.GetRequiredService<RabbitMqInvocationTransport>();
             await Wait(async () => await reconciliation.GetDeferredCountAsync() == 1 && transport.HandledMessageCount >= 1);
             Assert.Equal(ExternalProcessStatus.Requested, (await sourceStore.FindAsync(state.Id))!.Steps[0].InvocationProgress!.Status);
-            await targetScope.ServiceProvider.GetRequiredService<ProcessInvocationPublisher>().PublishTerminalAsync(targetState.Id);
+            var storedTerminal = (await targetStore.FindAsync(targetState.Id))!.InvocationTerminalOutcome!;
+            await targetHost.Services.GetRequiredService<IProcessInvocationBus>().PublishAsync(storedTerminal);
             await Wait(async () => await reconciliation.GetDeferredCountAsync() == 2 && transport.HandledMessageCount >= 2);
             var count = transport.HandledMessageCount;
             var replayCount = transport.DeferredReplayCount;
@@ -364,7 +506,7 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
     [RabbitMqFact]
     public Task TwoHostCompensationFailureAutomaticallyNotifiesFailed() => RunCoordinated(ExternalProcessStatus.Failed);
     [RabbitMqFact]
-    public Task InitialTargetDispatchFailureDoesNotRestartOnDuplicateRequest() => RunCoordinated(ExternalProcessStatus.Failed, true);
+    public Task InitialTargetDispatchFailureKeepsPendingCommandAndDuplicateRequestDoesNotRestart() => RunCoordinated(ExternalProcessStatus.Failed, true);
 
     private async Task RunCoordinated(ExternalProcessStatus expected, bool initialFailure = false)
     {
@@ -391,14 +533,25 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
                 sourceId = (await scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { allow = true, value = 42 })).ToString("N");
             var sourceStore = sourceHost.Services.GetRequiredService<ISagaStateStore>();
             var targetStore = targetHost.Services.GetRequiredService<ISagaStateStore>();
-            await Wait(async () => (await targetStore.ListAsync()).Count == 1);
+            var targetTransport = targetHost.Services.GetRequiredService<RabbitMqInvocationTransport>();
+            await Wait(() => Task.FromResult(targetTransport.HandledMessageCount >= 1));
             var targetState = Assert.Single(await targetStore.ListAsync());
             var request = (await sourceStore.FindAsync(sourceId))!.Steps[0].Invocation!;
-            var targetTransport = targetHost.Services.GetRequiredService<RabbitMqInvocationTransport>();
             var handled = targetTransport.HandledMessageCount;
             await Task.WhenAll(Enumerable.Range(0, 5).Select(_ => sourceHost.Services.GetRequiredService<IProcessInvocationBus>().PublishAsync(request).AsTask()));
             await Wait(() => Task.FromResult(targetTransport.HandledMessageCount >= handled + 5));
-            Assert.Equal(targetState.Id, Assert.Single(await targetStore.ListAsync()).Id);
+            var afterDuplicates = Assert.Single(await targetStore.ListAsync());
+            Assert.Equal(targetState.Id, afterDuplicates.Id);
+            if (initialFailure)
+            {
+                Assert.Equal(SagaStatus.Running, afterDuplicates.Status);
+                Assert.Equal(SagaStepStatus.Dispatched, afterDuplicates.Steps[0].Status);
+                Assert.Equal(targetState.Steps[0].Execution, afterDuplicates.Steps[0].Execution);
+                await Wait(async () => (await sourceStore.FindAsync(sourceId))!.Steps[0].InvocationProgress?.Status ==
+                    ExternalProcessStatus.Accepted);
+                await AssertQueueCount(one, 0);
+                return;
+            }
             if (!initialFailure)
             {
                 var first = await ReadParticipant(one);
@@ -569,11 +722,20 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
         Domain = domain, Name = process, Version = "1.0",
         Steps = [new() { Name = step, Command = "Work", Transitions = [new() { Event = "success", NextStep = "completed" }] }]
     };
-    private async Task<IHost> Start(SagaDefinition definition, string? target = null, bool failHandler = false)
+    private async Task<IHost> Start(SagaDefinition definition, string? target = null, bool failHandler = false, string? postgreSql = null)
+    {
+        var host = BuildHost(definition, target, failHandler, postgreSql);
+        await host.StartAsync(); return host;
+    }
+
+    private IHost BuildHost(SagaDefinition definition, string? target, bool failHandler, string? postgreSql)
     {
         var builder = Host.CreateApplicationBuilder(); builder.Logging.ClearProviders();
-        builder.Services.AddSagaFlowInMemoryStorage();
-        builder.Services.AddSagaFlow();
+        if (postgreSql is null) builder.Services.AddSagaFlowInMemoryStorage();
+        builder.Services.AddSagaFlow(options =>
+        {
+            if (postgreSql is not null) options.Storage.UsePostgreSql(storage => storage.ConnectionString = postgreSql);
+        });
         builder.Services.AddScoped<IProcessInvocationPolicy, Policy>();
         if (target is not null)
         {
@@ -587,9 +749,28 @@ public sealed partial class ProcessInvocationIntegrationTests(RabbitMqBrokerFixt
         });
         var host = builder.Build();
         host.Services.GetRequiredService<ProcessDefinitionRegistry>().RegisterLocalBatch([definition]);
-        await host.StartAsync(); return host;
+        return host;
     }
     private sealed record Target(string Process, bool Fail);
+    private static async Task<SagaInstance> StartWithHeldRequestAsync(IHost host, int value = 0)
+    {
+        await using var scope = host.Services.CreateAsyncScope();
+        var id = await scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { allow = true, value });
+        var store = host.Services.GetRequiredService<ISagaStateStore>();
+        var state = (await store.FindAsync(id))!;
+        Assert.Equal(ExternalProcessStatus.Requested, state.Steps[0].InvocationProgress!.Status);
+        await HoldRequestAsync(store, state);
+        return state;
+    }
+
+    private static async Task<OutboxClaim> HoldRequestAsync(ISagaStateStore store, SagaInstance state)
+    {
+        var claim = Assert.Single(await store.ClaimOutboxAsync("parking-fixture", DateTimeOffset.UtcNow.AddMinutes(1),
+            TimeSpan.FromMinutes(5), 1));
+        Assert.Equal(state.Steps[0].Invocation!.Message.MessageId, claim.Message.MessageId);
+        return claim;
+    }
+
     private sealed class Handler(ISagaFlow flow, Target target) : ILocalSagaStepHandler
     {
         public async Task ExecuteAsync(SagaCommand command, CancellationToken ct)

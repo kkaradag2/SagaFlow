@@ -36,6 +36,95 @@ public sealed class OutcomeStateRecoveryIntegrationTests(RabbitMqBrokerFixture b
     [OutcomeRecoveryTheory]
     [InlineData(false)]
     [InlineData(true)]
+    public async Task CommittedNextCommandIsPublishedFromPostgreSqlAfterHostRestart(bool confirmedBeforeRestart)
+    {
+        await using var database = new PostgreSqlTestDatabase();
+        await database.CreateAsync();
+        using var definition = new RecoveryDefinition();
+        var store = new PostgreSqlSagaStateStore(database.ConnectionString);
+        await using var channel = await broker.Connection.CreateChannelAsync(new CreateChannelOptions(true, true));
+        string id;
+        await using (var runtime = await StartAsync(definition, database.ConnectionString))
+        {
+            id = await StartSagaAsync(runtime.Host);
+            var first = await ReadCommandAsync(channel, definition.Work);
+            await channel.QueueUnbindAsync(definition.Next, definition.Exchange, definition.Next);
+            var outcome = Outcome(first);
+            await SendAsync(channel, definition, outcome, includeSnapshot: true);
+            await SendAsync(channel, definition, outcome, includeSnapshot: true);
+
+            var transport = runtime.Host.Services.GetRequiredService<RabbitMqTransport>();
+            await WaitForAsync(() => transport.DuplicateAcknowledgementCount == 1);
+            var committed = Assert.IsType<SagaInstance>(await store.FindAsync(id));
+            Assert.Equal(SagaStepStatus.Completed, committed.Steps[0].Status);
+            Assert.Equal(SagaStepStatus.Dispatched, committed.Steps[1].Status);
+            Assert.Equal(0u, await channel.MessageCountAsync(definition.Next));
+        }
+
+        // With the old consumer gone, any unacknowledged outcome would be ready for redelivery.
+        Assert.Equal(0u, await channel.MessageCountAsync(definition.ReplyQueue));
+        using var claimTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        IReadOnlyList<OutboxClaim> eligible;
+        while ((eligible = await store.ClaimOutboxAsync("inspection", DateTimeOffset.UtcNow,
+                   TimeSpan.FromMinutes(1), 2, claimTimeout.Token)).Count == 0)
+            await Task.Delay(30, claimTimeout.Token);
+        var claim = Assert.Single(eligible);
+        var message = claim.Message;
+        var checkpoint = Assert.IsType<SagaInstance>(await store.FindAsync(id));
+        Assert.Equal(checkpoint.Steps[1].Execution, message.Headers);
+        Assert.Equal(definition.Exchange, message.Exchange);
+        Assert.Equal(definition.Next, message.Destination);
+        await store.ReleaseOutboxAsync(message.MessageId, claim.Owner, DateTimeOffset.UtcNow);
+
+        BasicGetResult? firstPublication = null;
+        if (confirmedBeforeRestart)
+        {
+            await channel.QueueBindAsync(definition.Next, definition.Exchange, definition.Next);
+            var interrupted = Assert.Single(await store.ClaimOutboxAsync("interrupted", DateTimeOffset.UtcNow,
+                TimeSpan.FromMilliseconds(1), 1));
+            await channel.BasicPublishAsync(definition.Exchange, definition.Next, true,
+                RabbitMqMessageSerializer.CommandProperties(interrupted.Message.ToCommand()), interrupted.Message.Body);
+            firstPublication = await GetAsync(channel, definition.Next);
+            // The broker confirmed publication, but the old dispatcher never marks it Published.
+        }
+
+        await using var restarted = await StartAsync(definition, database.ConnectionString);
+        var delivery = await GetAsync(channel, definition.Next);
+        Assert.Equal(message.MessageId, delivery.BasicProperties.MessageId);
+        Assert.Equal(message.Headers, RabbitMqMessageSerializer.DeserializeCommand(delivery).Headers);
+        Assert.Equal(message.Body, delivery.Body.ToArray());
+        Assert.Equal(message.RecoverySnapshot, Assert.IsType<byte[]>(delivery.BasicProperties.Headers!["sf-ex-state-snapshot"]));
+        Assert.Equal(message.CreatedAt.ToUnixTimeSeconds(), delivery.BasicProperties.Timestamp.UnixTime);
+        if (firstPublication is not null)
+        {
+            var first = firstPublication.BasicProperties;
+            var replay = delivery.BasicProperties;
+            Assert.Equal(first.MessageId, replay.MessageId);
+            Assert.Equal(first.CorrelationId, replay.CorrelationId);
+            Assert.Equal(first.ReplyTo, replay.ReplyTo);
+            Assert.Equal(first.Type, replay.Type);
+            Assert.Equal(first.ContentType, replay.ContentType);
+            Assert.Equal(first.ContentEncoding, replay.ContentEncoding);
+            Assert.Equal(first.DeliveryMode, replay.DeliveryMode);
+            Assert.Equal(first.Expiration, replay.Expiration);
+            Assert.Equal(first.Timestamp, replay.Timestamp);
+            Assert.Equal(firstPublication.Body.ToArray(), delivery.Body.ToArray());
+            var senderHeaders = first.Headers!.Keys.Where(name => name.StartsWith("sf-", StringComparison.Ordinal)).Order().ToArray();
+            Assert.Equal(senderHeaders, replay.Headers!.Keys.Where(name => name.StartsWith("sf-", StringComparison.Ordinal)).Order());
+            foreach (var name in senderHeaders)
+                Assert.Equal(Assert.IsType<byte[]>(first.Headers[name]), Assert.IsType<byte[]>(replay.Headers[name]));
+        }
+        var next = ParticipantProtocol.ReadCommand(delivery.Body.Span, delivery.BasicProperties);
+        await SendAsync(channel, definition, Outcome(next), includeSnapshot: true);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        while ((await store.FindAsync(id, timeout.Token))?.Status != SagaStatus.Completed)
+            await Task.Delay(30, timeout.Token);
+        Assert.Equal(0u, await channel.MessageCountAsync(definition.Next));
+    }
+
+    [OutcomeRecoveryTheory]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task LostStateAndUnackedPriorOutcomeNeverPublishASecondCommand(bool newerFirst)
     {
         await using var database = new PostgreSqlTestDatabase();
@@ -764,6 +853,10 @@ public sealed class OutcomeStateRecoveryIntegrationTests(RabbitMqBrokerFixture b
             _store.ListAsync(cancellationToken);
         public ValueTask<TResult> UpdateAsync<TResult>(string id, Func<SagaInstance, TResult> update, CancellationToken cancellationToken = default) =>
             _store.UpdateAsync(id, update, cancellationToken);
+        public ValueTask<TResult> UpdateWithOutboxAsync<TResult>(string id, Func<SagaInstance, (TResult Result, OutboxMessage? Message)> update, CancellationToken ct = default) => _store.UpdateWithOutboxAsync(id, update, ct);
+        public ValueTask<IReadOnlyList<OutboxClaim>> ClaimOutboxAsync(string owner, DateTimeOffset now, TimeSpan lease, int limit, CancellationToken ct = default) => _store.ClaimOutboxAsync(owner, now, lease, limit, ct);
+        public ValueTask MarkOutboxPublishedAsync(string id, string owner, DateTimeOffset at, CancellationToken ct = default) => _store.MarkOutboxPublishedAsync(id, owner, at, ct);
+        public ValueTask ReleaseOutboxAsync(string id, string owner, DateTimeOffset at, CancellationToken ct = default) => _store.ReleaseOutboxAsync(id, owner, at, ct);
     }
 
     private sealed class RecoveryDefinition : IDisposable

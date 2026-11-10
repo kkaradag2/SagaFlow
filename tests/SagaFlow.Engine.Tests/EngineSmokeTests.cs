@@ -17,7 +17,7 @@ public sealed class EngineSmokeTests
         var dispatcher = new CommandDispatcher();
         var coordinator = new SagaCoordinator(new ProcessDefinitionRegistry(), store, new SagaInstanceManager(clock),
             new SagaStepExecutor(store, dispatcher, clock), new TransitionResolver(), new ProcessStateManager(),
-            new CompensationManager(store, dispatcher, clock), clock);
+            new CompensationManager(dispatcher, clock), clock);
 
         Assert.Equal(nameof(SagaCoordinator), coordinator.Name);
     }

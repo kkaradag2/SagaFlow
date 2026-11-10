@@ -79,7 +79,7 @@ public sealed class SagaStateChangeNotificationTests
         var dispatcher = new CommandDispatcher(new CoordinationTestFixture.RecordingMessageBus());
         var executor = new SagaStepExecutor(store, dispatcher, clock, changes);
         var coordinator = new SagaCoordinator(registry, store, new SagaInstanceManager(clock), executor,
-            new TransitionResolver(), new ProcessStateManager(), new CompensationManager(store, dispatcher, clock, changes), clock, changes);
+            new TransitionResolver(), new ProcessStateManager(), new CompensationManager(dispatcher, clock), clock, changes);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => coordinator.StartAsync(new { orderId = 3 }));
         Assert.Empty(listener.InstanceIds);
