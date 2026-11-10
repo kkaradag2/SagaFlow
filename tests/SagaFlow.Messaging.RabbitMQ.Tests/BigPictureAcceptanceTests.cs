@@ -150,10 +150,23 @@ public sealed partial class ProcessInvocationIntegrationTests
             await using var failedHost = await StartAcceptanceHost([legacy], target.Name);
             using var failedClient = failedHost.Client();
             await failedHost.App.Services.GetRequiredService<RabbitMqTransport>().PublisherChannel!.CloseAsync(CancellationToken.None);
-            await Assert.ThrowsAsync<SagaDispatchException>(() => StartAcceptanceSaga(failedHost));
+            await StartAcceptanceSaga(failedHost);
             var failedId = (await failedHost.App.Services.GetRequiredService<ISagaStateStore>().ListAsync()).Single().Id;
             var failedCommand = await ReadParticipant(target.Steps[0].Name);
             await Wait(async () => (await RelationshipPage(failedClient, failedId)).GetProperty("items")[0].GetProperty("lastKnownStatus").GetString() == "Accepted");
+            // Explicit reconciliation fixture: a broker failure now retains the command in Outbox.
+            await failedHost.App.Services.GetRequiredService<ISagaStateStore>().UpdateAsync(failedId, state =>
+            {
+                var now = DateTimeOffset.UtcNow;
+                state.Steps[0].Reconciliation = new("Manual reconciliation required by test fixture.", now);
+                state.Steps[0].Status = SagaStepStatus.Failed;
+                state.Status = SagaStatus.Failed;
+                state.CurrentStep = null;
+                state.FailureReason = "Manual reconciliation required by test fixture.";
+                state.UpdatedAt = now;
+                return true;
+            });
+            await failedHost.App.Services.GetRequiredService<SagaStateChangePublisher>().PublishAsync(failedId);
             // Separate high-volume read-only fixture, deliberately NOT cross-domain execution evidence.
             var pagesDefinition = new SagaDefinition { Domain = "pages" + suffix, Name = "pages", Version = "1.0", BigPicture = source.BigPicture,
                 Steps = Enumerable.Range(0, 101).Select(i => new SagaStepDefinition { Name = "page" + i, Command = "InvokeRemote", External = true,

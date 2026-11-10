@@ -15,6 +15,51 @@ internal sealed class IncomingInvocationStore(ConcurrentDictionary<string, SagaS
     private bool _claiming;
     private readonly Dictionary<Guid, IncomingInvocationDecision> _decisions = [];
 
+    internal ValueTask<(IncomingInvocationDecision Decision, string? TargetId)> AdmitWithOutboxAsync(
+        IncomingInvocationDecision candidate, Func<SagaInstance> create, Func<IncomingInvocationDecision, string?, OutboxMessage> prepare,
+        Action<string, OutboxMessage, Action> commitOutbox, Func<string, OutboxMessage?> findOutbox, CancellationToken ct)
+    {
+        var request = candidate.Request;
+        candidate.Reply.ValidateAgainst(request.Identity);
+        lock (_incomingGate)
+        {
+            ct.ThrowIfCancellationRequested();
+            var key = Guid.Parse(request.Identity.InvocationId);
+            var existing = _decisions.GetValueOrDefault(key);
+            var decision = existing ?? candidate;
+            ValidateSameRequest(decision.Request, request);
+            if (existing is not null && findOutbox(decision.Reply.MessageId) is { } recordedResponse)
+            {
+                var id = _incoming.GetValueOrDefault(key);
+                recordedResponse.ValidateAdmission(decision, id);
+                return ValueTask.FromResult((decision, id));
+            }
+
+            if (decision.RejectionReason is not null)
+            {
+                if (_incoming.ContainsKey(key)) throw new InvalidOperationException("Admission conflicts with an existing target.");
+                var response = prepare(decision, null);
+                response.ValidateAdmission(decision, null);
+                ct.ThrowIfCancellationRequested();
+                commitOutbox(request.Identity.InvocationId, response, () => _decisions[key] = decision);
+                return ValueTask.FromResult<(IncomingInvocationDecision, string?)>((decision, null));
+            }
+
+            var target = ClaimIncoming(decision.Request, create, null, decision.Reply.OccurredAt, ct, (state, commit) =>
+            {
+                var response = prepare(decision, state.Id);
+                response.ValidateAdmission(decision, state.Id);
+                ct.ThrowIfCancellationRequested();
+                commitOutbox(state.Id, response, () =>
+                {
+                    commit();
+                    _decisions[key] = decision;
+                });
+            });
+            return ValueTask.FromResult<(IncomingInvocationDecision, string?)>((decision, target.Result.Id));
+        }
+    }
+
     internal ValueTask<bool> TryRecoverAsync(SagaInstance instance, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(instance);
@@ -34,6 +79,7 @@ internal sealed class IncomingInvocationStore(ConcurrentDictionary<string, SagaS
                  decision.Request.Payload.GetRawText() != incoming.Payload.Value.GetRawText()))
                 throw new InvalidOperationException("Incoming admission conflicts with recovered evidence.");
             var snapshot = SagaStateSnapshot.Copy(instance);
+            default(IncomingTerminalWrite).Validate(snapshot);
             snapshot.Revision = 1;
             if (!instances.TryAdd(snapshot.Id, new SagaStateEntry(snapshot))) return ValueTask.FromResult(false);
             _incoming.Add(key, snapshot.Id);
@@ -93,7 +139,8 @@ internal sealed class IncomingInvocationStore(ConcurrentDictionary<string, SagaS
 
     /// <summary>Serializes claim validation, target state publication, and registration of the invocation ID.</summary>
     private ValueTask<SagaInstance> ClaimIncoming(ProcessInvocationRequest request, Func<SagaInstance>? create,
-        string? targetId, DateTimeOffset acceptedAt, CancellationToken cancellationToken)
+        string? targetId, DateTimeOffset acceptedAt, CancellationToken cancellationToken,
+        Action<SagaInstance, Action>? admission = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         if (acceptedAt == default) throw new ArgumentException("Acceptance time required.");
@@ -121,7 +168,9 @@ internal sealed class IncomingInvocationStore(ConcurrentDictionary<string, SagaS
                         if (incoming.Identity != request.Identity || incoming.Payload?.GetRawText() != request.Payload.GetRawText())
                             throw new InvalidOperationException("Invocation identity/payload conflict.");
                         cancellationToken.ThrowIfCancellationRequested();
-                        return ValueTask.FromResult(SagaStateSnapshot.Copy(existing.State));
+                        var snapshot = SagaStateSnapshot.Copy(existing.State);
+                        admission?.Invoke(snapshot, () => { });
+                        return ValueTask.FromResult(snapshot);
                     }
                 }
                 SagaStateEntry? entry = null;
@@ -139,17 +188,22 @@ internal sealed class IncomingInvocationStore(ConcurrentDictionary<string, SagaS
                     if (targetId is null && working.Revision != 0) throw new InvalidOperationException("Factory must return a new unsaved instance.");
                     working.IncomingInvocation = new(request.Identity, request.Message.OccurredAt, acceptedAt.ToUniversalTime(),
                         request.Payload.Clone(), request.Message);
+                    default(IncomingTerminalWrite).Validate(working);
                     working.UpdatedAt = acceptedAt.ToUniversalTime();
                     working.Revision = (entry?.State.Revision ?? 0) + 1;
-                    var result = SagaStateSnapshot.Copy(working);
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (entry is null)
+                    void Commit()
                     {
-                        if (!instances.TryAdd(working.Id, new SagaStateEntry(working))) throw new InvalidOperationException("Target Saga ID collision.");
+                        if (entry is null)
+                        {
+                            if (!instances.TryAdd(working.Id, new SagaStateEntry(working))) throw new InvalidOperationException("Target Saga ID collision.");
+                        }
+                        else entry.State = working;
+                        _incoming.Add(key, working.Id);
                     }
-                    else entry.State = working;
-                    _incoming.Add(key, working.Id);
-                    return ValueTask.FromResult(result);
+                    if (admission is null) Commit();
+                    else admission(working, Commit);
+                    return ValueTask.FromResult(SagaStateSnapshot.Copy(working));
                 }
             }
             finally { _claiming = false; }

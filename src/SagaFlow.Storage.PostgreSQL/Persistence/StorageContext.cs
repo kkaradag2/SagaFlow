@@ -8,6 +8,7 @@ internal sealed class StorageContext(DbContextOptions<StorageContext> options) :
 {
     internal DbSet<SagaRow> Instances => Set<SagaRow>();
     internal DbSet<InvocationRow> Invocations => Set<InvocationRow>();
+    internal DbSet<OutboxRow> Outbox => Set<OutboxRow>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -25,6 +26,19 @@ internal sealed class StorageContext(DbContextOptions<StorageContext> options) :
         invocations.Property(row => row.TargetId).HasColumnName("target_id");
         invocations.Property(row => row.Decision).HasColumnName("decision").HasColumnType("json");
         invocations.HasOne<SagaRow>().WithOne().HasForeignKey<InvocationRow>(row => row.TargetId);
+
+        var outbox = modelBuilder.Entity<OutboxRow>();
+        outbox.ToTable("outbox", "sagaflow");
+        outbox.HasKey(row => row.MessageId);
+        outbox.Property(row => row.MessageId).HasColumnName("message_id");
+        outbox.Property(row => row.SagaInstanceId).HasColumnName("saga_instance_id");
+        outbox.Property(row => row.Document).HasColumnName("document").HasColumnType("json");
+        outbox.Property(row => row.CreatedAt).HasColumnName("created_at");
+        outbox.Property(row => row.RetryAt).HasColumnName("retry_at");
+        outbox.Property(row => row.LeaseUntil).HasColumnName("lease_until");
+        outbox.Property(row => row.Owner).HasColumnName("owner");
+        outbox.Property(row => row.PublishedAt).HasColumnName("published_at");
+        outbox.Property(row => row.Attempts).HasColumnName("attempts");
     }
 
     internal async Task<SagaRow?> LockInstanceAsync(string id, CancellationToken cancellationToken)

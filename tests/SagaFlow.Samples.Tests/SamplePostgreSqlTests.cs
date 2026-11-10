@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
+using RabbitMQ.Client;
 using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.Messages;
 using SagaFlow.Core.State;
@@ -85,6 +86,137 @@ public sealed class SamplePostgreSqlTests(ITestOutputHelper output)
         Assert.Contains(nameof(InMemoryStorageServiceCollectionExtensions.UseInMemory), error.Message);
         Assert.Contains(nameof(PostgreSqlStorageServiceCollectionExtensions.UsePostgreSql), error.Message);
         Assert.DoesNotContain(services, service => service.ServiceType == typeof(ISagaStateStore));
+    }
+
+    [SamplePostgreSqlRabbitMqFact]
+    public async Task ProcurementAndOrderRecoverInvocationOutboxesAcrossProcessCrashes()
+    {
+        SampleRabbitMqTestIsolation.RequireVirtualHost();
+        const string exchange = "sagaflow.process-invocations";
+        var endpoints = SampleDomainProcess.AllocateEndpoints(3);
+        var orders = Domain.Create("Order", endpoints[0], endpoints[1]);
+        var procurement = Domain.Create("Procurement", endpoints[2]);
+        var root = Directory.CreateTempSubdirectory("sagaflow-invocation-outbox-");
+        var workers = new List<System.Diagnostics.Process>();
+        try
+        {
+            await UseTestDefinitionAsync(root, procurement, "procurement-process.yaml", "https://localhost:50823", endpoints[1]);
+            await using var approvals = new WebApplicationFactory<ManagerApprovalProgram>();
+            using var approvalClient = approvals.CreateClient();
+            await using var broker = await SampleRabbitMqEndToEndTests.CreateConnectionAsync();
+            await using var channel = await broker.CreateChannelAsync();
+            workers = SampleRabbitMqEndToEndTests.StartWorkers();
+            var requestQueue = InvocationQueue(new("order", "order-process", "1.0"), "requests");
+            var outcomeQueue = InvocationQueue(new("procurement", "procurement-process", "1.0"), "outcomes");
+            string sourceId;
+            int firstSourcePid;
+            int firstTargetPid;
+            OutboxMessage request;
+            SagaInstance target;
+            OutboxMessage acceptance;
+            OutboxMessage terminal;
+            SampleDomainProcess? resumedSource = null;
+            try
+            {
+                await using (var targetHost = orders.Start())
+                {
+                    firstTargetPid = targetHost.Id;
+                    await targetHost.WaitForStartupAsync();
+                    await channel.QueueUnbindAsync(requestQueue, exchange, requestQueue);
+                    await using (var sourceHost = procurement.Start())
+                    {
+                        firstSourcePid = sourceHost.Id;
+                        await sourceHost.WaitForStartupAsync();
+                        await SampleRabbitMqEndToEndTests.WaitForConsumersAsync(broker, includeApproval: true);
+                        var purchase = await PostAsync<PurchaseCreated>(sourceHost.Client, "/purchase-requests",
+                            new CreatePurchaseRequest("outbox-employee", "outbox-customer", [new("sku", 2, 12.50m)]));
+                        sourceId = purchase.SagaInstanceId.ToString("N");
+                        await AwaitBusinessRecordAsync(approvalClient, $"/approvals/{purchase.PurchaseRequestId}");
+                        using var approved = await approvalClient.PostAsJsonAsync($"/approvals/{purchase.PurchaseRequestId}/decision", new { decision = "approve" });
+                        Assert.Equal(HttpStatusCode.OK, approved.StatusCode);
+                        await UntilAsync(async () => (await InvocationRowsAsync(procurement, sourceId)).SingleOrDefault() is
+                            { Message: not null, Published: false, Released: true }, "Procurement did not retain its unroutable request.");
+                        var row = Assert.Single(await InvocationRowsAsync(procurement, sourceId));
+                        Assert.False(row.Published);
+                        request = row.Message;
+                        var state = (await procurement.Store.FindAsync(sourceId))!;
+                        var step = state.Steps.Single(x => x.StepId == "invokeOrder");
+                        Assert.Equal(ExternalProcessStatus.Requested, step.InvocationProgress!.Status);
+                        Assert.Equal(step.Invocation!.Message, request.Invocation!.Message);
+                        Assert.Equal(requestQueue, request.Destination);
+                        Assert.Equal(outcomeQueue, request.ReplyDestination);
+                        Assert.Null(await orders.Store.FindIncomingDecisionAsync(step.Invocation.Identity.InvocationId));
+                        Assert.Equal(0u, await channel.MessageCountAsync(requestQueue));
+                    } // Kill the original OS process while its invocation cannot be routed.
+
+                    resumedSource = procurement.Start();
+                    Assert.NotEqual(firstSourcePid, resumedSource.Id);
+                    await resumedSource.WaitForStartupAsync();
+                    await channel.QueueUnbindAsync(outcomeQueue, exchange, outcomeQueue);
+                    await channel.QueueBindAsync(requestQueue, exchange, requestQueue);
+                    var identity = request.Invocation!.Message.Identity;
+                    await UntilAsync(async () => (await orders.Store.ListAsync()).Any(x =>
+                        x.IncomingInvocation?.Identity == identity && x.Status == SagaStatus.Completed), "Order did not complete the recovered invocation.");
+                    target = Assert.Single(await orders.Store.ListAsync(), x => x.IncomingInvocation?.Identity == identity);
+                    await UntilAsync(async () => (await InvocationRowsAsync(orders, target.Id)) is { Count: 2 } replies &&
+                        replies.All(x => x.Released && !x.Published), "Order did not retain both unroutable responses.");
+                    Assert.Equal(request.Invocation.Message, target.IncomingInvocation!.RequestMessage);
+                    var admission = (await orders.Store.FindIncomingDecisionAsync(identity.InvocationId))!;
+                    Assert.Null(admission.RejectionReason);
+                    Assert.Equal(request.Invocation.Message, admission.Request.Message);
+                    var rows = await InvocationRowsAsync(orders, target.Id);
+                    Assert.Equal(2, rows.Count);
+                    Assert.All(rows, row => Assert.False(row.Published));
+                    acceptance = Assert.Single(rows, row => row.Message.Name == nameof(ProcessInvocationAccepted)).Message;
+                    terminal = Assert.Single(rows, row => row.Message.Name == nameof(ProcessInvocationTerminalOutcome)).Message;
+                    Assert.Equal(admission.Reply, acceptance.Invocation!.Message);
+                    Assert.Equal(target.InvocationTerminalOutcome, terminal.ToInvocation());
+                    Assert.Equal(target.Id, acceptance.Invocation.TargetSagaInstanceId);
+                } // Kill Order after the terminal commit, while both responses remain unroutable.
+
+                await channel.QueueBindAsync(outcomeQueue, exchange, outcomeQueue);
+                await using var resumedTarget = orders.Start();
+                Assert.NotEqual(firstTargetPid, resumedTarget.Id);
+                await resumedTarget.WaitForStartupAsync();
+                var completed = await CompletedAsync(procurement.Store, sourceId);
+                var finished = completed.Steps.Single(x => x.StepId == "invokeOrder");
+                Assert.Equal(ExternalProcessStatus.Completed, finished.InvocationProgress!.Status);
+                Assert.Equal(target.Id, finished.InvocationProgress.TargetSagaInstanceId);
+                Assert.Equal(request.Invocation!.Message, finished.Invocation!.Message);
+                Assert.Contains(finished.ObservedMessages, x => x.MessageId == acceptance.MessageId);
+                Assert.Contains(finished.ObservedMessages, x => x.MessageId == terminal.MessageId);
+                await UntilAsync(async () => (await InvocationRowsAsync(procurement, sourceId)).All(x => x.Published) &&
+                    (await InvocationRowsAsync(orders, target.Id)).All(x => x.Published), "Invocation confirmations were not recorded.");
+                Assert.Equal(request.MessageId, Assert.Single(await InvocationRowsAsync(procurement, sourceId)).Message.MessageId);
+                Assert.Equal(2, (await InvocationRowsAsync(orders, target.Id)).Count);
+                Assert.Single(await orders.Store.ListAsync(), x => x.IncomingInvocation?.Identity == request.Invocation.Message.Identity);
+            }
+            finally { if (resumedSource is not null) await resumedSource.DisposeAsync(); }
+        }
+        finally
+        {
+            await SampleRabbitMqEndToEndTests.StopWorkersAsync(workers);
+            root.Delete(recursive: true);
+        }
+    }
+
+    private static string InvocationQueue(ProcessIdentity identity, string kind) =>
+        $"sagaflow.invocations.{Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(identity)))}.{kind}";
+
+    private static async Task<List<(OutboxMessage Message, bool Published, bool Released)>> InvocationRowsAsync(Domain domain, string sagaId)
+    {
+        await using var connection = new NpgsqlConnection(domain.ConnectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand("""
+            SELECT document::text, published_at IS NOT NULL, attempts > 0 AND owner IS NULL FROM sagaflow.outbox
+            WHERE saga_instance_id = @id AND document->>'Invocation' IS NOT NULL
+            """, connection);
+        command.Parameters.AddWithValue("id", sagaId);
+        await using var reader = await command.ExecuteReaderAsync();
+        var rows = new List<(OutboxMessage, bool, bool)>();
+        while (await reader.ReadAsync())
+            rows.Add((JsonSerializer.Deserialize<OutboxMessage>(reader.GetString(0))!, reader.GetBoolean(1), reader.GetBoolean(2)));
+        return rows;
     }
 
     [SamplePostgreSqlRabbitMqFact]

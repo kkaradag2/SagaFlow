@@ -4,7 +4,8 @@ internal static class SagaStateSnapshot
 {
     public static SagaInstance Copy(SagaInstance state) => new()
     {
-        InvocationTerminalOutcome = state.InvocationTerminalOutcome, IncomingInvocation = state.IncomingInvocation, Id = state.Id, DefinitionName = state.DefinitionName, DefinitionDomain = state.DefinitionDomain,
+        InvocationTerminalOutcome = state.InvocationTerminalOutcome, InvocationTerminalQueued = state.InvocationTerminalQueued,
+        IncomingInvocation = state.IncomingInvocation, Id = state.Id, DefinitionName = state.DefinitionName, DefinitionDomain = state.DefinitionDomain,
         DefinitionVersion = state.DefinitionVersion, CorrelationId = state.CorrelationId,
         CurrentStep = state.CurrentStep, Status = state.Status, Context = state.Context.Clone(), PayloadType = state.PayloadType,
         CreatedAt = state.CreatedAt, UpdatedAt = state.UpdatedAt, FailureReason = state.FailureReason, Revision = state.Revision,

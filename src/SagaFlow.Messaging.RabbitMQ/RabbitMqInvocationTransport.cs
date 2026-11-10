@@ -77,19 +77,71 @@ internal sealed class RabbitMqInvocationTransport(RabbitMqConnectionProvider con
     public ValueTask PublishAsync(ProcessInvocationTerminalOutcome outcome, CancellationToken cancellationToken = default) =>
         SendAsync(outcome, outcome.Message, outcome.Message.Identity.Source, false, cancellationToken);
 
+    public OutboxMessage PrepareOutbox(OutboxMessage message)
+    {
+        var invocation = message.Invocation ?? throw new InvalidOperationException("Invocation metadata is required.");
+        var properties = message.ToInvocation() switch
+        {
+            ProcessInvocationRequest r => RabbitMqInvocationSerializer.Properties(r, r.Message),
+            ProcessInvocationAccepted a => RabbitMqInvocationSerializer.Properties(a, a.Message),
+            ProcessInvocationRejected r => RabbitMqInvocationSerializer.Properties(r, r.Message),
+            ProcessInvocationTerminalOutcome t => RabbitMqInvocationSerializer.Properties(t, t.Message),
+            _ => throw new InvalidOperationException("Unknown invocation message.")
+        };
+        return message with
+        {
+            Exchange = Exchange,
+            Destination = Queue(invocation.Destination, invocation.IsRequest),
+            ReplyDestination = properties.ReplyTo,
+            WireProperties = new(properties.ContentType!, properties.ContentEncoding!, properties.CorrelationId!,
+                properties.DeliveryMode == DeliveryModes.Persistent,
+                properties.Headers!.ToDictionary(entry => entry.Key, entry => (string)entry.Value!, StringComparer.Ordinal))
+        };
+    }
+
+    public ValueTask PublishOutboxAsync(OutboxMessage message, CancellationToken cancellationToken = default)
+    {
+        var invocation = message.Invocation ?? throw new InvalidOperationException("Invocation metadata is required.");
+        var wire = message.WireProperties ?? throw new InvalidOperationException("Stored AMQP properties are required.");
+        if (local != invocation.Publisher || message.Destination != Queue(invocation.Destination, invocation.IsRequest) ||
+            message.Exchange != Exchange || message.ReplyDestination != (invocation.IsRequest ? Queue(invocation.Publisher, false) : null))
+            throw new InvalidOperationException("Stored invocation route or local ownership is invalid.");
+        var properties = new BasicProperties
+        {
+            Type = message.Name, MessageId = message.MessageId, ReplyTo = message.ReplyDestination,
+            ContentType = wire.ContentType, ContentEncoding = wire.ContentEncoding, CorrelationId = wire.CorrelationId,
+            DeliveryMode = wire.Persistent ? DeliveryModes.Persistent : DeliveryModes.Transient,
+            Headers = wire.Headers.ToDictionary(entry => entry.Key, entry => (object?)entry.Value, StringComparer.Ordinal)
+        };
+        return SendWireAsync(message.Destination, properties, message.Body, cancellationToken);
+    }
+
     private async ValueTask SendAsync<T>(T body, InvocationMessage message, ProcessIdentity destination, bool request, CancellationToken cancellationToken)
     {
         if (local != (request ? message.Identity.Source : message.Identity.Target)) throw new InvalidOperationException("Publisher does not own the message source/target process identity.");
         var queue = Queue(destination, request);
         if (queue.Length > 255) throw new InvalidOperationException("Invocation routing identity exceeds AMQP queue name limit.");
-        var bytes = RabbitMqInvocationSerializer.Body(body);
-        var properties = RabbitMqInvocationSerializer.Properties(body, message);
-        await publishing.WaitAsync(cancellationToken);
+        await SendWireAsync(queue, RabbitMqInvocationSerializer.Properties(body, message),
+            RabbitMqInvocationSerializer.Body(body), cancellationToken);
+    }
+
+    private async ValueTask SendWireAsync(string queue, BasicProperties properties, byte[] bytes, CancellationToken cancellationToken)
+    {
+        using var publication = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, shutdown.Token);
+        await publishing.WaitAsync(publication.Token);
         try
         {
             var channel = publisher ?? throw new InvalidOperationException("Invocation transport is not started.");
-            await channel.BasicPublishAsync(Exchange, queue, mandatory: true, properties, bytes, cancellationToken);
+            if (channel is { IsOpen: false, CloseReason: { Initiator: ShutdownInitiator.Peer, ReplyCode: 404 } })
+            {
+                var connection = await connections.GetConnectionAsync(publication.Token);
+                publisher = await connection.CreateChannelAsync(new CreateChannelOptions(true, true), publication.Token);
+                await channel.DisposeAsync();
+                channel = publisher;
+            }
+            await channel.BasicPublishAsync(Exchange, queue, mandatory: true, properties, bytes, publication.Token);
         }
+        catch (OperationCanceledException) when (publication.IsCancellationRequested) { throw; }
         catch (Exception error) { throw new IOException("Invocation publication failed or confirmation is uncertain.", error); }
         finally { publishing.Release(); }
     }

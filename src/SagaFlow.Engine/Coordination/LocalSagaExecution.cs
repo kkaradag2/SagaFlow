@@ -8,6 +8,7 @@ public interface ILocalSagaStepHandler
 }
 public interface ILocalSagaExecutionBoundary
 {
+    bool HasLocalStepHandlers => true;
     Task ExecuteAsync(SagaCommand command, CancellationToken cancellationToken);
 }
 public sealed class InvocationExecutionContext

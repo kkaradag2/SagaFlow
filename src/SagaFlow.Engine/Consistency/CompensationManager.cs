@@ -3,15 +3,12 @@ using SagaFlow.Core.Messages;
 using SagaFlow.Core.State;
 using SagaFlow.Engine.Coordination;
 using SagaFlow.Engine.Messaging;
-using SagaFlow.Engine.Notifications;
 
 namespace SagaFlow.Engine.Consistency;
 
 public sealed class CompensationManager(
-    ISagaStateStore store,
     CommandDispatcher dispatcher,
-    ISagaClock clock,
-    SagaStateChangePublisher? changes = null)
+    ISagaClock clock)
 {
     public SagaCommand? Begin(SagaInstance instance, string? causationId = null)
     {
@@ -45,40 +42,6 @@ public sealed class CompensationManager(
         }
 
         return PrepareNext(instance, outcome.MessageId);
-    }
-
-    public async Task PublishPreparedAsync(SagaCommand command, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var snapshot = await store.FindAsync(command.Headers.SagaInstanceId, cancellationToken)
-                ?? throw new KeyNotFoundException("Saga disappeared before compensation publication.");
-            await dispatcher.PublishAsync(new SagaCommand
-            {
-                Name = command.Name, Payload = command.Payload, TimeToLive = command.TimeToLive,
-                Headers = command.Headers, RecoverySnapshot = SagaExecutionSnapshotCodec.Capture(snapshot)
-            }, cancellationToken);
-        }
-        catch (Exception error)
-        {
-            await store.UpdateAsync(command.Headers.SagaInstanceId, instance =>
-            {
-                var compensation = instance.Compensations.Single(item => item.StepId == command.Headers.StepId);
-                // A transport may synchronously deliver an outcome before returning. Never erase accepted compensation history.
-                if (compensation.Status == SagaCompensationStatus.Dispatched)
-                {
-                    var now = clock.UtcNow;
-                    compensation.Status = SagaCompensationStatus.Failed;
-                    compensation.CompletedAt = now;
-                    instance.Status = SagaStatus.Failed;
-                    instance.UpdatedAt = now;
-                    instance.FailureReason ??= $"Compensation command '{command.Name}' could not be published: {error.Message}";
-                }
-                return true;
-            }, CancellationToken.None);
-            if (changes is not null) await changes.PublishAsync(command.Headers.SagaInstanceId);
-            throw new SagaDispatchException(command.Headers.SagaInstanceId, command.Headers.StepId, error);
-        }
     }
 
     private SagaCommand? PrepareNext(SagaInstance instance, string? causationId)

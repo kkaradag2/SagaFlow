@@ -13,6 +13,137 @@ public sealed class InMemorySagaStateStore : ISagaStateStore
 {
     private readonly ConcurrentDictionary<string, SagaStateEntry> _instances = new(StringComparer.Ordinal);
     private readonly IncomingInvocationStore _incomingInvocations;
+    private readonly object _outboxGate = new();
+    private readonly Dictionary<string, MemoryOutboxEntry> _outbox = new(StringComparer.Ordinal);
+
+    private sealed class MemoryOutboxEntry(OutboxMessage message)
+    {
+        public OutboxMessage Message { get; } = message;
+        public string? Owner { get; set; } = message.PreparationOwner;
+        public DateTimeOffset? LeaseUntil { get; set; } = message.PreparationOwner is null ? null : DateTimeOffset.MaxValue;
+        public DateTimeOffset RetryAt { get; set; } = message.CreatedAt;
+        public DateTimeOffset? PublishedAt { get; set; }
+        public int Attempts { get; set; }
+    }
+
+    public ValueTask<TResult> UpdateWithOutboxAsync<TResult>(string instanceId,
+        Func<SagaInstance, (TResult Result, OutboxMessage? Message)> update, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(update);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!_instances.TryGetValue(instanceId, out var entry)) throw new KeyNotFoundException($"Saga instance '{instanceId}' was not found.");
+        lock (entry.Gate)
+        {
+            if (entry.IsUpdating) throw new InvalidOperationException("Nested writes to the same Saga instance are not supported inside UpdateAsync.");
+            entry.IsUpdating = true;
+            try
+            {
+                var working = SagaStateSnapshot.Copy(entry.State);
+                var (result, message) = update(working);
+                cancellationToken.ThrowIfCancellationRequested();
+                EnsureIncomingUnchanged(entry.State.IncomingInvocation, working.IncomingInvocation);
+                IncomingTerminalWrite.Capture(entry.State).Validate(working, message);
+                working.Revision = entry.State.Revision + 1;
+                var committed = SagaStateSnapshot.Copy(working);
+                if (message is not null) CommitOutbox(instanceId, message, () => entry.State = committed);
+                else entry.State = committed;
+                return ValueTask.FromResult(result);
+            }
+            finally { entry.IsUpdating = false; }
+        }
+    }
+
+    public ValueTask<IReadOnlyList<OutboxClaim>> ClaimOutboxAsync(string owner, DateTimeOffset now, TimeSpan lease,
+        int limit, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        if (lease <= TimeSpan.Zero || limit <= 0) throw new ArgumentOutOfRangeException(nameof(lease));
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_outboxGate)
+        {
+            var claimed = new List<OutboxClaim>();
+            foreach (var item in _outbox.Values.Where(x => x.PublishedAt is null && x.RetryAt <= now &&
+                         (x.LeaseUntil is null || x.LeaseUntil <= now)).OrderBy(x => x.Message.CreatedAt).Take(limit))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                item.Owner = owner;
+                item.LeaseUntil = now + lease;
+                item.Attempts++;
+                claimed.Add(new(Clone(item.Message), owner, item.Attempts, item.LeaseUntil.Value));
+            }
+            return ValueTask.FromResult<IReadOnlyList<OutboxClaim>>(claimed);
+        }
+    }
+
+    public ValueTask MarkOutboxPublishedAsync(string messageId, string owner, DateTimeOffset publishedAt,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_outboxGate)
+        {
+            var item = Owned(messageId, owner);
+            item.PublishedAt = publishedAt;
+            item.Owner = null;
+            item.LeaseUntil = null;
+        }
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask ReleaseOutboxAsync(string messageId, string owner, DateTimeOffset retryAt,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_outboxGate)
+        {
+            var item = Owned(messageId, owner);
+            item.RetryAt = retryAt;
+            item.Owner = null;
+            item.LeaseUntil = null;
+        }
+        return ValueTask.CompletedTask;
+    }
+
+    private MemoryOutboxEntry Owned(string id, string owner)
+    {
+        if (!_outbox.TryGetValue(id, out var item) || item.Owner != owner || item.PublishedAt is not null)
+            throw new OutboxClaimLostException();
+        return item;
+    }
+
+    private static OutboxMessage Clone(OutboxMessage message) => message with
+    {
+        Body = message.Body.ToArray(), RecoverySnapshot = message.RecoverySnapshot.ToArray(),
+        WireProperties = message.WireProperties is { } properties
+            ? properties with { Headers = new Dictionary<string, string>(properties.Headers, StringComparer.Ordinal) }
+            : null
+    };
+
+    private void CommitOutbox(string localReference, OutboxMessage message, Action commit)
+    {
+        message.ValidateFor(localReference);
+        var entry = new MemoryOutboxEntry(Clone(message));
+        lock (_outboxGate)
+        {
+            if (_outbox.ContainsKey(message.MessageId))
+            {
+                var detail = $"Duplicate outbox MessageId '{message.MessageId}'.";
+                if (message.Invocation is not null) throw new IOException(detail);
+                throw new InvalidOperationException(detail);
+            }
+            commit();
+            _outbox.Add(message.MessageId, entry);
+        }
+    }
+
+    public ValueTask<(IncomingInvocationDecision Decision, string? TargetId)> AdmitWithOutboxAsync(
+        IncomingInvocationDecision decision, Func<SagaInstance> create, Func<IncomingInvocationDecision, string?, OutboxMessage> prepare,
+        CancellationToken cancellationToken = default) =>
+        _incomingInvocations.AdmitWithOutboxAsync(decision, create, prepare, CommitOutbox, FindOutbox, cancellationToken);
+
+    private OutboxMessage? FindOutbox(string messageId)
+    {
+        lock (_outboxGate) return _outbox.GetValueOrDefault(messageId)?.Message;
+    }
 
     /// <summary>Creates an empty store with an invocation index tied to its saga instances.</summary>
     public InMemorySagaStateStore()
@@ -75,6 +206,7 @@ public sealed class InMemorySagaStateStore : ISagaStateStore
             if (instance.Revision != entry.State.Revision)
                 throw new InvalidOperationException($"Stale Saga state revision for '{instance.Id}'; reload state or use UpdateAsync.");
             EnsureIncomingUnchanged(entry.State.IncomingInvocation, snapshot.IncomingInvocation);
+            IncomingTerminalWrite.Capture(entry.State).Validate(snapshot);
             snapshot.Revision = entry.State.Revision + 1;
             entry.State = snapshot;
         }
@@ -123,6 +255,7 @@ public sealed class InMemorySagaStateStore : ISagaStateStore
                 var result = update(working);
                 cancellationToken.ThrowIfCancellationRequested();
                 EnsureIncomingUnchanged(entry.State.IncomingInvocation, working.IncomingInvocation);
+                IncomingTerminalWrite.Capture(entry.State).Validate(working);
                 working.Revision = entry.State.Revision + 1;
                 // Copy again: neither the callback nor its result may retain references into stored state.
                 entry.State = SagaStateSnapshot.Copy(working);

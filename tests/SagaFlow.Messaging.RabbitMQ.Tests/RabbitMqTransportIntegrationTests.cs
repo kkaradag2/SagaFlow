@@ -558,7 +558,14 @@ public sealed partial class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixt
     }
 
     [RabbitMqFact]
-    public async Task LateOutcomeAfterCommandPublishFailureIsRequeuedWithoutChangingTerminalSaga()
+    public Task UnroutableNextCommandRemainsPendingAndPublishesWhenRouteReturns() =>
+        PendingNextCommandPublishesWhenRouteReturnsAsync(exchangeMissing: false);
+
+    [RabbitMqFact]
+    public Task MissingExchangeClosesPublisherAndOutboxRecoversAfterExchangeReturns() =>
+        PendingNextCommandPublishesWhenRouteReturnsAsync(exchangeMissing: true);
+
+    private async Task PendingNextCommandPublishesWhenRouteReturnsAsync(bool exchangeMissing)
     {
         const string definition = """
             name: rabbit-publish-failure-test
@@ -583,27 +590,37 @@ public sealed partial class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixt
         await using var runtime = await StartExternalAsync(definitionYaml: definition);
         var sagaId = await StartSagaAsync(runtime.Host, new { id = 1 });
         var firstCommand = RabbitMqMessageSerializer.DeserializeCommand((await GetMessageAsync(runtime.Topology.CommandQueue)));
+        var transport = runtime.Host.Services.GetRequiredService<RabbitMqTransport>();
+        var initialPublisher = transport.PublisherChannel!;
         await using (var channel = await broker.Connection.CreateChannelAsync())
-            await channel.QueueDeleteAsync("unroutable");
+        {
+            if (exchangeMissing) await channel.ExchangeDeleteAsync(runtime.Topology.CommandExchange);
+            else await channel.QueueDeleteAsync("unroutable");
+        }
 
         await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, SuccessfulOutcome(firstCommand.Headers));
-        await WaitUntilAsync(async () => (await FindSagaAsync(runtime.Host, sagaId))?.Status == SagaStatus.Failed);
+        await WaitUntilAsync(async () => (await FindSagaAsync(runtime.Host, sagaId))?.CurrentStep == "unroutable");
         await WaitForConsumerAsync(runtime.Topology.OutcomeQueue);
-        var failed = await FindSagaAsync(runtime.Host, sagaId);
-        var failedStep = failed!.Steps.Single(step => step.StepId == "unroutable");
-        Assert.Equal(SagaStepStatus.Failed, failedStep.Status);
-        Assert.Null(failedStep.Result);
+        var pending = await FindSagaAsync(runtime.Host, sagaId);
+        var nextStep = pending!.Steps.Single(step => step.StepId == "unroutable");
+        Assert.Equal(SagaStatus.Running, pending.Status);
+        Assert.Equal(SagaStepStatus.Dispatched, nextStep.Status);
+        Assert.Equal(0u, await MessageCountAsync(runtime.Topology.OutcomeQueue));
+        if (exchangeMissing)
+            await WaitUntilAsync(() => Task.FromResult(initialPublisher.CloseReason?.ReplyCode == 404));
 
-        await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, SuccessfulOutcome(failedStep.Execution!));
-        await Task.Delay(250);
-        await runtime.StopAsync();
-
-        Assert.Equal(1u, await MessageCountAsync(runtime.Topology.OutcomeQueue));
-        var afterLateOutcome = await FindSagaAsync(runtime.Host, sagaId);
-        Assert.Equal(failed.Revision, afterLateOutcome!.Revision);
-        Assert.Equal(SagaStatus.Failed, afterLateOutcome.Status);
-        Assert.Null(afterLateOutcome.CurrentStep);
-        Assert.Null(afterLateOutcome.Steps.Single(step => step.StepId == "unroutable").Result);
+        await using (var channel = await broker.Connection.CreateChannelAsync())
+        {
+            if (exchangeMissing) await channel.ExchangeDeclareAsync(runtime.Topology.CommandExchange, ExchangeType.Direct, durable: true);
+            await channel.QueueDeclareAsync("unroutable", durable: true, exclusive: false, autoDelete: false);
+            await channel.QueueBindAsync("unroutable", runtime.Topology.CommandExchange, "unroutable");
+        }
+        await WaitUntilAsync(async () => await MessageCountAsync("unroutable") == 1u);
+        var retried = RabbitMqMessageSerializer.DeserializeCommand(await GetMessageAsync("unroutable"));
+        Assert.Equal(nextStep.Execution, retried.Headers);
+        if (exchangeMissing) Assert.NotSame(initialPublisher, transport.PublisherChannel);
+        await PublishOutcomeAsync(runtime.Topology.OutcomeQueue, SuccessfulOutcome(retried.Headers));
+        await WaitUntilAsync(async () => (await FindSagaAsync(runtime.Host, sagaId))?.Status == SagaStatus.Completed);
     }
 
     [RabbitMqFact]
@@ -667,6 +684,20 @@ public sealed partial class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixt
             () => bus.PublishAsync(command).AsTask());
 
         Assert.True(error.IsReturn);
+
+        var stored = new OutboxMessage
+        {
+            MessageId = command.Headers.CommandId,
+            Name = command.Name,
+            Destination = command.Headers.StepId,
+            Exchange = runtime.Topology.CommandExchange,
+            Headers = command.Headers,
+            Body = RabbitMqMessageSerializer.Serialize(command),
+            RecoverySnapshot = [1]
+        };
+        var outboxError = await Assert.ThrowsAnyAsync<PublishException>(
+            () => bus.PublishOutboxAsync(stored).AsTask());
+        Assert.True(outboxError.IsReturn);
     }
 
     [RabbitMqFact]
@@ -919,6 +950,20 @@ public sealed partial class RabbitMqTransportIntegrationTests(RabbitMqBrokerFixt
 
             return _inner.UpdateAsync(instanceId, update, cancellationToken);
         }
+
+        public ValueTask<TResult> UpdateWithOutboxAsync<TResult>(string instanceId,
+            Func<SagaInstance, (TResult Result, OutboxMessage? Message)> update, CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Decrement(ref _remainingFailures) >= 0)
+            {
+                Interlocked.Increment(ref _injectedFailureCount);
+                throw new IOException("Injected transient state-store failure.");
+            }
+            return _inner.UpdateWithOutboxAsync(instanceId, update, cancellationToken);
+        }
+        public ValueTask<IReadOnlyList<OutboxClaim>> ClaimOutboxAsync(string owner, DateTimeOffset now, TimeSpan lease, int limit, CancellationToken ct = default) => _inner.ClaimOutboxAsync(owner, now, lease, limit, ct);
+        public ValueTask MarkOutboxPublishedAsync(string id, string owner, DateTimeOffset at, CancellationToken ct = default) => _inner.MarkOutboxPublishedAsync(id, owner, at, ct);
+        public ValueTask ReleaseOutboxAsync(string id, string owner, DateTimeOffset at, CancellationToken ct = default) => _inner.ReleaseOutboxAsync(id, owner, at, ct);
     }
 
     private sealed class TestRuntime(IHost host, RabbitTopology topology, string definitionPath, IConnection cleanupConnection, bool cleanupTopology = true) : IAsyncDisposable

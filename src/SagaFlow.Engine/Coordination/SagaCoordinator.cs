@@ -40,7 +40,7 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
         catch (Exception error)
         {
             // Cancellation between creation and the first dispatch claim must not orphan a Running instance.
-            await store.UpdateAsync(instance.Id, state =>
+            await store.UpdateWithOutboxAsync(instance.Id, state =>
             {
                 if (state.Status == SagaStatus.Running && state.Steps.All(s => s.Status == SagaStepStatus.Pending))
                 {
@@ -49,7 +49,7 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
                     state.FailureReason = $"Initial command could not be prepared: {error.Message}";
                     state.UpdatedAt = clock.UtcNow;
                 }
-                return true;
+                return (true, invocationPublisher?.PrepareTerminal(state));
             }, CancellationToken.None);
             if (changes is not null) await changes.PublishAsync(instance.Id);
             throw new SagaDispatchException(instance.Id, instance.CurrentStep!, error);
@@ -61,17 +61,18 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
     public async Task StartIncomingAsync(string instanceId, CancellationToken cancellationToken = default)
     {
         executor.EnsureTransport();
-        var command = await store.UpdateAsync(instanceId, instance =>
+        var command = await store.UpdateWithOutboxAsync(instanceId, instance =>
         {
             var registered = definitions.Find(new(instance.DefinitionDomain, instance.DefinitionName, instance.DefinitionVersion));
             if (instance.IncomingInvocation is null || registered?.Origin != DefinitionOrigin.Local)
                 throw new InvalidOperationException("Incoming target must be owned by a loaded local definition.");
-            if (instance.Status != SagaStatus.Running || instance.Steps.Any(step => step.Status != SagaStepStatus.Pending)) return (SagaCommand?)null;
+            if (instance.Status != SagaStatus.Running || instance.Steps.Any(step => step.Status != SagaStepStatus.Pending)) return ((SagaCommand?)null, (OutboxMessage?)null);
             if (instance.CurrentStep != registered.Definition.Steps[0].Name) throw new InvalidOperationException("Incoming target has an invalid initial step.");
-            return executor.Prepare(instance);
+            var prepared = executor.Prepare(instance);
+            return (prepared, executor.PrepareOutbox(instance, prepared));
         }, cancellationToken);
         if (command is not null && changes is not null) await changes.PublishAsync(instanceId);
-        try { if (command is not null) await executor.PublishPreparedAsync(command, cancellationToken); }
+        try { if (command is not null) await executor.ExecutePreparedAsync(command, cancellationToken); }
         catch { await NotifyTerminalAsync(instanceId, CancellationToken.None); throw; }
         await NotifyTerminalAsync(instanceId, cancellationToken);
     }
@@ -112,10 +113,11 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
         // Only a missing row before the callback can enter recovery.
         var found = false;
         ValueTask<(SagaCommand? Command, string? Error, bool Changed)> UpdateOutcomeAsync() =>
-            store.UpdateAsync(outcome.Headers.SagaInstanceId, instance =>
+            store.UpdateWithOutboxAsync(outcome.Headers.SagaInstanceId, instance =>
             {
                 found = true;
-                return ApplyOutcome(instance);
+                var result = ApplyOutcome(instance);
+                return (result, executor.PrepareOutbox(instance, result.Command) ?? invocationPublisher?.PrepareTerminal(instance));
             }, cancellationToken);
         (SagaCommand? Command, string? Error, bool Changed) ApplyOutcome(SagaInstance instance)
         {
@@ -219,12 +221,12 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
         try
         {
             if (decision.Error is not null) throw new InvalidOperationException(decision.Error);
-            if (decision.Command is { Headers.IsCompensation: true } compensation)
-                await compensations.PublishPreparedAsync(compensation, cancellationToken);
+            if (decision.Command is { Headers.IsCompensation: true })
+                await executor.DispatchQueuedAsync(cancellationToken);
             else if (decision.Command is not null)
-                await executor.PublishPreparedAsync(decision.Command, cancellationToken);
+                await executor.ExecutePreparedAsync(decision.Command, cancellationToken);
             else
-                await new DomainRollbackManager(store, services ?? EmptyServiceProvider.Instance, clock, changes)
+                await new DomainRollbackManager(store, services ?? EmptyServiceProvider.Instance, clock, changes, invocationPublisher)
                     .ExecuteIfPlannedAsync(outcome.Headers.SagaInstanceId, cancellationToken);
         }
         catch
@@ -239,8 +241,8 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
     {
         if (invocationPublisher is null) return;
         var state = await store.FindAsync(instanceId, cancellationToken);
-        if (state?.IncomingInvocation is not null && state.Status is SagaStatus.Completed or SagaStatus.Failed or SagaStatus.Compensated)
-            await invocationPublisher.PublishTerminalAsync(instanceId, cancellationToken);
+        if (state?.InvocationTerminalQueued == true)
+            await executor.DispatchQueuedAsync(cancellationToken);
     }
 
     private sealed class EmptyServiceProvider : IServiceProvider

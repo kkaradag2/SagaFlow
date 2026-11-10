@@ -10,6 +10,44 @@ namespace SagaFlow.Storage.PostgreSQL;
 /// <summary>Persists first-wins decisions and atomic target claims across database sessions.</summary>
 internal sealed class IncomingInvocationStore(StorageDatabase database)
 {
+    internal async ValueTask<(IncomingInvocationDecision Decision, string? TargetId)> AdmitWithOutboxAsync(
+        IncomingInvocationDecision candidate, Func<SagaInstance> create, Func<IncomingInvocationDecision, string?, OutboxMessage> prepare, CancellationToken ct)
+    {
+        var request = candidate.Request;
+        candidate.Reply.ValidateAgainst(request.Identity);
+        await using var context = database.Open(ct);
+        await using var transaction = await context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+        var claim = await context.LockInvocationAsync(Guid.Parse(request.Identity.InvocationId), ct);
+        var decision = claim.Decision is null ? candidate : StorageJson.Read<IncomingInvocationDecision>(claim.Decision);
+        ValidateSameRequest(decision.Request, request);
+        if (claim.Decision is not null)
+        {
+            var responseRow = await context.Outbox.AsNoTracking().SingleOrDefaultAsync(row => row.MessageId == decision.Reply.MessageId, ct);
+            if (responseRow is not null)
+            {
+                responseRow.Read().ValidateAdmission(decision, claim.TargetId);
+                return (decision, claim.TargetId);
+            }
+        }
+
+        if (decision.RejectionReason is null)
+        {
+            var (target, state) = await ResolveTargetAsync(context, claim, decision.Request, create, null, decision.Reply.OccurredAt, ct);
+            if (claim.TargetId is null) target.Write(state);
+            claim.TargetId = target.Id;
+        }
+        else if (claim.TargetId is not null)
+            throw new InvalidOperationException("Admission conflicts with an existing target.");
+
+        var response = StorageDatabase.InvokeCallback(() => prepare(decision, claim.TargetId));
+        response.ValidateAdmission(decision, claim.TargetId);
+        context.Outbox.Add(OutboxRow.Create(response));
+        claim.Decision = StorageJson.Write(decision);
+        await context.SaveChangesAsync(ct);
+        await StorageDatabase.CommitAsync(transaction, ct);
+        return (decision, claim.TargetId);
+    }
+
     internal async ValueTask<IncomingInvocationDecision?> FindDecisionAsync(string invocationId, CancellationToken cancellationToken)
     {
         await using var context = database.Open(cancellationToken);
@@ -63,6 +101,23 @@ internal sealed class IncomingInvocationStore(StorageDatabase database)
             ValidateSameRequest(decision.Request, request);
             if (decision.RejectionReason is not null) throw new InvalidOperationException("Invocation was rejected.");
         }
+        var wasClaimed = row.TargetId is not null;
+        var (target, working) = await ResolveTargetAsync(context, row, request, create, targetId, acceptedAt, cancellationToken);
+        if (wasClaimed) return working;
+
+        target.Write(working);
+        row.TargetId = target.Id;
+        try { await context.SaveChangesAsync(cancellationToken); }
+        catch (DbUpdateException error) when (StorageDatabase.IsInstanceCollision(error))
+        { throw new InvalidOperationException("Target Saga ID collision.", error); }
+        await StorageDatabase.CommitAsync(transaction, cancellationToken);
+        return working;
+    }
+
+    private static async Task<(SagaRow Row, SagaInstance State)> ResolveTargetAsync(StorageContext context, InvocationRow row,
+        ProcessInvocationRequest request, Func<SagaInstance>? create, string? targetId, DateTimeOffset acceptedAt,
+        CancellationToken cancellationToken)
+    {
         if (row.TargetId is not null)
         {
             if (targetId is not null && targetId != row.TargetId)
@@ -72,7 +127,7 @@ internal sealed class IncomingInvocationStore(StorageDatabase database)
             var snapshot = existing.Read();
             ValidateClaimedRequest(snapshot, request);
             cancellationToken.ThrowIfCancellationRequested();
-            return snapshot;
+            return (existing, snapshot);
         }
 
         SagaInstance working;
@@ -102,20 +157,9 @@ internal sealed class IncomingInvocationStore(StorageDatabase database)
         }
         working.IncomingInvocation = new(request.Identity, request.Message.OccurredAt, acceptedAt.ToUniversalTime(),
             request.Payload.Clone(), request.Message);
+        default(IncomingTerminalWrite).Validate(working);
         working.UpdatedAt = acceptedAt.ToUniversalTime();
-        target.Write(working);
-        row.TargetId = target.Id;
-
-        try
-        {
-            await context.SaveChangesAsync(cancellationToken);
-        }
-        catch (DbUpdateException error) when (StorageDatabase.IsInstanceCollision(error))
-        {
-            throw new InvalidOperationException("Target Saga ID collision.", error);
-        }
-        await StorageDatabase.CommitAsync(transaction, cancellationToken);
-        return working;
+        return (target, working);
     }
 
     private static void ValidateSameRequest(ProcessInvocationRequest expected, ProcessInvocationRequest request)

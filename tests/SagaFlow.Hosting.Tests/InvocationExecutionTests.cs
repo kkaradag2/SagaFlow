@@ -54,6 +54,9 @@ public sealed class InvocationExecutionTests
             Assert.Equal(!fail, await eligibilityScope.ServiceProvider.GetRequiredService<ProcessInvocationManager>()
                 .CanPublishAsync(state.Id, state.Steps[0].Invocation!.Identity.InvocationId));
         }
+        Assert.Empty(await store.ClaimOutboxAsync("inspection", DateTimeOffset.UtcNow,
+            TimeSpan.FromMinutes(1), 8));
+        Assert.Equal(fail ? 0 : 8, ((Bus)provider.GetRequiredService<ISagaMessageBus>()).Commands.Count);
         foreach (var captured in Handler.Captured)
             await Assert.ThrowsAsync<InvalidOperationException>(() => captured.InvokeAsync("target-process", 1));
     }
@@ -75,6 +78,13 @@ public sealed class InvocationExecutionTests
     }
     private sealed class Bus : ISagaMessageBus
     {
-        public ValueTask PublishAsync(SagaCommand command, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+        public ConcurrentBag<SagaCommand> Commands { get; } = [];
+        public ValueTask PublishOutboxAsync(OutboxMessage message, CancellationToken cancellationToken = default) =>
+            PublishAsync(message.ToCommand(), cancellationToken);
+        public ValueTask PublishAsync(SagaCommand command, CancellationToken cancellationToken = default)
+        {
+            Commands.Add(command);
+            return ValueTask.CompletedTask;
+        }
     }
 }

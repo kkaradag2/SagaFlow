@@ -21,6 +21,87 @@ public sealed class PostgreSqlSagaStateStore : ISagaStateStore
         _incoming = new IncomingInvocationStore(_database);
     }
 
+    public async ValueTask<TResult> UpdateWithOutboxAsync<TResult>(string instanceId,
+        Func<SagaInstance, (TResult Result, OutboxMessage? Message)> update, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(update);
+        await using var context = _database.Open(cancellationToken);
+        await using var transaction = await context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+        var row = await context.LockInstanceAsync(instanceId, cancellationToken)
+            ?? throw new KeyNotFoundException($"Saga instance '{instanceId}' was not found.");
+        var working = row.Read();
+        var incoming = working.IncomingInvocation;
+        var terminal = IncomingTerminalWrite.Capture(working);
+        var (result, message) = StorageDatabase.InvokeCallback(() => update(working));
+        cancellationToken.ThrowIfCancellationRequested();
+        EnsureIncomingUnchanged(incoming, working.IncomingInvocation);
+        terminal.Validate(working, message);
+        if (message is not null)
+        {
+            message.ValidateFor(instanceId);
+            context.Outbox.Add(OutboxRow.Create(message));
+        }
+        row.Write(working);
+        await context.SaveChangesAsync(cancellationToken);
+        await StorageDatabase.CommitAsync(transaction, cancellationToken);
+        return result;
+    }
+
+    public async ValueTask<IReadOnlyList<OutboxClaim>> ClaimOutboxAsync(string owner, DateTimeOffset now, TimeSpan lease,
+        int limit, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        if (lease <= TimeSpan.Zero || limit <= 0) throw new ArgumentOutOfRangeException(nameof(lease));
+        await using var context = _database.Open(cancellationToken);
+        await using var transaction = await context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+        var databaseNow = await context.Database.SqlQueryRaw<DateTimeOffset>(
+            """SELECT transaction_timestamp() AS "Value" """).SingleAsync(cancellationToken);
+        var rows = await context.Outbox.FromSql($"""
+            SELECT * FROM sagaflow.outbox
+            WHERE published_at IS NULL AND retry_at <= {databaseNow}
+              AND (lease_until IS NULL OR lease_until <= {databaseNow})
+            ORDER BY retry_at, created_at
+            LIMIT {limit} FOR UPDATE SKIP LOCKED
+            """).ToListAsync(cancellationToken);
+        var until = databaseNow + lease;
+        foreach (var row in rows)
+        {
+            row.Owner = owner;
+            row.LeaseUntil = until;
+            row.Attempts++;
+        }
+        await context.SaveChangesAsync(cancellationToken);
+        await StorageDatabase.CommitAsync(transaction, cancellationToken);
+        return rows.Select(row => new OutboxClaim(row.Read(), owner, row.Attempts, until)).ToArray();
+    }
+
+    public ValueTask<(IncomingInvocationDecision Decision, string? TargetId)> AdmitWithOutboxAsync(
+        IncomingInvocationDecision decision, Func<SagaInstance> create, Func<IncomingInvocationDecision, string?, OutboxMessage> prepare,
+        CancellationToken cancellationToken = default) =>
+        _incoming.AdmitWithOutboxAsync(decision, create, prepare, cancellationToken);
+
+    public async ValueTask MarkOutboxPublishedAsync(string messageId, string owner, DateTimeOffset publishedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await using var context = _database.Open(cancellationToken);
+        var updated = await context.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE sagaflow.outbox SET published_at = {publishedAt}, owner = NULL, lease_until = NULL
+            WHERE message_id = {messageId} AND owner = {owner} AND published_at IS NULL
+            """, cancellationToken);
+        if (updated != 1) throw new OutboxClaimLostException();
+    }
+
+    public async ValueTask ReleaseOutboxAsync(string messageId, string owner, DateTimeOffset retryAt,
+        CancellationToken cancellationToken = default)
+    {
+        await using var context = _database.Open(cancellationToken);
+        var updated = await context.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE sagaflow.outbox SET retry_at = {retryAt}, owner = NULL, lease_until = NULL
+            WHERE message_id = {messageId} AND owner = {owner} AND published_at IS NULL
+            """, cancellationToken);
+        if (updated != 1) throw new OutboxClaimLostException();
+    }
+
     /// <inheritdoc />
     public async ValueTask<bool> TryRecoverIncomingAsync(SagaInstance instance, CancellationToken cancellationToken = default)
     {
@@ -48,6 +129,7 @@ public sealed class PostgreSqlSagaStateStore : ISagaStateStore
                 throw new InvalidOperationException("Incoming admission conflicts with recovered evidence.");
         }
         var snapshot = StorageJson.Read<SagaInstance>(StorageJson.Write(instance));
+        default(IncomingTerminalWrite).Validate(snapshot);
         var row = new SagaRow { Id = snapshot.Id };
         row.Write(snapshot);
         context.Instances.Add(row);
@@ -80,7 +162,9 @@ public sealed class PostgreSqlSagaStateStore : ISagaStateStore
                 ?? throw new InvalidOperationException($"Saga '{snapshot.Id}' does not exist; create it with revision zero.");
             if (snapshot.Revision != existing.Revision)
                 throw StaleRevision(snapshot.Id);
-            EnsureIncomingUnchanged(existing.Read().IncomingInvocation, snapshot.IncomingInvocation);
+            var previous = existing.Read();
+            EnsureIncomingUnchanged(previous.IncomingInvocation, snapshot.IncomingInvocation);
+            IncomingTerminalWrite.Capture(previous).Validate(snapshot);
             existing.Write(snapshot);
         }
 
@@ -129,10 +213,12 @@ public sealed class PostgreSqlSagaStateStore : ISagaStateStore
             ?? throw new KeyNotFoundException($"Saga instance '{instanceId}' was not found.");
         var working = row.Read();
         var incoming = working.IncomingInvocation;
+        var terminal = IncomingTerminalWrite.Capture(working);
         cancellationToken.ThrowIfCancellationRequested();
         var result = StorageDatabase.InvokeCallback(() => update(working));
         cancellationToken.ThrowIfCancellationRequested();
         EnsureIncomingUnchanged(incoming, working.IncomingInvocation);
+        terminal.Validate(working);
         row.Write(working);
         await context.SaveChangesAsync(cancellationToken);
         await StorageDatabase.CommitAsync(transaction, cancellationToken);

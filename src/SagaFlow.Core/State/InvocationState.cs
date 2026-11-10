@@ -10,7 +10,7 @@ public sealed record IncomingInvocation(ProcessInvocationIdentity Identity, Date
     System.Text.Json.JsonElement? Payload = null, InvocationMessage? RequestMessage = null);
 
 /// <summary>Local publish attempt only. Requested does not assert broker confirmation or business acceptance.</summary>
-public sealed record InvocationPublication(string? ActiveAttemptId, DateTimeOffset AttemptedAt, string? LastError);
+public sealed record InvocationPublication(string? ActiveAttemptId, DateTimeOffset AttemptedAt, string? LastError, bool Queued = false);
 /// <summary>Sticky admission decision. Validation may run concurrently, but the first committed decision wins.</summary>
 public sealed record IncomingInvocationDecision(ProcessInvocationRequest Request, string? RejectionReason, InvocationMessage Reply);
 

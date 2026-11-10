@@ -12,10 +12,21 @@ public sealed partial class CrossDomainCoordinationTests
 {
     private sealed class Port : IProcessInvocationBus
     {
+        public ValueTask PublishOutboxAsync(OutboxMessage message, CancellationToken ct) => message.ToInvocation() switch
+        {
+            ProcessInvocationRequest r => PublishAsync(r, ct),
+            ProcessInvocationAccepted a => PublishAsync(a, ct),
+            ProcessInvocationRejected r => PublishAsync(r, ct),
+            ProcessInvocationTerminalOutcome t => PublishAsync(t, ct),
+            _ => throw new InvalidOperationException("Unknown invocation message.")
+        };
+
         public Func<ProcessInvocationRequest, Task> Request = _ => Task.CompletedTask;
         public Func<ProcessInvocationAccepted, Task> Accepted = _ => Task.CompletedTask;
         public Func<ProcessInvocationRejected, Task> Rejected = _ => Task.CompletedTask;
         public Func<ProcessInvocationTerminalOutcome, Task> Terminal = _ => Task.CompletedTask;
+        public Func<OutboxMessage, OutboxMessage> Prepare = message => message;
+        public OutboxMessage PrepareOutbox(OutboxMessage message) => Prepare(message);
         public async ValueTask PublishAsync(ProcessInvocationRequest value, CancellationToken ct = default) => await Request(value);
         public async ValueTask PublishAsync(ProcessInvocationAccepted value, CancellationToken ct = default) => await Accepted(value);
         public async ValueTask PublishAsync(ProcessInvocationRejected value, CancellationToken ct = default) => await Rejected(value);
@@ -57,10 +68,10 @@ public sealed partial class CrossDomainCoordinationTests
             }));
             Target = new(target, processBus: TargetPort);
             SourceManager = new(Source.Store, Source.Registry, Source.Clock);
-            SourcePublisher = new(Source.Store, SourcePort, Source.Registry, Source.Clock);
-            TargetPublisher = new(Target.Store, TargetPort, Target.Registry, Target.Clock);
-            SourceReceiver = new(Source.Store, Source.Registry, SourceManager, SourcePort, Source.Clock, [], Source.Coordinator);
-            TargetReceiver = new(Target.Store, Target.Registry, new(Target.Store, Target.Registry, Target.Clock), TargetPort, Target.Clock, [new Policy(reject ? "Business rejection" : null)], Target.Coordinator);
+            SourcePublisher = new(Source.Store, SourcePort, Source.Registry, Source.Clock, Source.Dispatcher);
+            TargetPublisher = new(Target.Store, TargetPort, Target.Registry, Target.Clock, Target.Dispatcher);
+            SourceReceiver = new(Source.Store, Source.Registry, SourceManager, SourcePort, Source.Clock, [], Source.Coordinator, Source.Dispatcher);
+            TargetReceiver = new(Target.Store, Target.Registry, new(Target.Store, Target.Registry, Target.Clock), TargetPort, Target.Clock, [new Policy(reject ? "Business rejection" : null)], Target.Coordinator, Target.Dispatcher);
             SourcePort.Request = request => TargetReceiver.ReceiveAsync(request);
             TargetPort.Accepted = value => SourceReceiver.ReceiveAsync(value);
             TargetPort.Rejected = value => SourceReceiver.ReceiveAsync(value);
@@ -157,17 +168,19 @@ public sealed partial class CrossDomainCoordinationTests
     }
 
     [Fact]
-    public async Task InitialTargetPublishFailureIsTerminalAndDuplicatesDoNotRestartIt()
+    public async Task InitialTargetPublishFailureLeavesOriginalCommandPendingAndDuplicatesDoNotRestartIt()
     {
         var s = new Setup(); s.SourcePort.Request = _ => Task.CompletedTask;
         var source = await s.Start(); var request = source.Steps[0].Invocation!;
         s.Target.Bus.OnPublish = (_, _) => throw new IOException("initial target command publish failed");
-        await Assert.ThrowsAsync<SagaDispatchException>(() => s.TargetReceiver.ReceiveAsync(request));
-        var target = Assert.Single(await s.Target.Store.ListAsync()); Assert.Equal(SagaStatus.Failed, target.Status);
-        Assert.Equal(ExternalProcessStatus.Failed, (await s.Source.Store.FindAsync(source.Id))!.Steps[0].InvocationProgress!.Status);
+        await s.TargetReceiver.ReceiveAsync(request);
+        var target = Assert.Single(await s.Target.Store.ListAsync()); Assert.Equal(SagaStatus.Running, target.Status);
+        Assert.Equal(ExternalProcessStatus.Accepted, (await s.Source.Store.FindAsync(source.Id))!.Steps[0].InvocationProgress!.Status);
+        var pending = Assert.Single(await s.Target.Store.ClaimOutboxAsync("inspection", DateTimeOffset.UtcNow.AddMinutes(2), TimeSpan.FromMinutes(1), 10));
+        Assert.Equal(target.Steps[0].Execution!.CommandId, pending.Message.MessageId);
         s.Target.Bus.OnPublish = null;
         await s.TargetReceiver.ReceiveAsync(request);
-        Assert.Empty(s.Target.Bus.Commands); Assert.Single(s.Source.Bus.Commands);
+        Assert.Empty(s.Target.Bus.Commands); Assert.Empty(s.Source.Bus.Commands);
         Assert.Equal(target.Id, Assert.Single(await s.Target.Store.ListAsync()).Id);
     }
 
@@ -178,13 +191,42 @@ public sealed partial class CrossDomainCoordinationTests
         await s.Target.Receiver.ReceiveAsync(s.Target.Outcome(s.Target.Bus.Commands.First()));
         var last = s.Target.Bus.Commands.Last();
         s.TargetPort.Terminal = _ => throw new IOException("terminal confirmation lost");
-        await Assert.ThrowsAsync<IOException>(() => s.Target.Receiver.ReceiveAsync(s.Target.Outcome(last)));
+        await s.Target.Receiver.ReceiveAsync(s.Target.Outcome(last));
         var target = Assert.Single(await s.Target.Store.ListAsync()); Assert.Equal(SagaStatus.Completed, target.Status);
         var message = target.InvocationTerminalOutcome!;
+        Assert.Empty(s.Source.Bus.Commands);
+        var pending = Assert.Single(await s.Target.Store.ClaimOutboxAsync("retry", DateTimeOffset.UtcNow.AddMinutes(1),
+            TimeSpan.FromMinutes(1), 1));
+        Assert.Equal(message, pending.Message.ToInvocation());
+        await s.Target.Store.ReleaseOutboxAsync(pending.Message.MessageId, pending.Owner, DateTimeOffset.UtcNow);
         s.TargetPort.Terminal = value => s.SourceReceiver.ReceiveAsync(value);
         await Assert.ThrowsAsync<DuplicateSagaOutcomeException>(() => s.Target.Receiver.ReceiveAsync(s.Target.Outcome(last)));
-        await s.TargetPublisher.PublishTerminalAsync(target.Id);
+        await s.TargetPublisher.TransitionTerminalAsync(target.Id, SagaStatus.Completed);
         Assert.Equal(message, (await s.Target.Store.FindAsync(target.Id))!.InvocationTerminalOutcome);
+        Assert.Single(s.Source.Bus.Commands);
+    }
+
+    [Fact]
+    public async Task TerminalOutboxFailureRollsBackTheFinalOutcome()
+    {
+        var s = new Setup();
+        await s.Start();
+        await s.Target.Receiver.ReceiveAsync(s.Target.Outcome(s.Target.Bus.Commands.First()));
+        var outcome = s.Target.Outcome(s.Target.Bus.Commands.Last());
+        var before = Assert.Single(await s.Target.Store.ListAsync());
+        s.TargetPort.Prepare = _ => throw new IOException("Terminal preparation failed");
+        await Assert.ThrowsAsync<IOException>(() => s.Target.Receiver.ReceiveAsync(outcome));
+        var after = (await s.Target.Store.FindAsync(before.Id))!;
+        Assert.Equal(before.Revision, after.Revision);
+        Assert.Equal(SagaStatus.Running, after.Status);
+        Assert.Null(after.InvocationTerminalOutcome);
+        Assert.Empty(s.Source.Bus.Commands);
+
+        s.TargetPort.Prepare = message => message;
+        await s.Target.Receiver.ReceiveAsync(outcome);
+        var terminal = (await s.Target.Store.FindAsync(before.Id))!;
+        Assert.True(terminal.InvocationTerminalQueued);
+        Assert.NotNull(terminal.InvocationTerminalOutcome);
         Assert.Single(s.Source.Bus.Commands);
     }
 

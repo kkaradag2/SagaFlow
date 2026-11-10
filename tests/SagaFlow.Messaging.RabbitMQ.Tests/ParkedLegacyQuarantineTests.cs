@@ -18,10 +18,8 @@ public sealed partial class ProcessInvocationIntegrationTests
         using var host = await Start(source, target.Name);
         try
         {
-            await using var scope = host.Services.CreateAsyncScope();
-            var failure = await Assert.ThrowsAsync<ProcessInvocationPublishException>(() => scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { allow = true }));
+            var before = await StartWithHeldRequestAsync(host);
             var store = host.Services.GetRequiredService<ISagaStateStore>();
-            var before = (await store.FindAsync(failure.SourceInstanceId))!;
             var identity = before.Steps[0].Invocation!.Identity;
             var transport = host.Services.GetRequiredService<RabbitMqInvocationTransport>();
             var deferred = RabbitMqInvocationTransport.Queue(identity.Source, false) + ".deferred";

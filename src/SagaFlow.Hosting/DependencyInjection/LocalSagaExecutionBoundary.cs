@@ -5,8 +5,10 @@ using SagaFlow.Engine.Messaging;
 using SagaFlow.Engine.Coordination;
 namespace SagaFlow.Hosting.DependencyInjection;
 
-internal sealed class LocalSagaExecutionBoundary(IServiceScopeFactory scopes) : ILocalSagaExecutionBoundary
+internal sealed class LocalSagaExecutionBoundary(IServiceScopeFactory scopes, IServiceProviderIsService services) : ILocalSagaExecutionBoundary
 {
+    public bool HasLocalStepHandlers => services.IsService(typeof(ILocalSagaStepHandler));
+
     public async Task ExecuteAsync(SagaCommand command, CancellationToken cancellationToken)
     {
         await using var scope = scopes.CreateAsyncScope();

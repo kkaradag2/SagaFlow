@@ -14,6 +14,7 @@ using SagaFlow.Engine.Timeouts;
 using SagaFlow.Hosting.Timeouts;
 using SagaFlow.Engine.Notifications;
 using SagaFlow.Engine.Consistency;
+using SagaFlow.Hosting.Messaging;
 
 namespace SagaFlow.Hosting.DependencyInjection;
 
@@ -66,6 +67,7 @@ public static class SagaFlowServiceCollectionExtensions
             services.TryAddEnumerable(ServiceDescriptor.Singleton<IStartupFilter, SagaFlowDashboardStartupFilter>());
         }
         services.AddHostedService<DefinitionLoadingService>();
+        services.AddHostedService<OutboxDispatchService>();
         services.AddHostedService(provider =>
         {
             // The timeout worker requires the store at construction. Validate before DI resolves it.

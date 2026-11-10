@@ -230,52 +230,48 @@ public sealed class LocalSagaCoordinationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task PublicationFailureIsVisibleAndNeverLooksSuccessfullyDispatched(bool failSecondCommand)
+    public async Task PublicationFailureLeavesOriginalCommandPending(bool failSecondCommand)
     {
         var fixture = new CoordinationTestFixture(CoordinationTestFixture.Linear());
         fixture.Bus.OnPublish = (command, _) => command.Name == (failSecondCommand ? "Command1" : "Command0")
             ? ValueTask.FromException(new IOException("transport unavailable")) : ValueTask.CompletedTask;
-        SagaDispatchException error;
+        Guid id;
         if (failSecondCommand)
         {
-            await fixture.Coordinator.StartAsync("payload");
-            error = await Assert.ThrowsAsync<SagaDispatchException>(() => fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.Single())));
+            id = await fixture.Coordinator.StartAsync("payload");
+            await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.Single()));
         }
-        else error = await Assert.ThrowsAsync<SagaDispatchException>(() => fixture.Coordinator.StartAsync("payload"));
-        var state = (await fixture.Store.FindAsync(error.InstanceId))!;
-        Assert.Equal(SagaStatus.Failed, state.Status);
-        Assert.Null(state.CurrentStep);
-        Assert.Contains("transport unavailable", state.FailureReason);
-        Assert.Equal(SagaStepStatus.Failed, state.Steps.Single(s => s.StepId == error.StepId).Status);
+        else id = await fixture.Coordinator.StartAsync("payload");
+        var state = (await fixture.Store.FindAsync(id.ToString("N")))!;
+        var stepId = failSecondCommand ? "step-1" : "step-0";
+        Assert.Equal(SagaStatus.Running, state.Status);
+        Assert.Equal(stepId, state.CurrentStep);
+        Assert.Equal(SagaStepStatus.Dispatched, state.Steps.Single(s => s.StepId == stepId).Status);
+        var pending = Assert.Single(await fixture.Store.ClaimOutboxAsync("inspection", DateTimeOffset.UtcNow.AddMinutes(2), TimeSpan.FromMinutes(1), 10));
+        Assert.Equal(state.Steps.Single(s => s.StepId == stepId).Execution!.CommandId, pending.Message.MessageId);
         Assert.Equal(failSecondCommand ? 1 : 0, fixture.Bus.Commands.Count);
     }
 
     [Fact]
-    public async Task PublicationFailureDoesNotMakeALateOutcomeDuplicateOrChangeTerminalState()
+    public async Task UncertainPublicationCanStillAcceptCorrelatedOutcome()
     {
         var fixture = new CoordinationTestFixture(CoordinationTestFixture.Linear());
         fixture.Bus.OnPublish = (_, _) => ValueTask.FromException(new IOException("transport unavailable"));
-        var dispatchError = await Assert.ThrowsAsync<SagaDispatchException>(
-            () => fixture.Coordinator.StartAsync("payload"));
-        var before = (await fixture.Store.FindAsync(dispatchError.InstanceId))!;
+        var id = await fixture.Coordinator.StartAsync("payload");
+        var before = (await fixture.Store.FindAsync(id.ToString("N")))!;
         var outcome = new SagaOutcomeEvent
         {
             IsSuccess = true,
-            Headers = before.Steps.Single(step => step.StepId == dispatchError.StepId).Execution!,
+            Headers = before.Steps.Single(step => step.StepId == "step-0").Execution!,
             Result = System.Text.Json.JsonSerializer.SerializeToElement(new { accepted = true })
         };
-
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => fixture.Receiver.ReceiveAsync(outcome));
-
-        Assert.Contains("publication failed", error.Message);
-        var after = (await fixture.Store.FindAsync(dispatchError.InstanceId))!;
-        Assert.Equal(before.Revision, after.Revision);
-        Assert.Equal(SagaStatus.Failed, after.Status);
-        Assert.Null(after.CurrentStep);
-        var step = after.Steps.Single(candidate => candidate.StepId == dispatchError.StepId);
-        Assert.Equal(SagaStepStatus.Failed, step.Status);
-        Assert.Null(step.Result);
+        await fixture.Receiver.ReceiveAsync(outcome);
+        var after = (await fixture.Store.FindAsync(id.ToString("N")))!;
+        Assert.Equal(SagaStatus.Running, after.Status);
+        Assert.Equal("step-1", after.CurrentStep);
+        Assert.Equal(SagaStepStatus.Completed, after.Steps[0].Status);
+        await Assert.ThrowsAsync<DuplicateSagaOutcomeException>(() => fixture.Receiver.ReceiveAsync(outcome));
+        Assert.Equal(after.Revision, (await fixture.Store.FindAsync(id.ToString("N")))!.Revision);
     }
 
     [Fact]
@@ -284,7 +280,7 @@ public sealed class LocalSagaCoordinationTests
         var fixture = new CoordinationTestFixture(CoordinationTestFixture.Linear());
         var coordinator = new SagaCoordinator(fixture.Registry, fixture.Store, fixture.Instances,
             new SagaStepExecutor(fixture.Store, new CommandDispatcher(), fixture.Clock), new(), fixture.States,
-            new CompensationManager(fixture.Store, new CommandDispatcher(), fixture.Clock), fixture.Clock);
+            new CompensationManager(new CommandDispatcher(), fixture.Clock), fixture.Clock);
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => coordinator.StartAsync(new { id = 1 }));
         Assert.Contains("No ISagaMessageBus transport adapter", error.Message);
         Assert.Empty(fixture.Bus.Commands);
@@ -354,7 +350,7 @@ public sealed class LocalSagaCoordinationTests
     }
 
     [Fact]
-    public async Task CancellationDuringPublicationIsPersistedAsFailureAndExposesInstanceId()
+    public async Task CancellationDuringPublicationLeavesDurableDispatchClaim()
     {
         var fixture = new CoordinationTestFixture(CoordinationTestFixture.Linear());
         using var cancellation = new CancellationTokenSource();
@@ -362,8 +358,9 @@ public sealed class LocalSagaCoordinationTests
         var error = await Assert.ThrowsAsync<SagaDispatchException>(() => fixture.Coordinator.StartAsync("payload", cancellation.Token));
         Assert.IsAssignableFrom<OperationCanceledException>(error.InnerException);
         var state = (await fixture.Store.FindAsync(error.InstanceId))!;
-        Assert.Equal(SagaStatus.Failed, state.Status);
-        Assert.Equal(SagaStepStatus.Failed, state.Steps.Single(s => s.StepId == "step-0").Status);
+        Assert.Equal(SagaStatus.Running, state.Status);
+        Assert.Equal(SagaStepStatus.Dispatched, state.Steps.Single(s => s.StepId == "step-0").Status);
+        Assert.Single(await fixture.Store.ClaimOutboxAsync("inspection", DateTimeOffset.UtcNow.AddMinutes(2), TimeSpan.FromMinutes(1), 10));
         Assert.Empty(fixture.Bus.Commands);
     }
 
@@ -375,7 +372,7 @@ public sealed class LocalSagaCoordinationTests
         var dispatcher = new CommandDispatcher(fixture.Bus);
         var executor = new SagaStepExecutor(inspection, dispatcher, fixture.Clock);
         var coordinator = new SagaCoordinator(fixture.Registry, inspection, fixture.Instances, executor, new(), fixture.States,
-            new CompensationManager(inspection, dispatcher, fixture.Clock), fixture.Clock);
+            new CompensationManager(dispatcher, fixture.Clock), fixture.Clock);
         await coordinator.StartAsync("payload");
         Assert.True(inspection.SavedAllPending);
     }
@@ -389,7 +386,7 @@ public sealed class LocalSagaCoordinationTests
         var dispatcher = new CommandDispatcher(fixture.Bus);
         var executor = new SagaStepExecutor(inspection, dispatcher, fixture.Clock);
         var coordinator = new SagaCoordinator(fixture.Registry, inspection, fixture.Instances, executor, new(), fixture.States,
-            new CompensationManager(inspection, dispatcher, fixture.Clock), fixture.Clock);
+            new CompensationManager(dispatcher, fixture.Clock), fixture.Clock);
         var error = await Assert.ThrowsAsync<SagaDispatchException>(() => coordinator.StartAsync("payload", cancellation.Token));
         var state = (await fixture.Store.FindAsync(error.InstanceId))!;
         Assert.Equal(SagaStatus.Failed, state.Status);
@@ -410,5 +407,9 @@ public sealed class LocalSagaCoordinationTests
         public ValueTask<SagaInstance?> FindAsync(string instanceId, CancellationToken cancellationToken = default) => inner.FindAsync(instanceId, cancellationToken);
         public ValueTask<IReadOnlyList<SagaInstance>> ListAsync(CancellationToken cancellationToken = default) => inner.ListAsync(cancellationToken);
         public ValueTask<TResult> UpdateAsync<TResult>(string instanceId, Func<SagaInstance, TResult> update, CancellationToken cancellationToken = default) => inner.UpdateAsync(instanceId, update, cancellationToken);
+        public ValueTask<TResult> UpdateWithOutboxAsync<TResult>(string instanceId, Func<SagaInstance, (TResult Result, OutboxMessage? Message)> update, CancellationToken cancellationToken = default) => inner.UpdateWithOutboxAsync(instanceId, update, cancellationToken);
+        public ValueTask<IReadOnlyList<OutboxClaim>> ClaimOutboxAsync(string owner, DateTimeOffset now, TimeSpan lease, int limit, CancellationToken cancellationToken = default) => inner.ClaimOutboxAsync(owner, now, lease, limit, cancellationToken);
+        public ValueTask MarkOutboxPublishedAsync(string id, string owner, DateTimeOffset at, CancellationToken cancellationToken = default) => inner.MarkOutboxPublishedAsync(id, owner, at, cancellationToken);
+        public ValueTask ReleaseOutboxAsync(string id, string owner, DateTimeOffset at, CancellationToken cancellationToken = default) => inner.ReleaseOutboxAsync(id, owner, at, cancellationToken);
     }
 }

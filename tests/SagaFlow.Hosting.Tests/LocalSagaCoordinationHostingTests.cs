@@ -423,6 +423,8 @@ public sealed class LocalSagaCoordinationHostingTests
     private sealed class TestTransport : ISagaMessageBus
     {
         public ConcurrentQueue<SagaCommand> Commands { get; } = new();
+        public ValueTask PublishOutboxAsync(OutboxMessage message, CancellationToken cancellationToken = default) =>
+            PublishAsync(message.ToCommand(), cancellationToken);
         public ValueTask PublishAsync(SagaCommand command, CancellationToken cancellationToken = default)
         { Commands.Enqueue(command); return ValueTask.CompletedTask; }
     }
@@ -430,6 +432,8 @@ public sealed class LocalSagaCoordinationHostingTests
     private sealed class ScopedTransport : ISagaMessageBus
     {
         public List<SagaCommand> Commands { get; } = [];
+        public ValueTask PublishOutboxAsync(OutboxMessage message, CancellationToken cancellationToken = default) =>
+            PublishAsync(message.ToCommand(), cancellationToken);
         public ValueTask PublishAsync(SagaCommand command, CancellationToken cancellationToken = default)
         { Commands.Add(command); return ValueTask.CompletedTask; }
     }
@@ -445,6 +449,11 @@ public sealed class LocalSagaCoordinationHostingTests
         public ValueTask<IReadOnlyList<SagaInstance>> ListAsync(CancellationToken cancellationToken = default) => _inner.ListAsync(cancellationToken);
         public ValueTask<TResult> UpdateAsync<TResult>(string instanceId, Func<SagaInstance, TResult> update, CancellationToken cancellationToken = default)
         { Updates++; return _inner.UpdateAsync(instanceId, update, cancellationToken); }
+        public ValueTask<TResult> UpdateWithOutboxAsync<TResult>(string instanceId, Func<SagaInstance, (TResult Result, OutboxMessage? Message)> update, CancellationToken ct = default)
+        { Updates++; return _inner.UpdateWithOutboxAsync(instanceId, update, ct); }
+        public ValueTask<IReadOnlyList<OutboxClaim>> ClaimOutboxAsync(string owner, DateTimeOffset now, TimeSpan lease, int limit, CancellationToken ct = default) => _inner.ClaimOutboxAsync(owner, now, lease, limit, ct);
+        public ValueTask MarkOutboxPublishedAsync(string id, string owner, DateTimeOffset at, CancellationToken ct = default) => _inner.MarkOutboxPublishedAsync(id, owner, at, ct);
+        public ValueTask ReleaseOutboxAsync(string id, string owner, DateTimeOffset at, CancellationToken ct = default) => _inner.ReleaseOutboxAsync(id, owner, at, ct);
     }
 
     private sealed class RuntimeHost(WebApplication app, TestTransport bus, string directory) : IAsyncDisposable

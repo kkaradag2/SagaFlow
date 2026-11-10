@@ -7,7 +7,8 @@ using SagaFlow.Engine.Notifications;
 namespace SagaFlow.Engine.Coordination;
 
 public sealed class SagaStepExecutor(ISagaStateStore store, CommandDispatcher dispatcher, ISagaClock clock,
-    SagaStateChangePublisher? changes = null, ILocalSagaExecutionBoundary? execution = null)
+    SagaStateChangePublisher? changes = null, ILocalSagaExecutionBoundary? execution = null,
+    ProcessInvocationPublisher? invocationPublisher = null)
 {
     public void EnsureTransport() => dispatcher.EnsureTransport();
 
@@ -33,35 +34,57 @@ public sealed class SagaStepExecutor(ISagaStateStore store, CommandDispatcher di
     public async Task ExecuteAsync(string instanceId, CancellationToken cancellationToken = default)
     {
         EnsureTransport();
-        var command = await store.UpdateAsync(instanceId, instance => Prepare(instance), cancellationToken);
+        var command = await store.UpdateWithOutboxAsync(instanceId, instance =>
+        {
+            var prepared = Prepare(instance);
+            return (prepared, PrepareOutbox(instance, prepared));
+        }, cancellationToken);
         if (changes is not null) await changes.PublishAsync(instanceId);
-        await PublishPreparedAsync(command, cancellationToken);
+        await ExecutePreparedAsync(command, cancellationToken);
     }
 
-    internal async Task PublishPreparedAsync(SagaCommand command, CancellationToken cancellationToken)
+    internal async Task ExecutePreparedAsync(SagaCommand command, CancellationToken cancellationToken)
+    {
+        var snapshot = await store.FindAsync(command.Headers.SagaInstanceId, cancellationToken)
+            ?? throw new KeyNotFoundException("Saga disappeared after dispatch preparation.");
+        var step = snapshot.Steps.Single(s => s.StepId == command.Headers.StepId);
+        if (step.External)
+            await ExecuteLocalAsync(command, external: true, cancellationToken);
+        else
+        {
+            if (execution?.HasLocalStepHandlers == true)
+            {
+                await ExecuteLocalAsync(command, external: false, cancellationToken);
+                await store.ReleaseOutboxAsync(command.Headers.CommandId, OutboxPreparation.Owner(command),
+                    DateTimeOffset.UtcNow, CancellationToken.None);
+            }
+            await dispatcher.DispatchOutboxAsync(store, cancellationToken);
+        }
+    }
+
+    internal Task DispatchQueuedAsync(CancellationToken cancellationToken) =>
+        dispatcher.DispatchOutboxAsync(store, cancellationToken);
+
+    internal OutboxMessage? PrepareOutbox(SagaInstance instance, SagaCommand? command) =>
+        OutboxPreparation.Create(instance, command, dispatcher.CommandExchange, execution?.HasLocalStepHandlers == true);
+
+    private async Task ExecuteLocalAsync(SagaCommand command, bool external, CancellationToken cancellationToken)
     {
         try
         {
             if (execution is not null) await execution.ExecuteAsync(command, cancellationToken);
+            if (!external) return;
             var snapshot = await store.FindAsync(command.Headers.SagaInstanceId, cancellationToken)
                 ?? throw new KeyNotFoundException("Saga disappeared before publication.");
             var step = snapshot.Steps.Single(s => s.StepId == command.Headers.StepId);
-            if (step.External)
-            {
-                if (step.Invocation is null || step.Publication is null)
-                    throw new InvalidOperationException("External step requires a handler invocation and an enabled process transport.");
-                return; // Dispatched is the asynchronous external wait state; no participant command is sent.
-            }
-            await dispatcher.PublishAsync(new SagaCommand
-            {
-                Name = command.Name, Payload = command.Payload, TimeToLive = command.TimeToLive,
-                Headers = command.Headers, RecoverySnapshot = SagaExecutionSnapshotCodec.Capture(snapshot)
-            }, cancellationToken);
+            if (!step.External || step.Invocation is null || step.Publication is null)
+                throw new InvalidOperationException("External step requires a handler invocation and an enabled process transport.");
+            // Dispatched is the asynchronous external wait state; no participant command is sent.
         }
         catch (ProcessInvocationPublishException) { throw; }
         catch (Exception error)
         {
-            await store.UpdateAsync(command.Headers.SagaInstanceId, instance =>
+            await store.UpdateWithOutboxAsync(command.Headers.SagaInstanceId, instance =>
             {
                 var step = instance.Steps.Single(step => step.StepId == command.Headers.StepId);
                 if (step.Invocation is not null && step.Publication is not null)
@@ -76,7 +99,7 @@ public sealed class SagaStepExecutor(ISagaStateStore store, CommandDispatcher di
                     instance.FailureReason = $"Command '{command.Name}' could not be published: {error.Message}";
                     instance.UpdatedAt = clock.UtcNow;
                 }
-                return true;
+                return (true, invocationPublisher?.PrepareTerminal(instance));
             }, CancellationToken.None);
             if (changes is not null) await changes.PublishAsync(command.Headers.SagaInstanceId);
             throw new SagaDispatchException(command.Headers.SagaInstanceId, command.Headers.StepId, error);

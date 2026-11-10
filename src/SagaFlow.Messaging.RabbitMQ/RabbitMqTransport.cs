@@ -38,6 +38,7 @@ internal sealed class RabbitMqTransport(
     private Task? _failureShutdown;
 
     public string? ReplyDestination => _outcomeQueue;
+    public string? CommandExchange => options.CommandExchange;
 
     internal IChannel? PublisherChannel => _publisherChannel;
     internal IChannel? ConsumerChannel => _consumerChannel;
@@ -70,27 +71,51 @@ internal sealed class RabbitMqTransport(
         ArgumentException.ThrowIfNullOrWhiteSpace(command.Name);
         ArgumentNullException.ThrowIfNull(command.Headers);
         ArgumentException.ThrowIfNullOrWhiteSpace(command.Headers.StepId);
-        if (_publisherChannel is not { IsOpen: true } channel)
-            throw new InvalidOperationException("RabbitMQ transport has not started or its publisher channel is closed.");
+        var body = RabbitMqMessageSerializer.Serialize(command);
+        await PublishWireAsync(command, body, cancellationToken);
+    }
+
+    public ValueTask PublishOutboxAsync(OutboxMessage message, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        if (message.Destination != message.Headers.StepId || message.MessageId != message.Headers.CommandId ||
+            message.Exchange != options.CommandExchange)
+            throw new InvalidOperationException("Stored outbox route or identity conflicts with its execution context.");
+        return PublishWireAsync(message.ToCommand(), message.Body, cancellationToken);
+    }
+
+    private async ValueTask PublishWireAsync(SagaCommand command, byte[] body, CancellationToken cancellationToken)
+    {
         var outcomeQueue = _outcomeQueue
             ?? throw new InvalidOperationException("RabbitMQ transport has no outcome queue for the local process definition.");
-
-        var body = RabbitMqMessageSerializer.Serialize(command);
         if (command.Headers.ReplyDestination != outcomeQueue)
             throw new InvalidOperationException("Command reply destination does not match the local transport.");
         var properties = RabbitMqMessageSerializer.CommandProperties(command);
         properties.Expiration = command.TimeToLive is { } timeToLive ? ToExpirationMilliseconds(timeToLive) : null;
 
-        await _publishGate.WaitAsync(cancellationToken);
+        using var publication = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _consumerCancellation.Token);
+        await _publishGate.WaitAsync(publication.Token);
         try
         {
+            var channel = _publisherChannel;
+            if (channel is { IsOpen: false, CloseReason: { Initiator: ShutdownInitiator.Peer, ReplyCode: 404 } })
+            {
+                // Publishing to a missing exchange closes the channel. Connection recovery alone cannot reopen it.
+                var connection = await connections.GetConnectionAsync(publication.Token);
+                var replacement = await connection.CreateChannelAsync(new CreateChannelOptions(true, true), publication.Token);
+                _publisherChannel = replacement;
+                await CloseChannelAsync(channel);
+                channel = replacement;
+            }
+            if (channel is not { IsOpen: true })
+                throw new InvalidOperationException("RabbitMQ transport has not started or its publisher channel is closed.");
             await channel.BasicPublishAsync(
                 options.CommandExchange,
                 command.Headers.StepId,
                 mandatory: true,
                 basicProperties: properties,
                 body,
-                cancellationToken);
+                publication.Token);
         }
         finally
         {
@@ -121,10 +146,15 @@ internal sealed class RabbitMqTransport(
 
             try { await CloseChannelAsync(_consumerChannel); }
             catch (Exception error) { failure ??= error; }
+            await _publishGate.WaitAsync(CancellationToken.None);
             try { await CloseChannelAsync(_publisherChannel); }
             catch (Exception error) { failure ??= error; }
+            finally
+            {
+                _publisherChannel = null;
+                _publishGate.Release();
+            }
             _consumerChannel = null;
-            _publisherChannel = null;
             _outcomeQueue = null;
             _consumerTag = null;
             try { await connections.DisposeAsync(); }

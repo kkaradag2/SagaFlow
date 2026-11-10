@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using RabbitMQ.Client;
 using SagaFlow.Core.Abstractions;
+using SagaFlow.Core.Messages;
 using SagaFlow.Core.State;
 using SagaFlow.Storage.InMemory;
 using SagaFlow.RabbitMq.Protocol;
@@ -195,5 +196,17 @@ public sealed partial class RabbitMqTransportIntegrationTests
             }
             return await inner.UpdateAsync(id, update, ct);
         }
+        public async ValueTask<T> UpdateWithOutboxAsync<T>(string id, Func<SagaInstance, (T Result, OutboxMessage? Message)> update, CancellationToken ct = default)
+        {
+            if (id == blockedInstance && Interlocked.Decrement(ref remaining) >= 0)
+            {
+                if (Interlocked.Increment(ref entries) == 2) BothEntered.TrySetResult();
+                await Release.Task.WaitAsync(TimeSpan.FromSeconds(15), ct);
+            }
+            return await inner.UpdateWithOutboxAsync(id, update, ct);
+        }
+        public ValueTask<IReadOnlyList<OutboxClaim>> ClaimOutboxAsync(string owner, DateTimeOffset now, TimeSpan lease, int limit, CancellationToken ct = default) => inner.ClaimOutboxAsync(owner, now, lease, limit, ct);
+        public ValueTask MarkOutboxPublishedAsync(string id, string owner, DateTimeOffset at, CancellationToken ct = default) => inner.MarkOutboxPublishedAsync(id, owner, at, ct);
+        public ValueTask ReleaseOutboxAsync(string id, string owner, DateTimeOffset at, CancellationToken ct = default) => inner.ReleaseOutboxAsync(id, owner, at, ct);
     }
 }

@@ -337,7 +337,7 @@ public sealed class CompensationExecutionTests
     }
 
     [Fact]
-    public async Task CompensationPublicationFailureIsPersistedAndDoesNotDispatchTheRest()
+    public async Task CompensationPublicationFailureLeavesPlanAndCommandPending()
     {
         var fixture = new CoordinationTestFixture(CoordinationTestFixture.Linear(3));
         var id = await fixture.Coordinator.StartAsync("payload");
@@ -347,14 +347,15 @@ public sealed class CompensationExecutionTests
             ? ValueTask.FromException(new IOException("compensation transport unavailable"))
             : ValueTask.CompletedTask;
 
-        await Assert.ThrowsAsync<SagaDispatchException>(() =>
-            fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.ToArray()[2], success: false)));
+        await fixture.Receiver.ReceiveAsync(fixture.Outcome(fixture.Bus.Commands.ToArray()[2], success: false));
 
         var state = await fixture.State(id);
-        Assert.Equal(SagaStatus.Failed, state.Status);
-        Assert.Equal(SagaCompensationStatus.Failed, state.Compensations[0].Status);
+        Assert.Equal(SagaStatus.Compensating, state.Status);
+        Assert.Equal(SagaCompensationStatus.Dispatched, state.Compensations[0].Status);
         Assert.Equal(SagaCompensationStatus.Planned, state.Compensations[1].Status);
-        Assert.Contains("compensation transport unavailable", state.FailureReason);
+        var pending = Assert.Single(await fixture.Store.ClaimOutboxAsync("inspection", DateTimeOffset.UtcNow.AddMinutes(2), TimeSpan.FromMinutes(1), 10));
+        Assert.True(pending.Message.Headers.IsCompensation);
+        Assert.Equal(state.Compensations[0].Execution!.CommandId, pending.Message.MessageId);
         Assert.Equal(3, fixture.Bus.Commands.Count);
     }
 

@@ -32,6 +32,7 @@ internal static class RabbitMqMessageSerializer
                 throw new JsonException("Execution snapshot exceeds the AMQP metadata limit.");
             properties.Headers!["sf-ex-state-snapshot"] = snapshot.ToArray();
         }
+        properties.Timestamp = new AmqpTimestamp(command.Headers.CreatedAt.ToUnixTimeSeconds());
         return properties;
     }
 

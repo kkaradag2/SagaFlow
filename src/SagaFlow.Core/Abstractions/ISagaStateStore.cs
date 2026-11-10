@@ -6,6 +6,24 @@ namespace SagaFlow.Core.Abstractions;
 /// <summary>Defines saga state persistence, atomic mutations, and incoming invocation tracking.</summary>
 public interface ISagaStateStore
 {
+    /// <summary>Commits a state mutation and its outgoing message in one atomic unit.
+    /// An incoming terminal transition requires its matching Terminal outbox message in this write.</summary>
+    ValueTask<TResult> UpdateWithOutboxAsync<TResult>(string instanceId,
+        Func<SagaInstance, (TResult Result, OutboxMessage? Message)> update, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Store does not support transactional outbox writes.");
+
+    /// <summary>Claims eligible entries using the store's authoritative clock when available, or the supplied time otherwise.</summary>
+    ValueTask<IReadOnlyList<OutboxClaim>> ClaimOutboxAsync(string owner, DateTimeOffset now, TimeSpan lease,
+        int limit, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Store does not support outbox claims.");
+
+    ValueTask MarkOutboxPublishedAsync(string messageId, string owner, DateTimeOffset publishedAt,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Store does not support outbox publication tracking.");
+
+    ValueTask ReleaseOutboxAsync(string messageId, string owner, DateTimeOffset retryAt,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Store does not support outbox retries.");
     /// <summary>Create at revision zero, or replace using an exact current revision. Never silently overwrite stale state.</summary>
     ValueTask SaveAsync(SagaInstance instance, CancellationToken cancellationToken = default);
 
@@ -47,4 +65,10 @@ public interface ISagaStateStore
     /// <summary>First decision wins atomically; duplicate request identity/payload must match, otherwise conflict.</summary>
     ValueTask<IncomingInvocationDecision> RecordIncomingDecisionAsync(IncomingInvocationDecision decision, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("Store does not support incoming admission decisions.");
+
+    /// <summary>Commits the first decision, accepted target/claim and response together. A matching duplicate returns the same target.</summary>
+    ValueTask<(IncomingInvocationDecision Decision, string? TargetId)> AdmitWithOutboxAsync(
+        IncomingInvocationDecision decision, Func<SagaInstance> create, Func<IncomingInvocationDecision, string?, OutboxMessage> prepare,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Store does not support transactional invocation admission.");
 }
