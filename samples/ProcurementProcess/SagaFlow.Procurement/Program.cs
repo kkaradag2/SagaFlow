@@ -17,14 +17,13 @@ public partial class ProcurementProgram
         {
             options.LoadConfiguration("saga/procurement-process.yaml");
 
-            options.Storage.UseInMemory();
+            // options.Storage.UseInMemory();
 
-            // Alternative: PostgreSQL
-            // options.Storage.UsePostgreSql(storage =>
-            // {
-            //     storage.ConnectionString = builder.Configuration
-            //         .GetConnectionString("SagaFlow");
-            // });
+            options.Storage.UsePostgreSql(storage =>
+            {
+                storage.ConnectionString = builder.Configuration
+                    .GetConnectionString("SagaFlow");
+            });
 
             options.Messaging.UseRabbitMq(rabbit =>
             {

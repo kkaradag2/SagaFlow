@@ -20,14 +20,13 @@ builder.Services.AddSagaFlow(options =>
 {
     options.LoadConfiguration("saga/order-process.yaml");
 
-    options.Storage.UseInMemory();
+    // options.Storage.UseInMemory();
 
-    // Alternative: PostgreSQL
-    // options.Storage.UsePostgreSql(storage =>
-    // {
-    //     storage.ConnectionString = builder.Configuration
-    //         .GetConnectionString("SagaFlow");
-    // });
+    options.Storage.UsePostgreSql(storage =>
+    {
+        storage.ConnectionString = builder.Configuration
+            .GetConnectionString("SagaFlow");
+    });
 
     options.Messaging.UseRabbitMq(rabbit =>
     {

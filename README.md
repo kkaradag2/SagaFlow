@@ -77,7 +77,7 @@ Select exactly one storage provider. Reference `SagaFlow.Storage.InMemory` and i
 `SagaFlow.Storage.InMemory.DependencyInjection` to call `options.Storage.UseInMemory()`.
 PostgreSQL initializes and validates its schema before hosted services start.
 RabbitMQ accepts an `amqp://` or `amqps://` connection URI. A host can omit messaging
-when it only loads or publishes definitions. The Order, Return, and Procurement samples select InMemory in code and show the PostgreSQL call immediately below it as an alternative.
+when it only loads or publishes definitions. The Order, Return, and Procurement samples select PostgreSQL in code; their `ConnectionStrings:SagaFlow` settings determine the database. Use `scripts/run-sample-postgresql.ps1` for the normal sample setup.
 
 `options.UseDashboard()` automatically exposes the read-only UI, API, and SignalR hub
 at `/sagaflow`. Set a custom prefix with `options.UseDashboard(dashboard => dashboard.Path = "/admin/sagas")`.
