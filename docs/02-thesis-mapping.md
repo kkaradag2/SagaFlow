@@ -41,6 +41,65 @@ BPI-1B: invocation adapter business request JSON / null lifecycle body ile sf-in
 
 BPI-1C: external coordination completion business Result üretmez; step status/timestamp güncellenir, teknik observation/rejection mevcut InvocationProgress/read-model alanlarında kalır. Participant/compensation business JSON korunur. [Semantik ve kanıtlar](04-local-saga-coordination.md#bpi-1c-business-result-ve-coordination-state). BPI-1D bütüncül kabul Planned. MSG-01 (`Implemented`): external `result.*` ve `steps.<external>.result[.*]` koşulları mevcut path/parser üzerinden reddedilir; normal participant/context koşulları korunur. Bypass edilmiş kalıcı tanım/transition hatasında teknik observation kaybolmadan local Failed + reconciliation commit edilir; geçerli terminal ACK edilir ve duplicate continuation üretmez. Bu bir genel retry/recovery veya coordination-query dili değildir. Kanıt: [`ExternalStepConditionTests`](../tests/SagaFlow.Engine.Tests/ExternalStepConditionTests.cs), [`ExternalConditionRuntimeTests`](../tests/SagaFlow.Engine.Tests/ExternalConditionRuntimeTests.cs), gerçek broker [`ExternalConditionRedeliveryTests`](../tests/SagaFlow.Messaging.RabbitMQ.Tests/ExternalConditionRedeliveryTests.cs); [güncel test kaydı](01-PROJECT_STATUS.md).
 
+## NewSample iskeleti
+
+[NewSample](../NewSample/NewSample.slnx), mevcut prototipin yanında üç bağımsız Domain Starter ve altı katılımcı için uygulama iskeletini içerir. Order, Return ve Procurement .NET 10 ASP.NET Core hostlarıdır. Payment, Inventory, Shipment, ManagerApproval ve Warehouse .NET 10 konsollarıdır. [Notification](../NewSample/Participants/Notification/main.py), `python NewSample/Participants/Notification/main.py` ile çalıştırılan bağımsız Python konsoludur.
+
+.NET proje adları mimarideki rolleri izler. Domain Starter'lar `Sample.DomainStarters.<Domain>`, katılımcılar `Sample.Participants.<Participant>` biçimini kullanır.
+
+Order kendi Saga tanımını yükler, PostgreSQL durum deposunu ve RabbitMQ taşımasını kaydeder ve Dashboard'u sunar. Katılımcıların komut ve sonuç alışverişi ile gRPC keşfi sonraki uygulama aşamasındadır. [Derleme ve başlangıç doğrulaması](01-PROJECT_STATUS.md#newsample-iskeleti).
+
+### NewSample yerel altyapısı
+
+Depo kökünden `docker compose -f NewSample/compose.yaml up -d --wait` ile [altyapıyı](../NewSample/compose.yaml) başlatın. Paylaşılan PostgreSQL instance'ında Order kendi `Order` veritabanını kullanır. Return ve Procurement veritabanları ileride eklenecek.
+
+| Servis | Varsayılan yerel adres | Kullanıcı |
+|---|---|---|
+| PostgreSQL | `127.0.0.1:55433` | `postgres` |
+| pgAdmin | `http://127.0.0.1:5051` | `admin@example.com` |
+| RabbitMQ | `amqp://127.0.0.1:5673` | `newsample` |
+| RabbitMQ yönetimi | `http://127.0.0.1:15673` | `newsample` |
+| Grafana | `http://127.0.0.1:4300` | `admin` |
+| Collector OTLP | gRPC `http://127.0.0.1:14317`, HTTP `http://127.0.0.1:14318` | |
+
+pgAdmin'de `NewSample PostgreSQL` bağlantısı hazır gelir. Bağlanırken PostgreSQL parolasını girin. Yerel geliştirme parolaları ve ortam değişkenleri için [Compose yapılandırmasına](../NewSample/compose.yaml) bakın.
+
+[OpenTelemetry Collector](../NewSample/infrastructure/observability/otel-collector.yaml) logları Loki'ye, trace'leri Tempo'ya gönderir. Prometheus, Collector'ın sunduğu metrikleri çeker. [Grafana kaynakları](../NewSample/infrastructure/observability/grafana-datasources.yaml) başlangıçta tanımlanır. Order servis logları Collector'a OTLP/gRPC ile gönderilir.
+
+### NewSample Order API
+
+[Order veritabanı betiği](../NewSample/infrastructure/postgres/init-order.sql) yeni PostgreSQL volume'unda otomatik çalışır. Var olan volume'da ilk kurulum veya eski veritabanını yerinde yeniden adlandırmak için depo kökünden aynı betiği uygulayın. Ad değişikliğinden önce eski veritabanındaki oturumları kapatın.
+
+```powershell
+docker compose -f NewSample/compose.yaml exec -T postgres psql -U postgres -d postgres -f /docker-entrypoint-initdb.d/01-init-order.sql
+dotnet run --project NewSample/DomainStarters/Order
+```
+
+[Order controller](../NewSample/DomainStarters/Order/Controllers/OrdersController.cs), `POST http://localhost:5176/orders` isteğini `IOrderService` üzerinden işler. Örnek istek gövdesi aşağıdadır.
+
+Development ortamında [Swagger UI](http://localhost:5176/swagger) üzerinden de istek gönderebilirsiniz. [OpenAPI belgesi](http://localhost:5176/swagger/v1/swagger.json) aynı profilde sunulur.
+
+```json
+{
+  "customerId": "customer-1",
+  "items": [
+    { "productId": "sku-1", "quantity": 2, "unitPrice": 49.90 }
+  ]
+}
+```
+
+Order ve kalemleri aynı veritabanı işleminde yazılır. `201 Created` yanıtı sipariş kimliğini, toplamı ve durumu içerir. [`IOrderService.CancelAsync`](../NewSample/DomainStarters/Order/Services/IOrderService.cs) compensation için durumu `Cancelled` yapar, kalemleri ve ilk iptal zamanını korur.
+
+[Order SagaFlow kaydı](../NewSample/DomainStarters/Order/Orchestration/OrderSagaFlowRegistration.cs), [önceki Order örneğinden taşınan YAML tanımını](../NewSample/DomainStarters/Order/saga/order-process.yaml) yükler. Sipariş verileri `ordering`, SagaFlow durumu ise aynı `Order` veritabanındaki `sagaflow` şemasında tutulur. RabbitMQ bağlantısı `ConnectionStrings:RabbitMq` üzerinden kurulur. [SagaFlow Dashboard](http://localhost:5176/sagaflow/) açıldığında altı adımlı tanım görülebilir. Sipariş API'sinin Saga başlatması, compensation bağlantısı ve Return tanım keşfi sonraki aşamadadır.
+
+[Order servisi](../NewSample/DomainStarters/Order/Services/OrderService.cs) başarılı kayıt ve iptal işlemlerinde sipariş kimliğini loglar. Kayıt logunda kalem sayısı da bulunur. [Grafana](http://localhost:4300) üzerinde **Explore → Loki → Code** bölümünde aşağıdaki LogQL sorgusunu çalıştırın. Belirli bir siparişi bulmak için sorguya `|= "sipariş-kimliği"` ekleyin.
+
+```logql
+{service_name="newsample-order"}
+```
+
+Collector adresi [`appsettings.json`](../NewSample/DomainStarters/Order/appsettings.json) içindeki `OpenTelemetry:OtlpEndpoint` ayarından okunur.
+
 ## S8 — Heterogeneous Technology Participation
 
 `Implemented` — Python Notification, mevcut dört Notification kuyruğunu Pika ile tüketen bağımsız bir süreçtir. Business JSON'dan sonucu üretir. AMQP `CorrelationId`, `sf-version` ve `sf-ex-*` değerlerini korur. Outcome için yeni `MessageId`, `Type`, `sf-outcome` ve Command kimliğini taşıyan `sf-causation-id` üretir. Command'ın `ReplyTo` adresine mandatory yayın yapar ve publisher confirm sonrasında Command'ı ACK'ler. [.NET referans sözleşmesi](../samples/Participants/Shared/ParticipantProtocol.cs), [Python worker](../samples/Participants/SagaFlow.Notification.Python/notification.py).
