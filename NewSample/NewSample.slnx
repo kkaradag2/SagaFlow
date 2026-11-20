@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/DomainStarters/">
+    <Project Path="DomainStarters/Order/Sample.DomainStarters.Order.csproj" />
+    <Project Path="DomainStarters/Procurement/Sample.DomainStarters.Procurement.csproj" />
+    <Project Path="DomainStarters/Return/Sample.DomainStarters.Return.csproj" />
+  </Folder>
+  <Folder Name="/Participants/">
+    <Project Path="Participants/Inventory/Sample.Participants.Inventory.csproj" />
+    <Project Path="Participants/ManagerApproval/Sample.Participants.ManagerApproval.csproj" />
+    <Project Path="Participants/Payment/Sample.Participants.Payment.csproj" />
+    <Project Path="Participants/Shipment/Sample.Participants.Shipment.csproj" />
+    <Project Path="Participants/Warehouse/Sample.Participants.Warehouse.csproj" />
+  </Folder>
+</Solution>

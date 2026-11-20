@@ -1,0 +1,85 @@
+name: order-process
+version: "1.0"
+domain: order
+
+steps:
+  - name: payment
+    command: AuthorizePayment
+    maxAttempts: 3
+    compensation:
+      command: RefundPayment
+    transitions:
+      - event: success
+        nextStep: inventory
+      - event: failure
+        nextStep: compensation
+      - event: timeout
+        nextStep: compensation
+
+  - name: inventory
+    command: ReserveInventory
+    maxAttempts: 3
+    compensation:
+      command: ReleaseInventory
+    transitions:
+      - on: success
+        when:
+          path: context.totalQuantity
+          operator: greaterThan
+          value: 1000
+        nextStep: managerNotification
+      - on: success
+        nextStep: shipment
+      - event: failure
+        nextStep: compensation
+      - event: timeout
+        nextStep: compensation
+
+  - name: managerNotification
+    command: NotifyManager
+    transitions:
+      - on: success
+        nextStep: managerApproval
+      - on: failure
+        nextStep: compensation
+      - on: timeout
+        nextStep: compensation
+
+  # Human decision: no timeoutLimit means no command TTL and no Engine deadline.
+  - name: managerApproval
+    command: RequestManagerApproval
+    transitions:
+      - on: success
+        when:
+          path: steps.managerApproval.result.approved
+          operator: equals
+          value: true
+        nextStep: shipment
+      - on: success
+        nextStep: compensation
+      - on: failure
+        nextStep: compensation
+
+  - name: shipment
+    command: CreateShipment
+    maxAttempts: 3
+    compensation:
+      command: CancelShipment
+    transitions:
+      - event: success
+        nextStep: notification
+      - event: failure
+        nextStep: compensation
+      - event: timeout
+        nextStep: compensation
+
+  - name: notification
+    command: SendOrderNotification
+    maxAttempts: 3
+    transitions:
+      - event: success
+        nextStep: completed
+      - event: failure
+        nextStep: compensation
+      - event: timeout
+        nextStep: compensation

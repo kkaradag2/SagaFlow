@@ -1,0 +1,26 @@
+using SagaFlow.Hosting.DependencyInjection;
+using SagaFlow.Messaging.RabbitMQ.DependencyInjection;
+using SagaFlow.Storage.PostgreSQL.DependencyInjection;
+
+namespace Sample.DomainStarters.Order.Orchestration;
+
+internal static class OrderSagaFlowRegistration
+{
+    public static void AddOrderSagaFlow(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.AddSagaFlow(options =>
+        {
+            options.LoadConfiguration("saga/order-process.yaml");
+            options.Storage.UsePostgreSql(storage =>
+            {
+                storage.ConnectionString = configuration.GetConnectionString("Order");
+            });
+            options.Messaging.UseRabbitMq(rabbit =>
+            {
+                rabbit.ConnectionString = configuration.GetConnectionString("RabbitMq");
+                rabbit.ClientProvidedName = "newsample-order";
+            });
+            options.UseDashboard();
+        });
+    }
+}

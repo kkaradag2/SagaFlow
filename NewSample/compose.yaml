@@ -1,0 +1,132 @@
+name: sagaflow-newsample
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: ${NEWSAMPLE_POSTGRES_PASSWORD:-newsample-postgres}
+    ports:
+      - "127.0.0.1:${NEWSAMPLE_POSTGRES_PORT:-55433}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init-order.sql:/docker-entrypoint-initdb.d/01-init-order.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  pgadmin:
+    image: dpage/pgadmin4:9.19
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${NEWSAMPLE_PGADMIN_EMAIL:-admin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${NEWSAMPLE_PGADMIN_PASSWORD:-newsample-pgadmin}
+      PGADMIN_DISABLE_POSTFIX: "1"
+    ports:
+      - "127.0.0.1:${NEWSAMPLE_PGADMIN_PORT:-5051}:80"
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+      - ./infrastructure/pgadmin/servers.json:/pgadmin4/servers.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/misc/ping"]
+      start_period: 90s
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${NEWSAMPLE_RABBITMQ_USER:-newsample}
+      RABBITMQ_DEFAULT_PASS: ${NEWSAMPLE_RABBITMQ_PASSWORD:-newsample-rabbitmq}
+    ports:
+      - "127.0.0.1:${NEWSAMPLE_RABBITMQ_AMQP_PORT:-5673}:5672"
+      - "127.0.0.1:${NEWSAMPLE_RABBITMQ_UI_PORT:-15673}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 5s
+      timeout: 8s
+      retries: 12
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.140.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    ports:
+      - "127.0.0.1:${NEWSAMPLE_OTLP_GRPC_PORT:-14317}:4317"
+      - "127.0.0.1:${NEWSAMPLE_OTLP_HTTP_PORT:-14318}:4318"
+    volumes:
+      - ./infrastructure/observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    depends_on:
+      - loki
+      - tempo
+
+  loki:
+    image: grafana/loki:3.6.0
+    command: ["-config.file=/etc/loki/config.yaml"]
+    volumes:
+      - ./infrastructure/observability/loki.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    depends_on:
+      loki-init:
+        condition: service_completed_successfully
+
+  loki-init:
+    # Reuse the local Alpine image for chown. Loki runs as UID 10001.
+    image: postgres:17-alpine
+    entrypoint: ["chown", "10001:10001", "/loki"]
+    volumes:
+      - loki-data:/loki
+
+  tempo:
+    image: grafana/tempo:2.9.0
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./infrastructure/observability/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+
+  prometheus:
+    image: prom/prometheus:v3.8.0
+    volumes:
+      - ./infrastructure/observability/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - otel-collector
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  grafana:
+    image: grafana/grafana:12.3.0
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${NEWSAMPLE_GRAFANA_PASSWORD:-newsample-grafana}
+    ports:
+      - "127.0.0.1:${NEWSAMPLE_GRAFANA_PORT:-4300}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infrastructure/observability/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/newsample.yaml:ro
+    depends_on:
+      - loki
+      - tempo
+      - prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  postgres-data:
+  pgadmin-data:
+  rabbitmq-data:
+  loki-data:
+  tempo-data:
+  prometheus-data:
+  grafana-data:
