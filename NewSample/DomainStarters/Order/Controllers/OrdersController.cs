@@ -1,6 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
 using Sample.DomainStarters.Order.Contracts;
-using Sample.DomainStarters.Order.Domain;
 using Sample.DomainStarters.Order.Services;
 
 namespace Sample.DomainStarters.Order.Controllers;
@@ -10,12 +9,28 @@ namespace Sample.DomainStarters.Order.Controllers;
 public sealed class OrdersController(IOrderService orders) : ControllerBase
 {
     [HttpPost]
-    [ProducesResponseType<OrderDetails>(StatusCodes.Status201Created)]
+    [ProducesResponseType<CreateOrderResponse>(StatusCodes.Status201Created)]
     [ProducesResponseType<ValidationProblemDetails>(StatusCodes.Status400BadRequest)]
-    public async Task<ActionResult<OrderDetails>> Create(
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status503ServiceUnavailable)]
+    public async Task<ActionResult<CreateOrderResponse>> Create(
         CreateOrderRequest request, CancellationToken cancellationToken)
     {
-        var order = await orders.CreateAsync(request, cancellationToken);
-        return StatusCode(StatusCodes.Status201Created, order);
+        try
+        {
+            var order = await orders.CreateAsync(request, cancellationToken);
+            return StatusCode(StatusCodes.Status201Created, order);
+        }
+        catch (OrderSagaStartException error)
+        {
+            var problem = new ProblemDetails
+            {
+                Status = StatusCodes.Status503ServiceUnavailable,
+                Title = "Order saved; Saga startup was not confirmed",
+                Extensions = { ["orderId"] = error.OrderId }
+            };
+            if (error.SagaInstanceId is { } sagaInstanceId)
+                problem.Extensions["sagaInstanceId"] = sagaInstanceId;
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, problem);
+        }
     }
 }
