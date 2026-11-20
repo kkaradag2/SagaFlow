@@ -1,15 +1,30 @@
 # SagaFlow.Engine
 
-The process-definition foundation now parses and validates YAML, maintains immutable registry snapshots, and builds bounded Big-Picture definition graphs through an abstract remote client. See [definition documentation](../../docs/03-yaml-definition-discovery.md).
+SagaFlow.Engine is the execution engine that processes SagaFlow process definitions and coordinates Saga execution. It runs inside the domain starter service and does not require a separate orchestration server.
 
-Local coordination now creates InMemory instances, dispatches forward commands through `ISagaMessageBus`, handles outcomes/Boolean transitions, and plans compensation in reverse execution order. See [local coordination](../../docs/04-local-saga-coordination.md). RabbitMQ is registered separately, and compensation commands execute through the same versioned participant protocol. Execution contexts are stored and validated atomically; there is no persistent state or restart recovery. See the [BPI-1A wire contract](../../docs/04-local-saga-coordination.md#bpi-1a-dil-bağımsız-participant-wire-sözleşmesi).
+## Responsibilities
 
-The engine is organized around these thesis feature groups:
+- Load and validate YAML process definitions.
+- Coordinate Saga steps and transitions.
+- Evaluate step outcomes and conditional transitions.
+- Plan and execute compensation when needed.
+- Manage process state, execution context, and timeouts.
+- Provide infrastructure for process definition discovery.
 
-- Declarative Process Definition
-- Local Coordination
-- Messaging Interaction
-- Context and State Management
-- Consistency Management
+## When to use it directly
 
-Observability and Visibility is represented by `SagaFlow.Dashboard` and `SagaFlow.Dashboard.Client`.
+Reference Engine directly when building a custom integration that works with SagaFlow's execution or coordination components:
+
+```bash
+dotnet add package SagaFlow.Engine
+```
+
+For an ASP.NET Core application, use [SagaFlow.Hosting](https://github.com/kkaradag2/SagaFlow/tree/main/src/SagaFlow.Hosting). Hosting provides the application integration and brings in Engine as a dependency.
+
+## Requirements
+
+- .NET 10
+
+## License
+
+MIT. See the [license](https://github.com/kkaradag2/SagaFlow/blob/main/LICENSE).

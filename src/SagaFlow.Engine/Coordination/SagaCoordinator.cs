@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.Messages;
 using System.Text.Json;
@@ -10,10 +11,16 @@ using SagaFlow.Engine.Consistency;
 
 namespace SagaFlow.Engine.Coordination;
 
-public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISagaStateStore store, SagaInstanceManager instances,
+public sealed class SagaCoordinator(ILogger<SagaCoordinator>? logger, ProcessDefinitionRegistry definitions, ISagaStateStore store, SagaInstanceManager instances,
     SagaStepExecutor executor, TransitionResolver resolver, ProcessStateManager states, CompensationManager compensations, ISagaClock clock,
     SagaStateChangePublisher? changes = null, IServiceProvider? services = null, InvocationExecutionContext? invocationContext = null, ProcessInvocationPublisher? invocationPublisher = null) : ISagaFlow
 {
+    public SagaCoordinator(ProcessDefinitionRegistry definitions, ISagaStateStore store, SagaInstanceManager instances,
+        SagaStepExecutor executor, TransitionResolver resolver, ProcessStateManager states, CompensationManager compensations, ISagaClock clock,
+        SagaStateChangePublisher? changes = null, IServiceProvider? services = null, InvocationExecutionContext? invocationContext = null,
+        ProcessInvocationPublisher? invocationPublisher = null)
+        : this(null, definitions, store, instances, executor, resolver, states, compensations, clock, changes, services, invocationContext, invocationPublisher) { }
+
     public string Name => nameof(SagaCoordinator);
 
     public async Task<ProcessInvocationReceipt> InvokeAsync<TPayload>(string target, TPayload payload, CancellationToken cancellationToken = default)
@@ -33,6 +40,8 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
         executor.EnsureTransport();
         var instance = instances.Create(local[0].Definition, payload);
         await store.SaveAsync(instance, cancellationToken);
+        logger?.LogInformation("Started Saga {SagaId} at step {StepId} with correlation {CorrelationId}.",
+            instance.Id, instance.CurrentStep, instance.CorrelationId);
         if (changes is not null) await changes.PublishAsync(instance.Id);
         try { await executor.ExecuteAsync(instance.Id, cancellationToken); }
         catch (SagaFlow.Engine.Messaging.ProcessInvocationPublishException) { throw; }
@@ -40,17 +49,22 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
         catch (Exception error)
         {
             // Cancellation between creation and the first dispatch claim must not orphan a Running instance.
-            await store.UpdateWithOutboxAsync(instance.Id, state =>
+            var failed = await store.UpdateWithOutboxAsync(instance.Id, state =>
             {
+                var changed = false;
                 if (state.Status == SagaStatus.Running && state.Steps.All(s => s.Status == SagaStepStatus.Pending))
                 {
                     state.Status = SagaStatus.Failed;
                     state.CurrentStep = null;
                     state.FailureReason = $"Initial command could not be prepared: {error.Message}";
                     state.UpdatedAt = clock.UtcNow;
+                    changed = true;
                 }
-                return (true, invocationPublisher?.PrepareTerminal(state));
+                return (changed, invocationPublisher?.PrepareTerminal(state));
             }, CancellationToken.None);
+            if (failed)
+                logger?.LogError("Saga {SagaId} failed preparing initial step {StepId} with correlation {CorrelationId}. Error type: {ErrorType}.",
+                    instance.Id, instance.CurrentStep, instance.CorrelationId, error.GetType().Name);
             if (changes is not null) await changes.PublishAsync(instance.Id);
             throw new SagaDispatchException(instance.Id, instance.CurrentStep!, error);
         }
@@ -71,6 +85,9 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
             var prepared = executor.Prepare(instance);
             return (prepared, executor.PrepareOutbox(instance, prepared));
         }, cancellationToken);
+        if (command is not null)
+            logger?.LogInformation("Started incoming Saga {SagaId} at step {StepId} with correlation {CorrelationId}.",
+                instanceId, command.Headers.StepId, command.Headers.CorrelationId);
         if (command is not null && changes is not null) await changes.PublishAsync(instanceId);
         try { if (command is not null) await executor.ExecutePreparedAsync(command, cancellationToken); }
         catch { await NotifyTerminalAsync(instanceId, CancellationToken.None); throw; }
@@ -112,12 +129,12 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
         var canRecover = externalIdentity is null && outcome.Headers.ProtocolVersion == 1;
         // Only a missing row before the callback can enter recovery.
         var found = false;
-        ValueTask<(SagaCommand? Command, string? Error, bool Changed)> UpdateOutcomeAsync() =>
+        ValueTask<((SagaCommand? Command, string? Error, bool Changed) Decision, SagaStatus Status)> UpdateOutcomeAsync() =>
             store.UpdateWithOutboxAsync(outcome.Headers.SagaInstanceId, instance =>
             {
                 found = true;
                 var result = ApplyOutcome(instance);
-                return (result, executor.PrepareOutbox(instance, result.Command) ?? invocationPublisher?.PrepareTerminal(instance));
+                return ((result, instance.Status), executor.PrepareOutbox(instance, result.Command) ?? invocationPublisher?.PrepareTerminal(instance));
             }, cancellationToken);
         (SagaCommand? Command, string? Error, bool Changed) ApplyOutcome(SagaInstance instance)
         {
@@ -190,17 +207,22 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
         }
 
         (SagaCommand? Command, string? Error, bool Changed) decision;
+        SagaStatus status;
         try
         {
-            try { decision = await UpdateOutcomeAsync(); }
+            try { (decision, status) = await UpdateOutcomeAsync(); }
             catch (KeyNotFoundException) when (canRecover && !found)
             {
                 await new OutcomeStateRecovery(definitions, store, clock, changes)
                     .PreserveIfMissingAsync(outcome, cancellationToken);
                 // Re-enter only when another writer made state available during the missing-row check.
-                decision = await UpdateOutcomeAsync();
+                (decision, status) = await UpdateOutcomeAsync();
             }
-            if (decision.Changed && changes is not null) await changes.PublishAsync(outcome.Headers.SagaInstanceId);
+            if (decision.Changed)
+            {
+                LogOutcome(outcome, status);
+                if (changes is not null) await changes.PublishAsync(outcome.Headers.SagaInstanceId);
+            }
         }
         catch (DuplicateSagaOutcomeException)
         {
@@ -226,7 +248,7 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
             else if (decision.Command is not null)
                 await executor.ExecutePreparedAsync(decision.Command, cancellationToken);
             else
-                await new DomainRollbackManager(store, services ?? EmptyServiceProvider.Instance, clock, changes, invocationPublisher)
+                await new DomainRollbackManager(logger, store, services ?? EmptyServiceProvider.Instance, clock, changes, invocationPublisher)
                     .ExecuteIfPlannedAsync(outcome.Headers.SagaInstanceId, cancellationToken);
         }
         catch
@@ -235,6 +257,19 @@ public sealed class SagaCoordinator(ProcessDefinitionRegistry definitions, ISaga
             throw;
         }
         await NotifyTerminalAsync(outcome.Headers.SagaInstanceId, cancellationToken);
+    }
+
+    private void LogOutcome(SagaOutcomeEvent outcome, SagaStatus status)
+    {
+        var headers = outcome.Headers;
+        logger?.LogDebug("Applied outcome to Saga {SagaId} step {StepId} with correlation {CorrelationId}. Success: {IsSuccess}, compensation: {IsCompensation}.",
+            headers.SagaInstanceId, headers.StepId, headers.CorrelationId, outcome.IsSuccess, headers.IsCompensation);
+        if (status == SagaStatus.Completed)
+            logger?.LogInformation("Completed Saga {SagaId} at step {StepId} with correlation {CorrelationId}.",
+                headers.SagaInstanceId, headers.StepId, headers.CorrelationId);
+        else if (status == SagaStatus.Failed)
+            logger?.LogError("Saga {SagaId} failed while applying the outcome of step {StepId} with correlation {CorrelationId}.",
+                headers.SagaInstanceId, headers.StepId, headers.CorrelationId);
     }
 
     private async Task NotifyTerminalAsync(string instanceId, CancellationToken cancellationToken)

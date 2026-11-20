@@ -1,4 +1,5 @@
 using System.Reflection;
+using Microsoft.Extensions.Logging;
 using System.Text.Json;
 using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.State;
@@ -11,6 +12,11 @@ public sealed class DomainRollbackManager(ISagaStateStore store, IServiceProvide
     SagaStateChangePublisher? changes = null, ProcessInvocationPublisher? invocationPublisher = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private readonly ILogger? logger;
+
+    internal DomainRollbackManager(ILogger? logger, ISagaStateStore store, IServiceProvider services, ISagaClock clock,
+        SagaStateChangePublisher? changes, ProcessInvocationPublisher? invocationPublisher)
+        : this(store, services, clock, changes, invocationPublisher) => this.logger = logger;
 
     public async Task ExecuteIfPlannedAsync(string instanceId, CancellationToken cancellationToken)
     {
@@ -22,7 +28,7 @@ public sealed class DomainRollbackManager(ISagaStateStore store, IServiceProvide
         var handlerType = payloadType is null ? null : typeof(SagaRollbackHandler<>).MakeGenericType(payloadType);
         if (handlerType is null)
         {
-            await UpdateAsync(instanceId, instance =>
+            var compensated = await UpdateAsync(instanceId, instance =>
             {
                 if (instance.Status != SagaStatus.Compensating || instance.DomainRollback?.Status != SagaDomainRollbackStatus.Planned)
                     return false;
@@ -31,6 +37,7 @@ public sealed class DomainRollbackManager(ISagaStateStore store, IServiceProvide
                 instance.UpdatedAt = clock.UtcNow;
                 return true;
             }, CancellationToken.None);
+            if (compensated) LogCompensated(snapshot);
             if (changes is not null) await changes.PublishAsync(instanceId);
             return;
         }
@@ -62,7 +69,7 @@ public sealed class DomainRollbackManager(ISagaStateStore store, IServiceProvide
         catch (TargetInvocationException error) when (error.InnerException is not null) { failure = error.InnerException; }
         catch (Exception error) { failure = error; }
 
-        await UpdateAsync(instanceId, instance =>
+        var finalized = await UpdateAsync(instanceId, instance =>
         {
             if (instance.DomainRollback?.Status != SagaDomainRollbackStatus.Executing) return false;
             var now = clock.UtcNow;
@@ -87,8 +94,17 @@ public sealed class DomainRollbackManager(ISagaStateStore store, IServiceProvide
             }
             return true;
         }, CancellationToken.None);
+        if (finalized)
+        {
+            if (failure is null) LogCompensated(snapshot);
+            else logger?.LogError("Saga {SagaId} rollback failed with correlation {CorrelationId}. Error type: {ErrorType}.",
+                instanceId, snapshot.CorrelationId, failure.GetType().Name);
+        }
         if (changes is not null) await changes.PublishAsync(instanceId);
     }
+
+    private void LogCompensated(SagaInstance saga) =>
+        logger?.LogInformation("Compensated Saga {SagaId} with correlation {CorrelationId}.", saga.Id, saga.CorrelationId);
 
     private ValueTask<bool> UpdateAsync(string id, Func<SagaInstance, bool> update, CancellationToken ct) =>
         store.UpdateWithOutboxAsync(id, instance =>

@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.Messages;
 using SagaFlow.Core.State;
@@ -6,10 +7,14 @@ using SagaFlow.Engine.Notifications;
 
 namespace SagaFlow.Engine.Coordination;
 
-public sealed class SagaStepExecutor(ISagaStateStore store, CommandDispatcher dispatcher, ISagaClock clock,
+public sealed class SagaStepExecutor(ILogger<SagaStepExecutor>? logger, ISagaStateStore store, CommandDispatcher dispatcher, ISagaClock clock,
     SagaStateChangePublisher? changes = null, ILocalSagaExecutionBoundary? execution = null,
     ProcessInvocationPublisher? invocationPublisher = null)
 {
+    public SagaStepExecutor(ISagaStateStore store, CommandDispatcher dispatcher, ISagaClock clock,
+        SagaStateChangePublisher? changes = null, ILocalSagaExecutionBoundary? execution = null, ProcessInvocationPublisher? invocationPublisher = null)
+        : this(null, store, dispatcher, clock, changes, execution, invocationPublisher) { }
+
     public void EnsureTransport() => dispatcher.EnsureTransport();
 
     internal SagaCommand Prepare(SagaInstance instance, string? causationId = null)
@@ -48,6 +53,8 @@ public sealed class SagaStepExecutor(ISagaStateStore store, CommandDispatcher di
         var snapshot = await store.FindAsync(command.Headers.SagaInstanceId, cancellationToken)
             ?? throw new KeyNotFoundException("Saga disappeared after dispatch preparation.");
         var step = snapshot.Steps.Single(s => s.StepId == command.Headers.StepId);
+        logger?.LogDebug("Executing Saga {SagaId} step {StepId} with correlation {CorrelationId}.",
+            command.Headers.SagaInstanceId, command.Headers.StepId, command.Headers.CorrelationId);
         if (step.External)
             await ExecuteLocalAsync(command, external: true, cancellationToken);
         else
@@ -101,6 +108,8 @@ public sealed class SagaStepExecutor(ISagaStateStore store, CommandDispatcher di
                 }
                 return (true, invocationPublisher?.PrepareTerminal(instance));
             }, CancellationToken.None);
+            logger?.LogError("Saga {SagaId} step {StepId} execution failed with correlation {CorrelationId}. Error type: {ErrorType}.",
+                command.Headers.SagaInstanceId, command.Headers.StepId, command.Headers.CorrelationId, error.GetType().Name);
             if (changes is not null) await changes.PublishAsync(command.Headers.SagaInstanceId);
             throw new SagaDispatchException(command.Headers.SagaInstanceId, command.Headers.StepId, error);
         }

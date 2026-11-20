@@ -8,7 +8,7 @@
     <Protobuf Include="Protos\definitions_v1.proto" GrpcServices="Both" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="..\SagaFlow.Core\SagaFlow.Core.csproj" />
-    <ProjectReference Include="..\SagaFlow.Dashboard\SagaFlow.Dashboard.csproj" />
+    <ProjectReference Include="..\SagaFlow.Dashboard\SagaFlow.Dashboard.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\SagaFlow.Engine\SagaFlow.Engine.csproj" />
   </ItemGroup>
 
@@ -16,12 +16,21 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <Description>ASP.NET Core hosting integration and embedded dashboard for SagaFlow.</Description>
   </PropertyGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="SagaFlow.Storage.InMemory" />
     <InternalsVisibleTo Include="SagaFlow.Storage.PostgreSQL" />
     <InternalsVisibleTo Include="SagaFlow.Messaging.RabbitMQ" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+    <None Include="..\SagaFlow.Dashboard\bin\$(Configuration)\net10.0\SagaFlow.Dashboard.dll" Pack="true" PackagePath="lib\net10.0\" />
+    <None Include="..\SagaFlow.Dashboard\wwwroot\dashboard\**\*" Pack="true" PackagePath="tools\dashboard\%(RecursiveDir)%(Filename)%(Extension)" />
+    <None Include="buildTransitive\SagaFlow.Hosting.targets" Pack="true" PackagePath="buildTransitive\" />
   </ItemGroup>
 
 </Project>
