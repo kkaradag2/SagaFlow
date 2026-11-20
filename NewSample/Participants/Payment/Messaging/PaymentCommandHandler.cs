@@ -1,13 +1,12 @@
 using System.Text.Json;
 using SagaFlow.Participants.Messaging;
+using Sample.Participants.Messaging;
 using Sample.Participants.Payment.Services;
 
 namespace Sample.Participants.Payment.Messaging;
 
-internal sealed class PaymentCommandHandler(PaymentService payments)
+internal sealed class PaymentCommandHandler(PaymentService payments) : IParticipantCommandHandler
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-
     public async Task<ParticipantOutcome> HandleAsync(ParticipantCommand command, CancellationToken cancellationToken)
     {
         Guid orderId;
@@ -28,14 +27,7 @@ internal sealed class PaymentCommandHandler(PaymentService payments)
                 throw new JsonException("Unsupported payment command type or execution kind.");
         }
 
-        var success = error is null;
-        return new ParticipantOutcome
-        {
-            Name = command.Name + (success ? "Completed" : "Failed"),
-            IsSuccess = success,
-            Headers = command.Headers,
-            Result = JsonSerializer.SerializeToElement(new { orderId, error }, JsonOptions)
-        };
+        return ParticipantOutcomeFactory.Create(command, orderId, error);
     }
 
     private sealed record AuthorizePaymentRequest(Guid Id, decimal Total, string? FailStep = null);
