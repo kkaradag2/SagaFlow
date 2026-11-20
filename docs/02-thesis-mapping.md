@@ -47,11 +47,11 @@ BPI-1C: external coordination completion business Result üretmez; step status/t
 
 .NET proje adları mimarideki rolleri izler. Domain Starter'lar `Sample.DomainStarters.<Domain>`, katılımcılar `Sample.Participants.<Participant>` biçimini kullanır.
 
-Order kendi Saga tanımını yükler, PostgreSQL durum deposunu ve RabbitMQ taşımasını kaydeder ve Dashboard'u sunar. Katılımcıların komut ve sonuç alışverişi ile gRPC keşfi sonraki uygulama aşamasındadır. [Derleme ve başlangıç doğrulaması](01-PROJECT_STATUS.md#newsample-iskeleti).
+Order kendi Saga tanımını yükler, PostgreSQL durum deposunu ve RabbitMQ taşımasını kaydeder ve Dashboard'u sunar. Payment, Order Saga'nın ödeme komutlarını RabbitMQ üzerinden işler. Diğer katılımcıların mesaj akışı ve gRPC keşfi sonraki uygulama aşamasındadır. [Derleme ve başlangıç doğrulaması](01-PROJECT_STATUS.md#newsample-iskeleti).
 
 ### NewSample yerel altyapısı
 
-Depo kökünden `docker compose -f NewSample/compose.yaml up -d --wait` ile [altyapıyı](../NewSample/compose.yaml) başlatın. Paylaşılan PostgreSQL instance'ında Order kendi `Order` veritabanını kullanır. Return ve Procurement veritabanları ileride eklenecek.
+Depo kökünden `docker compose -f NewSample/compose.yaml up -d --wait` ile [altyapıyı](../NewSample/compose.yaml) başlatın. Paylaşılan PostgreSQL instance'ında Order ve Payment kendi `Order` ve `Payment` veritabanlarını kullanır. Return ve Procurement veritabanları ileride eklenecek.
 
 | Servis | Varsayılan yerel adres | Kullanıcı |
 |---|---|---|
@@ -88,9 +88,13 @@ Development ortamında [Swagger UI](http://localhost:5176/swagger) üzerinden de
 }
 ```
 
-Order ve kalemleri aynı veritabanı işleminde yazılır. `201 Created` yanıtı sipariş kimliğini, toplamı ve durumu içerir. [`IOrderService.CancelAsync`](../NewSample/DomainStarters/Order/Services/IOrderService.cs) compensation için durumu `Cancelled` yapar, kalemleri ve ilk iptal zamanını korur.
+Order ve kalemleri aynı veritabanı işleminde yazılır. Sipariş commit edildikten sonra servis SagaFlow'u çağırır. `201 Created` yanıtı `orderId`, `sagaInstanceId`, toplam ve sipariş durumunu içerir. SagaFlow başlangıç çağrısı hata verirse API siparişi koruyup 503 ile `orderId` ve biliniyorsa `sagaInstanceId` döndürür. [`IOrderService.CancelAsync`](../NewSample/DomainStarters/Order/Services/IOrderService.cs) compensation için durumu `Cancelled` yapar, kalemleri ve ilk iptal zamanını korur.
 
-[Order SagaFlow kaydı](../NewSample/DomainStarters/Order/Orchestration/OrderSagaFlowRegistration.cs), [önceki Order örneğinden taşınan YAML tanımını](../NewSample/DomainStarters/Order/saga/order-process.yaml) yükler. Sipariş verileri `ordering`, SagaFlow durumu ise aynı `Order` veritabanındaki `sagaflow` şemasında tutulur. RabbitMQ bağlantısı `ConnectionStrings:RabbitMq` üzerinden kurulur. [SagaFlow Dashboard](http://localhost:5176/sagaflow/) açıldığında altı adımlı tanım görülebilir. Sipariş API'sinin Saga başlatması, compensation bağlantısı ve Return tanım keşfi sonraki aşamadadır.
+[Order SagaFlow kaydı](../NewSample/DomainStarters/Order/Orchestration/OrderSagaFlowRegistration.cs), [önceki Order örneğinden taşınan YAML tanımını](../NewSample/DomainStarters/Order/saga/order-process.yaml) yükler. Sipariş verileri `ordering`, SagaFlow durumu ise aynı `Order` veritabanındaki `sagaflow` şemasında tutulur. RabbitMQ bağlantısı `ConnectionStrings:RabbitMq` üzerinden kurulur. [SagaFlow Dashboard](http://localhost:5176/sagaflow/) tanımı ve başlayan Saga örneklerini gösterir. Return tanım keşfi sonraki aşamadadır.
+
+SagaFlow, RabbitMQ outcome'u compensation gerektirdiğinde önce varsa katılımcı telafilerini tamamlar. Ardından Order hostunda [Order rollback handler](../NewSample/DomainStarters/Order/Services/OrderRollbackHandler.cs) üzerinden `IOrderService.CancelAsync` çağrılır. Başarılı yerel iptalde Dashboard'da Domain Rollback `Completed`, Saga `Compensated` görünür. POST tekrarlarını yönetme ve sipariş kaydı ile Saga başlangıcı arasındaki hatalardan kurtarma PoC kapsamının dışındadır.
+
+SagaFlow.Hosting NuGet paketi Dashboard dosyalarını derleme ve publish çıktısındaki `wwwroot/dashboard` dizinine kopyalar. SagaFlow bu dosyaları `/sagaflow` altında sunar. [Order proje ayarı](../NewSample/DomainStarters/Order/Sample.DomainStarters.Order.csproj) ASP.NET Core statik varlık manifestini devre dışı bırakır, bu sayede kaynak dizininde fiziksel `wwwroot` gerekmez.
 
 [Order servisi](../NewSample/DomainStarters/Order/Services/OrderService.cs) başarılı kayıt ve iptal işlemlerinde sipariş kimliğini loglar. Kayıt logunda kalem sayısı da bulunur. [Grafana](http://localhost:4300) üzerinde **Explore → Loki → Code** bölümünde aşağıdaki LogQL sorgusunu çalıştırın. Belirli bir siparişi bulmak için sorguya `|= "sipariş-kimliği"` ekleyin.
 
@@ -99,6 +103,17 @@ Order ve kalemleri aynı veritabanı işleminde yazılır. `201 Created` yanıt�
 ```
 
 Collector adresi [`appsettings.json`](../NewSample/DomainStarters/Order/appsettings.json) içindeki `OpenTelemetry:OtlpEndpoint` ayarından okunur.
+
+### NewSample Payment
+
+[Payment veritabanı betiği](../NewSample/infrastructure/postgres/init-payment.sql) yeni volume'da otomatik çalışır. Mevcut bir volume ile depo kökünden şu komutları kullanın.
+
+```powershell
+Get-Content NewSample/infrastructure/postgres/init-payment.sql -Raw | docker compose -f NewSample/compose.yaml exec -T postgres psql -U postgres -d postgres
+dotnet run --project NewSample/Participants/Payment
+```
+
+Payment, [yapılandırmadaki](../NewSample/Participants/Payment/appsettings.json) `payment` kuyruğundan `AuthorizePayment` ve `RefundPayment` alır. Sonuç, izin verilen `ReplyTo` kuyruğuna gönderilir. Order isteğine opsiyonel `"failStep": "payment"` eklendiğinde yetkilendirme hatası simüle edilir ve ödeme kaydı oluşmaz. Yetkilendirmede `Payment.payment.authorizations` tablosuna sipariş kimliğiyle bir satır yazılır. İade aynı satırı `Cancelled` durumuna geçirir. [Üç kayıt arasındaki doğrulama](01-PROJECT_STATUS.md#newsample-iskeleti).
 
 ## S8 — Heterogeneous Technology Participation
 

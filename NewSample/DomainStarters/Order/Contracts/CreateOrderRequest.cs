@@ -4,7 +4,8 @@ namespace Sample.DomainStarters.Order.Contracts;
 
 public sealed record CreateOrderRequest(
     [Required, StringLength(100)] string CustomerId,
-    [Required, MinLength(1), MaxLength(100)] IReadOnlyList<CreateOrderItemRequest> Items)
+    [Required, MinLength(1), MaxLength(100)] IReadOnlyList<CreateOrderItemRequest> Items,
+    [StringLength(100)] string? FailStep = null)
     : IValidatableObject
 {
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
