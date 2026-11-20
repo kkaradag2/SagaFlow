@@ -1,12 +1,16 @@
+using Microsoft.Extensions.Logging;
 using SagaFlow.Core.Abstractions;
 using SagaFlow.Core.State;
 using SagaFlow.Engine.Notifications;
 
 namespace SagaFlow.Engine.Timeouts;
 
-public sealed class SagaTimeoutDetector(ISagaStateStore store, TimeProvider timeProvider,
+public sealed class SagaTimeoutDetector(ILogger<SagaTimeoutDetector>? logger, ISagaStateStore store, TimeProvider timeProvider,
     SagaStateChangePublisher? changes = null)
 {
+    public SagaTimeoutDetector(ISagaStateStore store, TimeProvider timeProvider, SagaStateChangePublisher? changes = null)
+        : this(null, store, timeProvider, changes) { }
+
     public async Task<int> DetectAsync(CancellationToken cancellationToken = default)
     {
         var now = timeProvider.GetUtcNow();
@@ -15,7 +19,7 @@ public sealed class SagaTimeoutDetector(ISagaStateStore store, TimeProvider time
             .Select(instance => (Instance: instance, Step: instance.Steps.SingleOrDefault(step =>
                 step.StepId == instance.CurrentStep && IsExpired(step, now))))
             .Where(candidate => candidate.Step is not null)
-            .Select(candidate => (candidate.Instance.Id, StepId: candidate.Step!.StepId))
+            .Select(candidate => (candidate.Instance.Id, StepId: candidate.Step!.StepId, candidate.Instance.CorrelationId))
             .ToArray();
 
         var detected = 0;
@@ -36,6 +40,8 @@ public sealed class SagaTimeoutDetector(ISagaStateStore store, TimeProvider time
             if (applied)
             {
                 detected++;
+                logger?.LogWarning("Saga {SagaId} step {StepId} timed out with correlation {CorrelationId}.",
+                    candidate.Id, candidate.StepId, candidate.CorrelationId);
                 if (changes is not null) await changes.PublishAsync(candidate.Id);
             }
         }

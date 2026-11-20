@@ -8,3 +8,6 @@ dist/
 .vscode/
 *.user
 *.suo
+
+/nuges/
+/samples/integration/

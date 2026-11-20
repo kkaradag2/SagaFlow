@@ -28,6 +28,58 @@ namespace SagaFlow.Hosting.Tests;
 public sealed class LocalSagaCoordinationHostingTests
 {
     [Fact]
+    public async Task SagaLifecycleUsesHostLoggingWithStructuredIdentifiers()
+    {
+        using var logs = new RecordingLogProvider();
+        await using var host = await RuntimeHost.Start(configureLogging: logging => logging.AddProvider(logs).SetMinimumLevel(LogLevel.Debug));
+        await using var scope = host.App.Services.CreateAsyncScope();
+        var services = scope.ServiceProvider;
+        var id = await services.GetRequiredService<ISagaFlow>().StartAsync("private-start-payload");
+        var store = services.GetRequiredService<ISagaStateStore>();
+        var correlationId = (await store.FindAsync(id))!.CorrelationId;
+        var receiver = services.GetRequiredService<OutcomeEventReceiver>();
+        var payment = Assert.Single(host.Bus.Commands);
+        await receiver.ReceiveAsync(new()
+        { Headers = payment.Headers, IsSuccess = true, Result = JsonSerializer.SerializeToElement("private-step-result") });
+        var shipment = host.Bus.Commands.Last();
+        await receiver.ReceiveAsync(new()
+        { Headers = shipment.Headers, IsSuccess = true, Result = JsonSerializer.SerializeToElement("private-step-result") });
+
+        var entries = logs.Entries.ToArray();
+        Assert.Contains(entries, entry => entry.Level == LogLevel.Information && entry.Message.StartsWith("Started Saga"));
+        Assert.Contains(entries, entry => entry.Level == LogLevel.Information && entry.Message.StartsWith("Completed Saga"));
+        Assert.Contains(entries, entry => entry.Level == LogLevel.Debug && entry.Message.StartsWith("Executing Saga") &&
+            Equals(entry.Fields["StepId"], "ship"));
+        Assert.All(entries, entry =>
+        {
+            Assert.Equal(id.ToString("N"), entry.Fields["SagaId"]);
+            Assert.Equal(correlationId, entry.Fields["CorrelationId"]);
+            Assert.DoesNotContain("private-", entry.Message);
+        });
+    }
+
+    [Fact]
+    public async Task OutboxRetryLogsIdentifiersWithoutExceptionContents()
+    {
+        using var logs = new RecordingLogProvider();
+        await using var host = await RuntimeHost.Start(configureLogging: logging => logging.AddProvider(logs));
+        host.Bus.PublishError = new InvalidOperationException("private-broker-details");
+        await using var scope = host.App.Services.CreateAsyncScope();
+        var services = scope.ServiceProvider;
+        var id = await services.GetRequiredService<ISagaFlow>().StartAsync("private-start-payload");
+        var state = (await services.GetRequiredService<ISagaStateStore>().FindAsync(id))!;
+
+        var retry = Assert.Single(logs.Entries, entry => entry.Level == LogLevel.Warning &&
+            entry.Fields.TryGetValue("SagaId", out var sagaId) && Equals(sagaId, state.Id));
+        Assert.Equal("pay", retry.Fields["StepId"]);
+        Assert.Equal(state.CorrelationId, retry.Fields["CorrelationId"]);
+        Assert.Equal(1, retry.Fields["Attempt"]);
+        Assert.Equal(nameof(InvalidOperationException), retry.Fields["ErrorType"]);
+        Assert.DoesNotContain("private-", retry.Message);
+        Assert.Equal(SagaStatus.Running, state.Status);
+    }
+
+    [Fact]
     public async Task DomainStarterCallsOnlyStartWithPayloadAndHostLoadsYamlBeforeExecution()
     {
         await using var host = await RuntimeHost.Start();
@@ -333,8 +385,9 @@ public sealed class LocalSagaCoordinationHostingTests
     [Fact]
     public async Task HostedDetectionMakesTimeoutVisibleThroughDashboardApi()
     {
+        using var logs = new RecordingLogProvider();
         var timeoutYaml = Yaml.Replace("command: AuthorizePayment", "command: AuthorizePayment\n    timeoutLimit: 1ms");
-        await using var host = await RuntimeHost.Start(yaml: timeoutYaml);
+        await using var host = await RuntimeHost.Start(yaml: timeoutYaml, configureLogging: logging => logging.AddProvider(logs));
         await using var scope = host.App.Services.CreateAsyncScope();
         var id = await scope.ServiceProvider.GetRequiredService<ISagaFlow>().StartAsync(new { orderId = 84 });
         var store = scope.ServiceProvider.GetRequiredService<ISagaStateStore>();
@@ -358,6 +411,10 @@ public sealed class LocalSagaCoordinationHostingTests
         Assert.Equal("TimedOut", step.GetProperty("status").GetString());
         Assert.Equal("00:00:00.0010000", step.GetProperty("timeoutLimit").GetString());
         Assert.Equal(JsonValueKind.String, step.GetProperty("timedOutAt").ValueKind);
+        var timeout = Assert.Single(logs.Entries, entry => entry.Level == LogLevel.Warning);
+        Assert.Equal(id.ToString("N"), timeout.Fields["SagaId"]);
+        Assert.Equal("pay", timeout.Fields["StepId"]);
+        Assert.Equal(state.CorrelationId, timeout.Fields["CorrelationId"]);
     }
 
     [Theory]
@@ -419,14 +476,39 @@ public sealed class LocalSagaCoordinationHostingTests
         { LocalWorkCompleted = true; return sagaFlow.StartAsync(payload); }
     }
 
+    private sealed class RecordingLogProvider : ILoggerProvider
+    {
+        public ConcurrentQueue<(LogLevel Level, string Message, Dictionary<string, object?> Fields)> Entries { get; } = new();
+
+        public ILogger CreateLogger(string categoryName) => new RecordingLogger(this, categoryName);
+        public void Dispose() { }
+
+        private sealed class RecordingLogger(RecordingLogProvider provider, string category) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(LogLevel logLevel) => category.StartsWith("SagaFlow.Engine.", StringComparison.Ordinal);
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            {
+                if (IsEnabled(logLevel) && state is IEnumerable<KeyValuePair<string, object?>> fields)
+                    provider.Entries.Enqueue((logLevel, formatter(state, exception), fields.ToDictionary(pair => pair.Key, pair => pair.Value)));
+            }
+        }
+    }
+
     // Test transport only; production has no default message-bus adapter.
     private sealed class TestTransport : ISagaMessageBus
     {
         public ConcurrentQueue<SagaCommand> Commands { get; } = new();
+        public Exception? PublishError { get; set; }
         public ValueTask PublishOutboxAsync(OutboxMessage message, CancellationToken cancellationToken = default) =>
             PublishAsync(message.ToCommand(), cancellationToken);
         public ValueTask PublishAsync(SagaCommand command, CancellationToken cancellationToken = default)
-        { Commands.Enqueue(command); return ValueTask.CompletedTask; }
+        {
+            if (PublishError is { } error) return ValueTask.FromException(error);
+            Commands.Enqueue(command);
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class ScopedTransport : ISagaMessageBus
@@ -462,12 +544,14 @@ public sealed class LocalSagaCoordinationHostingTests
         public TestTransport Bus { get; } = bus;
         public ProcessDefinitionRegistry Registry => App.Services.GetRequiredService<ProcessDefinitionRegistry>();
         public static async Task<RuntimeHost> Start(bool loadLocal = true, bool registerTransport = true, string? yaml = null,
-            string dashboardPath = "/sagaflow", Action<SagaFlowDashboardOptions>? configureDashboard = null)
+            string dashboardPath = "/sagaflow", Action<SagaFlowDashboardOptions>? configureDashboard = null,
+            Action<ILoggingBuilder>? configureLogging = null)
         {
             var directory = Directory.CreateTempSubdirectory("sagaflow-runtime-").FullName;
             if (loadLocal) await File.WriteAllTextAsync(Path.Combine(directory, "purchase.yaml"), yaml ?? Yaml);
             var builder = WebApplication.CreateBuilder();
             builder.Logging.ClearProviders();
+            configureLogging?.Invoke(builder.Logging);
             builder.Host.UseDefaultServiceProvider(options => { options.ValidateScopes = true; options.ValidateOnBuild = true; });
             builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0));
             var bus = new TestTransport();

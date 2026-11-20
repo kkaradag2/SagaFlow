@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using SagaFlow.Core.Abstractions;
 using SagaFlow.Engine.Coordination;
 using SagaFlow.Engine.ProcessDefinition;
@@ -49,7 +50,9 @@ public static class SagaFlowServiceCollectionExtensions
         services.AddSingleton<ProcessStateManager>();
         services.AddScoped<CompensationManager>();
         services.AddScoped<SagaInstanceManager>();
-        services.AddScoped<CommandDispatcher>();
+        services.AddScoped(provider => new CommandDispatcher(
+            provider.GetRequiredService<ILogger<CommandDispatcher>>(),
+            provider.GetService<ISagaMessageBus>(), provider.GetService<IProcessInvocationBus>()));
         services.AddScoped<ProcessInvocationManager>();
         services.AddScoped<InvocationExecutionContext>();
         services.AddSingleton<ILocalSagaExecutionBoundary, LocalSagaExecutionBoundary>();

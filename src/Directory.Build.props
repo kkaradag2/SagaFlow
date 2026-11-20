@@ -1,0 +1,15 @@
+<Project>
+  <PropertyGroup>
+    <Version>1.0.1</Version>
+    <Authors>Kemal Karadag</Authors>
+    <PackageProjectUrl>https://github.com/kkaradag2/SagaFlow</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/kkaradag2/SagaFlow.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>saga;microservices;orchestration;dotnet</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageIcon>sagaflow-icon.png</PackageIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)sagaflow-icon.png" Pack="true" PackagePath="\" />
+  </ItemGroup>
+</Project>
