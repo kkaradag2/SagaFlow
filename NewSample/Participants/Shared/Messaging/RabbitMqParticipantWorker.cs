@@ -5,10 +5,10 @@ using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using SagaFlow.Participants.Messaging;
 
-namespace Sample.Participants.Payment.Messaging;
+namespace Sample.Participants.Messaging;
 
-internal sealed class PaymentWorker(
-    PaymentRabbitMqSettings settings, PaymentCommandHandler handler, ILogger<PaymentWorker> logger)
+internal sealed class RabbitMqParticipantWorker(
+    ParticipantRabbitMqSettings settings, IParticipantCommandHandler handler, ILogger<RabbitMqParticipantWorker> logger)
     : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -36,8 +36,8 @@ internal sealed class PaymentWorker(
         consumer.ReceivedAsync += (_, delivery) => HandleAsync(channel, delivery, stoppingToken);
         await channel.BasicConsumeAsync(settings.QueueName, autoAck: false, consumer, stoppingToken);
 
-        logger.LogInformation("Payment listening on {Queue} ({Exchange}/{RoutingKey})",
-            settings.QueueName, settings.CommandExchange, settings.RoutingKey);
+        logger.LogInformation("{Participant} listening on {Queue} ({Exchange}/{RoutingKey})",
+            settings.ClientProvidedName, settings.QueueName, settings.CommandExchange, settings.RoutingKey);
         await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken);
     }
 
@@ -47,7 +47,7 @@ internal sealed class PaymentWorker(
         {
             var replyTo = delivery.BasicProperties.ReplyTo;
             if (replyTo is null || !settings.OutcomeQueues.Contains(replyTo))
-                throw new JsonException("Payment command has an unconfigured ReplyTo queue.");
+                throw new JsonException("Participant command has an unconfigured ReplyTo queue.");
 
             var command = ParticipantProtocol.ReadCommand(delivery.Body.Span, delivery.BasicProperties);
             var outcome = await handler.HandleAsync(command, cancellationToken);
@@ -58,13 +58,13 @@ internal sealed class PaymentWorker(
         }
         catch (JsonException error)
         {
-            logger.LogWarning(error, "Rejecting invalid payment message {MessageId}", delivery.BasicProperties.MessageId);
+            logger.LogWarning(error, "Rejecting invalid participant message {MessageId}", delivery.BasicProperties.MessageId);
             await channel.BasicRejectAsync(delivery.DeliveryTag, requeue: false, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (Exception error)
         {
-            logger.LogError(error, "Payment message {MessageId} will be retried", delivery.BasicProperties.MessageId);
+            logger.LogError(error, "Participant message {MessageId} will be retried", delivery.BasicProperties.MessageId);
             await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
             if (channel.IsOpen)
                 await channel.BasicNackAsync(delivery.DeliveryTag, multiple: false, requeue: true, cancellationToken);

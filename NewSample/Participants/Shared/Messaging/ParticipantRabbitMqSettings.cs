@@ -1,12 +1,12 @@
 using Microsoft.Extensions.Configuration;
 
-namespace Sample.Participants.Payment.Messaging;
+namespace Sample.Participants.Messaging;
 
-internal sealed record PaymentRabbitMqSettings(
+internal sealed record ParticipantRabbitMqSettings(
     Uri ConnectionUri, string ClientProvidedName, string CommandExchange, string QueueName,
     string RoutingKey, IReadOnlySet<string> OutcomeQueues)
 {
-    public static PaymentRabbitMqSettings Read(IConfiguration configuration)
+    public static ParticipantRabbitMqSettings Read(IConfiguration configuration)
     {
         var section = configuration.GetRequiredSection("RabbitMq");
         string Required(string key) => !string.IsNullOrWhiteSpace(section[key])

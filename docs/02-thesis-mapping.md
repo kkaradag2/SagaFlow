@@ -47,11 +47,11 @@ BPI-1C: external coordination completion business Result üretmez; step status/t
 
 .NET proje adları mimarideki rolleri izler. Domain Starter'lar `Sample.DomainStarters.<Domain>`, katılımcılar `Sample.Participants.<Participant>` biçimini kullanır.
 
-Order kendi Saga tanımını yükler, PostgreSQL durum deposunu ve RabbitMQ taşımasını kaydeder ve Dashboard'u sunar. Payment, Order Saga'nın ödeme komutlarını RabbitMQ üzerinden işler. Diğer katılımcıların mesaj akışı ve gRPC keşfi sonraki uygulama aşamasındadır. [Derleme ve başlangıç doğrulaması](01-PROJECT_STATUS.md#newsample-iskeleti).
+Order kendi Saga tanımını yükler, PostgreSQL durum deposunu ve RabbitMQ taşımasını kaydeder ve Dashboard'u sunar. Payment ve Inventory, Order Saga'nın ödeme ve stok komutlarını RabbitMQ üzerinden işler. Diğer katılımcıların mesaj akışı ve gRPC keşfi sonraki uygulama aşamasındadır. [Derleme ve başlangıç doğrulaması](01-PROJECT_STATUS.md#newsample-iskeleti).
 
 ### NewSample yerel altyapısı
 
-Depo kökünden `docker compose -f NewSample/compose.yaml up -d --wait` ile [altyapıyı](../NewSample/compose.yaml) başlatın. Paylaşılan PostgreSQL instance'ında Order ve Payment kendi `Order` ve `Payment` veritabanlarını kullanır. Return ve Procurement veritabanları ileride eklenecek.
+Depo kökünden `docker compose -f NewSample/compose.yaml up -d --wait` ile [altyapıyı](../NewSample/compose.yaml) başlatın. Paylaşılan PostgreSQL instance'ında Order, Payment ve Inventory kendi veritabanlarını kullanır. Return ve Procurement veritabanları ileride eklenecek.
 
 | Servis | Varsayılan yerel adres | Kullanıcı |
 |---|---|---|
@@ -114,6 +114,19 @@ dotnet run --project NewSample/Participants/Payment
 ```
 
 Payment, [yapılandırmadaki](../NewSample/Participants/Payment/appsettings.json) `payment` kuyruğundan `AuthorizePayment` ve `RefundPayment` alır. Sonuç, izin verilen `ReplyTo` kuyruğuna gönderilir. Order isteğine opsiyonel `"failStep": "payment"` eklendiğinde yetkilendirme hatası simüle edilir ve ödeme kaydı oluşmaz. Yetkilendirmede `Payment.payment.authorizations` tablosuna sipariş kimliğiyle bir satır yazılır. İade aynı satırı `Cancelled` durumuna geçirir. [Üç kayıt arasındaki doğrulama](01-PROJECT_STATUS.md#newsample-iskeleti).
+
+### NewSample Inventory
+
+[Inventory veritabanı betiği](../NewSample/infrastructure/postgres/init-inventory.sql) yeni volume'da otomatik çalışır. Mevcut volume ile depo kökünden şu komutları kullanın.
+
+```powershell
+Get-Content NewSample/infrastructure/postgres/init-inventory.sql -Raw | docker compose -f NewSample/compose.yaml exec -T postgres psql -U postgres -d postgres
+dotnet run --project NewSample/Participants/Inventory
+```
+
+Temiz veritabanında `sku-1` ve `sku-2` için 100'er, `sku-bulk` için 2000, `sku-limited` için 5 adet örnek stok bulunur. Betik tekrar çalıştırıldığında mevcut stokları korur.
+
+[Inventory ayarları](../NewSample/Participants/Inventory/appsettings.json) ile worker `inventory` kuyruğundan `ReserveInventory` ve `ReleaseInventory` alır. Başarılı rezervasyonda aynı ürüne ait kalemler toplanır ve bütün stok hareketleri tek işlemde kaydedilir. Stok yetersizliği veya `failStep: "inventory"` durumunda Payment iade edilir ve Order iptal olur. Rezervasyon sonrasındaki hatada akış önce stoğu geri ekler, sonra Payment ve Order'ı iptal eder. Rezervasyon kayıtları `Reserved` veya `Released` olarak saklanır. Tekrar teslim stok miktarını ikinci kez değiştirmez.
 
 ## S8 — Heterogeneous Technology Participation
 

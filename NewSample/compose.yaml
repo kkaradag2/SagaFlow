@@ -11,6 +11,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./infrastructure/postgres/init-order.sql:/docker-entrypoint-initdb.d/01-init-order.sql:ro
       - ./infrastructure/postgres/init-payment.sql:/docker-entrypoint-initdb.d/02-init-payment.sql:ro
+      - ./infrastructure/postgres/init-inventory.sql:/docker-entrypoint-initdb.d/03-init-inventory.sql:ro
     healthcheck:
       test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "postgres"]
       interval: 5s
