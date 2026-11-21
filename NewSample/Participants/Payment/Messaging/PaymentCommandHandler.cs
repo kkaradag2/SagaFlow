@@ -23,6 +23,11 @@ internal sealed class PaymentCommandHandler(PaymentService payments) : IParticip
                 orderId = refund.Id;
                 error = await payments.RefundAsync(orderId, cancellationToken);
                 break;
+            case ("RefundReturnPayment", false):
+                var returned = command.Bind<RefundReturnPaymentRequest>();
+                var refundError = await payments.RefundReturnAsync(
+                    returned.ReturnId, returned.OrderId, returned.Amount, returned.FailStep, cancellationToken);
+                return ParticipantOutcomeFactory.Create(command, returned.ReturnId, returned.OrderId, refundError);
             default:
                 throw new JsonException("Unsupported payment command type or execution kind.");
         }
@@ -33,4 +38,6 @@ internal sealed class PaymentCommandHandler(PaymentService payments) : IParticip
     private sealed record AuthorizePaymentRequest(Guid Id, decimal Total, string? FailStep = null);
 
     private sealed record RefundPaymentRequest(Guid Id);
+
+    private sealed record RefundReturnPaymentRequest(Guid ReturnId, Guid OrderId, decimal Amount, string? FailStep = null);
 }

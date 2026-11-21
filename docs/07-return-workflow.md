@@ -15,8 +15,6 @@ dotnet run --project NewSample/DomainStarters/Return
 
 **Doğrulama, 2026-11-21.** NewSample derlemesi 0 uyarı ve 0 hatayla tamamlandı. Compose yapılandırması, SQL betiğinin mevcut volume'a uygulanması ve tekrar çalışması doğrulandı. İzole RabbitMQ vhost'u ve PostgreSQL veritabanında kontrollü katılımcı sonuçlarıyla kabul ve ret `Completed`, refund öncesi teknik hata `Failed`, refund sonrası teknik hata `ManualReview` iş durumu verdi. Dört kaydın ikişer kalemi ve Saga kimliği PostgreSQL'de eşleştirildi. Tekrar başlatma sonrasında GET aynı sonucu döndürdü. HTTP 201/400/404 ve kontrollü Saga state yazma hatasında HTTP 503 ile `StartUnconfirmed` doğrulandı. Development Swagger, Dashboard, HTTP/2 gRPC `ListDefinitions`, Production publish hostu ve Loki logları sınandı. İlk derleme iki Npgsql parametre yapıcısı yüzünden, ilk smoke koşusu da test istemcisinin mutlak `Location` adresini birleştirmesi yüzünden başarısız oldu. İkisi düzeltilip yeniden doğrulandı.
 
-Return'a özgü Payment, Inventory ve Notification komutları sonraki aşamadadır. Katılımcıların tamamıyla uçtan uca akış, Order BigPicture üzerinden uzak keşif, görsel tarayıcı kontrolü ve tam SagaFlow test paketi çalıştırılmadı.
-
 ### NewSample Warehouse
 
 [Warehouse SQL betiği](../NewSample/infrastructure/postgres/init-warehouse.sql) yeni PostgreSQL volume'unda otomatik çalışır. Mevcut volume için depo kökünden şu komutları kullanın.
@@ -31,6 +29,39 @@ dotnet run --project NewSample/Participants/Warehouse
 Warehouse, `warehouse` kuyruğundan gelen `InspectReturn` komutunu ve yanıt bağlamını `Warehouse.inspection.requests` tablosunda saklar. Karar ve outbox kaydı aynı işlemde yazılır. Gönderici, sonucu orijinal `ReplyTo` adresine (`return.outcomes`) yayımlar. Başarısız gönderim aynı mesaj kimliğiyle yeniden denenir. Kabul ve ret başarılı outcome içinde sırasıyla `accepted: true` ve `accepted: false` olarak taşınır. Sonraki adımı Return YAML'ı seçer. `failStep: "warehouse"` inceleme kaydı oluşturmadan teknik hata sonucu döndürür. [Komut işleyici](../NewSample/Participants/Warehouse/Messaging/InspectionCommandHandler.cs), [outbox](../NewSample/Participants/Warehouse/Data/InspectionOutbox.cs), [gönderici](../NewSample/Participants/Warehouse/Messaging/InspectionOutcomePublisher.cs).
 
 **Doğrulama, 2026-11-21.** NewSample derlemesi 0 uyarı ve 0 hatayla tamamlandı. Compose yapılandırması ve SQL betiğinin mevcut volume'a iki kez uygulanması başarılı. İzole RabbitMQ ve PostgreSQL ile çalışan Return ve Warehouse servislerinde bekleyen inceleme yeniden başlatmadan sonra aynı kimlikle okundu. Tekrar teslim edilen komut ve eşzamanlı dört kabul isteği tek inceleme ve tek başarılı outbox gönderimi üretti. Karşıt karar HTTP 409 döndürdü. Yanıt kuyruğu kaldırıldığında ret kararı HTTP 202 ile saklandı. Kuyruk ve servisler geri geldiğinde outbox aynı mesaj kimliğiyle teslim edildi. Saga, kabulde Payment'a, rette ret bildirimine geçti. Bu adımlardan sonraki sonuçlar kontrollü mesajlarla verildi ve her iki Saga `Completed` oldu. Teknik hata, inceleme oluşturmadan Return iş durumunu `Failed`, Saga durumunu `Compensated` yaptı. Swagger karar örnekleri ve HTTP 400/404 yanıtları da doğrulandı.
+
+### NewSample Return katılımcıları
+
+Mevcut PostgreSQL volume'unda yeni iade tablolarını eklemek için Payment ve Inventory betiklerini yeniden uygulayın. Yeni volume'da Compose bunları otomatik çalıştırır. Return ve Warehouse servisleriyle birlikte üç katılımcıyı ayrı terminallerde çalıştırın.
+
+```powershell
+Get-Content NewSample/infrastructure/postgres/init-payment.sql -Raw | docker compose -f NewSample/compose.yaml exec -T postgres psql -U postgres -d postgres
+Get-Content NewSample/infrastructure/postgres/init-inventory.sql -Raw | docker compose -f NewSample/compose.yaml exec -T postgres psql -U postgres -d postgres
+dotnet run --project NewSample/Participants/Payment
+dotnet run --project NewSample/Participants/Inventory
+python NewSample/Participants/Notification/main.py
+```
+
+- Payment, ortak `payment` kuyruğundaki `RefundReturnPayment` komutuyla `payment.return_refunds` tablosuna iade kimliği, sipariş kimliği ve tutarı yazar. [Payment işleyicisi](../NewSample/Participants/Payment/Messaging/PaymentCommandHandler.cs).
+- Inventory, ortak `inventory` kuyruğundaki `RestockReturn` komutuyla aynı ürüne ait kalemleri toplar. `inventory.return_restocks` kaydı ve stok artışları tek işlemde yazılır. Aynı iadenin tekrar teslimi ikinci bir stok artışı yapmaz. [Inventory veri katmanı](../NewSample/Participants/Inventory/Data/InventoryRepository.cs).
+- Python Notification, `acceptedNotification` ve `rejectedNotification` kuyruklarını dinler. Bildirimi terminalde simüle eder. Üç katılımcı da Order ve Return için komutun orijinal `ReplyTo` adresine sonuç döndürür. [Python işleyicisi](../NewSample/Participants/Notification/main.py).
+
+`failStep` alanı `payment`, `inventory`, `acceptedNotification` veya `rejectedNotification` ile ilgili adımda teknik hatayı simüle eder. Ödeme iadesi tamamlandıktan sonraki hatada Return `ManualReview` gösterir. Başarılı ödeme iadesi ve gerçekleşmiş stok hareketi saklanır.
+
+**Uçtan uca doğrulama, 2026-11-21.** İzole RabbitMQ vhost'u ve PostgreSQL veritabanlarında Return, Warehouse, Payment, Inventory ve Python Notification süreçleriyle aşağıdaki sonuçlar gözlendi. Return kaydı ve kalemi, Warehouse incelemesi, Saga instance kimliği, ödeme iadesi ve stok hareketi iade kimliği üzerinden kontrol edildi.
+
+| Senaryo | Return ve Saga durumu | Ödeme iadesi | Stok artışı |
+|---|---|---|---|
+| Depo kabul etti | `Accepted` / `Completed` | Var | Var |
+| Depo reddetti | `Rejected` / `Completed` | Yok | Yok |
+| Ödeme iadesi başarısız | `Failed` / `Compensated` | Yok | Yok |
+| Stok adımı başarısız | `ManualReview` / `Compensated` | Var | Yok |
+| Kabul bildirimi başarısız | `ManualReview` / `Compensated` | Var | Var |
+| Ret bildirimi başarısız | `Failed` / `Compensated` | Yok | Yok |
+
+Kabul senaryosunda Payment ve Inventory komutları gerçek broker üzerinden tekrar teslim edildi. İkinci bir iade kaydı veya stok artışı oluşmadı. NewSample derlemesi 0 uyarı ve 0 hata ile geçti. Yeni tablolar mevcut PostgreSQL volume'una da uygulandı. Bildirimler terminal logu üzerinden doğrulandı.
+
+Aynı katılımcılarla bir Order Saga'sı `Completed` oldu ve ödeme ile stok rezervasyonu korundu. Order bildirim hatasında Saga `Compensated` oldu, ödeme ile sipariş iptal edildi ve stok rezervasyonu çözüldü. İlk koşuda test istemcisinin Saga JSON alanını küçük harfle sorgulaması nedeniyle Order bekleme kontrolü zaman aşımına uğradı. Sorgu düzeltildikten sonra altı Return ve iki Order senaryosu yeniden geçti. Order BigPicture uzak keşfi, tarayıcı görsel kontrolü ve tam SagaFlow test paketi bu değişiklikte çalıştırılmadı.
 
 ## Eski örnek
 

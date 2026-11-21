@@ -11,28 +11,52 @@ import pika
 from sagaflow_wire import read_command, publish_outcome, required_text
 
 
+def required_id(payload, key):
+    value = UUID(required_text(payload[key]))
+    if not value.int:
+        raise ValueError(f"{key} must be a nonzero UUID.")
+    return str(value)
+
+
+def failure_requested(payload, step):
+    fail_step = payload.get("failStep")
+    return isinstance(fail_step, str) and fail_step.strip().casefold() == step.casefold()
+
+
+def notify_return(command, step, payload):
+    return_id = required_id(payload, "returnId")
+    order_id = required_id(payload, "orderId")
+    required_text(payload["customerId"])
+    result = {"returnId": return_id, "orderId": order_id}
+    if failure_requested(payload, step):
+        return False, {**result, "error": "notification_failed"}
+
+    decision = "accepted" if command == "NotifyReturnAccepted" else "rejected"
+    logging.info("Simulated %s notification for return %s and order %s", decision, return_id, order_id)
+    return True, {**result, "notified": True}
+
+
 def notify(command, step, payload):
     if not isinstance(payload, dict):
         raise ValueError("Notification requires a JSON object.")
 
-    order_id = UUID(required_text(payload["id"]))
-    if not order_id.int:
-        raise ValueError("Notification requires an order ID.")
+    if command in ("NotifyReturnAccepted", "NotifyReturnRejected"):
+        return notify_return(command, step, payload)
 
-    fail_step = payload.get("failStep")
-    if isinstance(fail_step, str) and fail_step.strip().casefold() == step.casefold():
-        return False, {"error": "notification_failed", "orderId": str(order_id)}
+    order_id = required_id(payload, "id")
+    if failure_requested(payload, step):
+        return False, {"error": "notification_failed", "orderId": order_id}
 
     if command == "NotifyManager":
         quantity = payload["totalQuantity"]
         if type(quantity) is not int or not 0 < quantity < 2**63:
             raise ValueError("Total quantity must be a positive integer.")
         logging.info("Simulated manager notification for order %s with %s items", order_id, quantity)
-        return True, {"orderId": str(order_id), "totalQuantity": quantity, "notified": True}
+        return True, {"orderId": order_id, "totalQuantity": quantity, "notified": True}
 
     required_text(payload["customerId"])
     logging.info("Simulated completion notification for order %s", order_id)
-    return True, {"orderId": str(order_id), "notified": True}
+    return True, {"orderId": order_id, "notified": True}
 
 
 def handle_delivery(channel, delivery, properties, body, expected_command, queue_name, outcome_queues):

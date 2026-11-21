@@ -8,7 +8,7 @@ internal sealed class PaymentService(PaymentRepository repository, ILogger<Payme
     public async Task<string?> AuthorizeAsync(
         Guid orderId, decimal amount, string? failStep, CancellationToken cancellationToken)
     {
-        if (orderId == Guid.Empty || amount <= 0 || amount > 9999999999999999.99m || decimal.Round(amount, 2) != amount)
+        if (orderId == Guid.Empty || !IsValidAmount(amount))
             return "invalid_payment";
 
         if (string.Equals(failStep?.Trim(), "payment", StringComparison.OrdinalIgnoreCase))
@@ -35,4 +35,26 @@ internal sealed class PaymentService(PaymentRepository repository, ILogger<Payme
         logger.LogInformation("Payment cancellation confirmed for order {OrderId}", orderId);
         return null;
     }
+
+    public async Task<string?> RefundReturnAsync(
+        Guid returnId, Guid orderId, decimal amount, string? failStep, CancellationToken cancellationToken)
+    {
+        if (returnId == Guid.Empty || orderId == Guid.Empty || !IsValidAmount(amount))
+            return "invalid_return_refund";
+
+        if (string.Equals(failStep?.Trim(), "payment", StringComparison.OrdinalIgnoreCase))
+        {
+            logger.LogInformation("Return refund failure requested for return {ReturnId}", returnId);
+            return "return_refund_failed";
+        }
+
+        if (!await repository.RefundReturnAsync(returnId, orderId, amount, cancellationToken))
+            return "return_refund_conflict";
+
+        logger.LogInformation("Payment refund confirmed for return {ReturnId} and order {OrderId}", returnId, orderId);
+        return null;
+    }
+
+    private static bool IsValidAmount(decimal amount)
+        => amount is > 0 and <= 9999999999999999.99m && decimal.Round(amount, 2) == amount;
 }

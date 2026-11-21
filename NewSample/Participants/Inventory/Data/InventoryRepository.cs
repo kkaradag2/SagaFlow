@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Npgsql;
+using NpgsqlTypes;
 using Sample.Participants.Inventory.Domain;
 
 namespace Sample.Participants.Inventory.Data;
@@ -12,6 +14,8 @@ internal enum ReservationResult
 
 internal sealed class InventoryRepository(NpgsqlDataSource dataSource)
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
     public async Task<ReservationResult> ReserveAsync(
         Guid orderId, IReadOnlyList<InventoryLine> lines, CancellationToken cancellationToken)
     {
@@ -88,6 +92,50 @@ internal sealed class InventoryRepository(NpgsqlDataSource dataSource)
             restore.Parameters.Add(new NpgsqlParameter<string> { TypedValue = line.ProductId });
             restore.Parameters.Add(new NpgsqlParameter<int> { TypedValue = line.Quantity });
             await restore.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
+    public async Task<bool> RestockReturnAsync(
+        Guid returnId, Guid orderId, IReadOnlyList<InventoryLine> lines, CancellationToken cancellationToken)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var items = JsonSerializer.Serialize(lines, JsonOptions);
+
+        await using var create = new NpgsqlCommand("""
+            INSERT INTO inventory.return_restocks (return_id, order_id, items) VALUES ($1, $2, $3)
+            ON CONFLICT (return_id) DO NOTHING
+            """, connection, transaction);
+        create.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = returnId });
+        create.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = orderId });
+        create.Parameters.Add(new NpgsqlParameter<string> { NpgsqlDbType = NpgsqlDbType.Jsonb, TypedValue = items });
+        if (await create.ExecuteNonQueryAsync(cancellationToken) == 0)
+        {
+            await using var existing = new NpgsqlCommand("""
+                SELECT EXISTS (
+                    SELECT 1 FROM inventory.return_restocks WHERE return_id = $1 AND order_id = $2 AND items = $3
+                )
+                """, connection, transaction);
+            existing.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = returnId });
+            existing.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = orderId });
+            existing.Parameters.Add(new NpgsqlParameter<string> { NpgsqlDbType = NpgsqlDbType.Jsonb, TypedValue = items });
+            return await existing.ExecuteScalarAsync(cancellationToken) is true;
+        }
+
+        foreach (var line in lines)
+        {
+            await using var addStock = new NpgsqlCommand("""
+                INSERT INTO inventory.stock AS stock (product_id, available_quantity)
+                VALUES ($1, $2)
+                ON CONFLICT (product_id) DO UPDATE
+                SET available_quantity = stock.available_quantity + EXCLUDED.available_quantity
+                """, connection, transaction);
+            addStock.Parameters.Add(new NpgsqlParameter<string> { TypedValue = line.ProductId });
+            addStock.Parameters.Add(new NpgsqlParameter<int> { TypedValue = line.Quantity });
+            await addStock.ExecuteNonQueryAsync(cancellationToken);
         }
 
         await transaction.CommitAsync(cancellationToken);

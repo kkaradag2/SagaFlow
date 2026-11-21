@@ -28,4 +28,18 @@ internal sealed class PaymentRepository(NpgsqlDataSource dataSource)
         command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = orderId });
         return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
+
+    public async Task<bool> RefundReturnAsync(Guid returnId, Guid orderId, decimal amount, CancellationToken cancellationToken)
+    {
+        await using var command = dataSource.CreateCommand("""
+            INSERT INTO payment.return_refunds AS existing (return_id, order_id, amount)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (return_id) DO UPDATE SET return_id = EXCLUDED.return_id
+            WHERE existing.order_id = EXCLUDED.order_id AND existing.amount = EXCLUDED.amount
+            """);
+        command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = returnId });
+        command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = orderId });
+        command.Parameters.Add(new NpgsqlParameter<decimal> { TypedValue = amount });
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
 }
