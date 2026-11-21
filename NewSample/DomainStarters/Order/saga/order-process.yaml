@@ -27,22 +27,12 @@ steps:
           path: context.totalQuantity
           operator: greaterThan
           value: 1000
-        nextStep: managerNotification
+        nextStep: managerApproval
       - on: success
         nextStep: shipment
       - event: failure
         nextStep: compensation
       - event: timeout
-        nextStep: compensation
-
-  - name: managerNotification
-    command: NotifyManager
-    transitions:
-      - on: success
-        nextStep: managerApproval
-      - on: failure
-        nextStep: compensation
-      - on: timeout
         nextStep: compensation
 
   # Human decision: no timeoutLimit means no command TTL and no Engine deadline.

@@ -47,11 +47,11 @@ BPI-1C: external coordination completion business Result üretmez; step status/t
 
 .NET proje adları mimarideki rolleri izler. Domain Starter'lar `Sample.DomainStarters.<Domain>`, katılımcılar `Sample.Participants.<Participant>` biçimini kullanır.
 
-Order kendi Saga tanımını yükler, PostgreSQL durum deposunu ve RabbitMQ taşımasını kaydeder ve Dashboard'u sunar. Payment, Inventory, Notification ve ManagerApproval Order Saga'nın ödeme, stok, bildirim ve onay komutlarını RabbitMQ üzerinden işler. Diğer katılımcıların mesaj akışı ve gRPC keşfi sonraki uygulama aşamasındadır. [Derleme ve başlangıç doğrulaması](01-PROJECT_STATUS.md#newsample-iskeleti).
+Order kendi Saga tanımını yükler, PostgreSQL durum deposunu ve RabbitMQ taşımasını kaydeder ve Dashboard'u sunar. Payment, Inventory, ManagerApproval, Shipment ve Notification Order Saga'nın komutlarını RabbitMQ üzerinden işler. Order hostu bir sonraki adımı YAML'a göre seçer. [Derleme ve başlangıç doğrulaması](01-PROJECT_STATUS.md#newsample-iskeleti).
 
 ### NewSample yerel altyapısı
 
-Depo kökünden `docker compose -f NewSample/compose.yaml up -d --wait` ile [altyapıyı](../NewSample/compose.yaml) başlatın. Paylaşılan PostgreSQL instance'ında Order, Payment, Inventory ve ManagerApproval kendi veritabanlarını kullanır. Return ve Procurement veritabanları ileride eklenecek.
+Depo kökünden `docker compose -f NewSample/compose.yaml up -d --wait` ile [altyapıyı](../NewSample/compose.yaml) başlatın. Paylaşılan PostgreSQL instance'ında Order, Payment, Inventory, ManagerApproval ve Shipment kendi veritabanlarını kullanır. Return ve Procurement veritabanları ileride eklenecek.
 
 | Servis | Varsayılan yerel adres | Kullanıcı |
 |---|---|---|
@@ -152,7 +152,20 @@ python NewSample/Participants/Notification/main.py
 
 [RabbitMQ ayarları](../NewSample/Participants/Notification/appsettings.json) `managerNotification` kuyruğunda `NotifyManager`, `notification` kuyruğunda `SendOrderNotification` eşlemesini tanımlar. Bağlantı `SAGAFLOW_NOTIFICATION_AMQP_URL` ile geçersiz kılınabilir. [Python katılımcısı](../NewSample/Participants/Notification/main.py) bildirimi terminalde simüle eder. Order isteğinde `failStep` ilgili adımla eşleşirse başarısız outcome üretir.
 
-[Mesaj göndericisi](../NewSample/Participants/Notification/sagaflow_wire.py) sonucu komutun orijinal `ReplyTo` adresine, Order için `order.outcomes` kuyruğuna, RabbitMQ onayıyla yayımlar. Bildirim komutu bu onaydan sonra ACK alır. SagaFlow, Order hostunda sonucu işler ve YAML'a göre yeni yönetici onay komutunu üretir, Saga'yı tamamlar veya telafiyi başlatır.
+[Mesaj göndericisi](../NewSample/Participants/Notification/sagaflow_wire.py) sonucu komutun orijinal `ReplyTo` adresine, Order için `order.outcomes` kuyruğuna, RabbitMQ onayıyla yayımlar. Bildirim komutu bu onaydan sonra ACK alır. Güncel Order YAML'ı son adımda `SendOrderNotification` komutunu kullanır. Order hostundaki SagaFlow bu sonuca göre Saga'yı tamamlar veya telafiyi başlatır.
+
+### NewSample Shipment
+
+[Shipment veritabanı betiği](../NewSample/infrastructure/postgres/init-shipment.sql) yeni volume'da otomatik çalışır. Mevcut volume ile depo kökünden şu komutları kullanın.
+
+```powershell
+Get-Content NewSample/infrastructure/postgres/init-shipment.sql -Raw | docker compose -f NewSample/compose.yaml exec -T postgres psql -U postgres -d postgres
+dotnet run --project NewSample/Participants/Shipment
+```
+
+Güncel [Order YAML](../NewSample/DomainStarters/Order/saga/order-process.yaml), Inventory sonrasında toplam adet 1000'i aşarsa doğrudan ManagerApproval'a gider. 1000 ve altı doğrudan Shipment'a gider. Yönetici onayı Shipment'ı, ret Inventory → Payment → Order telafisini başlatır.
+
+[Shipment katılımcısı](../NewSample/Participants/Shipment/Messaging/ShipmentCommandHandler.cs), `shipment` kuyruğunda `CreateShipment` ve `CancelShipment` komutlarını işler. Örnek gönderi sipariş kimliğiyle saklanır. Başarılı oluşturma sonucundan sonra `SendOrderNotification` komutunu Order hostundaki SagaFlow üretir. Son bildirim başarısızsa telafi Shipment → Inventory → Payment → Order sırasıyla yürür. `failStep: "shipment"`, gönderi kaydı oluşmadan hata senaryosunu çalıştırır.
 
 ## S8 — Heterogeneous Technology Participation
 
