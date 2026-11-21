@@ -171,6 +171,8 @@ Güncel [Order YAML](../NewSample/DomainStarters/Order/saga/order-process.yaml),
 
 Warehouse, `InspectReturn` komutunu alıp depo kararını PostgreSQL'de saklayan bir ASP.NET Core API ve RabbitMQ tüketicisidir. Kararı `return.outcomes` üzerinden Return Domain Starter'a iletir. [Kurulum, API ve doğrulama](07-return-workflow.md#newsample-warehouse).
 
+Return, Warehouse kabulünden sonra mevcut Payment ve Inventory katılımcılarına iade komutlarını gönderir. Python Notification kabul ve ret bildirimlerini simüle eder. Katılımcılar yanıtı orijinal Return kuyruğuna döndürür. [Kurulum ve uçtan uca doğrulama](07-return-workflow.md#newsample-return-katılımcıları).
+
 ## S8 — Heterogeneous Technology Participation
 
 `Implemented` — Python Notification, mevcut dört Notification kuyruğunu Pika ile tüketen bağımsız bir süreçtir. Business JSON'dan sonucu üretir. AMQP `CorrelationId`, `sf-version` ve `sf-ex-*` değerlerini korur. Outcome için yeni `MessageId`, `Type`, `sf-outcome` ve Command kimliğini taşıyan `sf-causation-id` üretir. Command'ın `ReplyTo` adresine mandatory yayın yapar ve publisher confirm sonrasında Command'ı ACK'ler. [.NET referans sözleşmesi](../samples/Participants/Shared/ParticipantProtocol.cs), [Python worker](../samples/Participants/SagaFlow.Notification.Python/notification.py).

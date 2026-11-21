@@ -22,4 +22,11 @@ CREATE TABLE IF NOT EXISTS payment.authorizations (
     )
 );
 
+CREATE TABLE IF NOT EXISTS payment.return_refunds (
+    return_id uuid PRIMARY KEY,
+    order_id uuid NOT NULL,
+    amount numeric(18, 2) NOT NULL CHECK (amount > 0),
+    refunded_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 COMMIT;

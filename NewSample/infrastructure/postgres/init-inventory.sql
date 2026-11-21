@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS inventory.reservation_items (
     PRIMARY KEY (order_id, product_id)
 );
 
+CREATE TABLE IF NOT EXISTS inventory.return_restocks (
+    return_id uuid PRIMARY KEY,
+    order_id uuid NOT NULL,
+    items jsonb NOT NULL CHECK (jsonb_typeof(items) = 'array'),
+    restocked_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 INSERT INTO inventory.stock (product_id, available_quantity) VALUES
     ('sku-1', 100),
     ('sku-2', 100),
