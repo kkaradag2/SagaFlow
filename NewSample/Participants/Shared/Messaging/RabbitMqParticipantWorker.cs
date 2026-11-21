@@ -3,6 +3,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using RabbitMQ.Client.Exceptions;
 using SagaFlow.Participants.Messaging;
 
 namespace Sample.Participants.Messaging;
@@ -21,7 +22,7 @@ internal sealed class RabbitMqParticipantWorker(
             TopologyRecoveryEnabled = true
         };
 
-        await using var connection = await factory.CreateConnectionAsync(stoppingToken);
+        await using var connection = await ConnectAsync(factory, stoppingToken);
         await using var channel = await connection.CreateChannelAsync(
             new CreateChannelOptions(true, true, consumerDispatchConcurrency: 1), stoppingToken);
         await channel.ExchangeDeclareAsync(settings.CommandExchange, ExchangeType.Direct, durable: true,
@@ -41,6 +42,22 @@ internal sealed class RabbitMqParticipantWorker(
         await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken);
     }
 
+    private async Task<IConnection> ConnectAsync(ConnectionFactory factory, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            try
+            {
+                return await factory.CreateConnectionAsync(cancellationToken);
+            }
+            catch (BrokerUnreachableException) when (!cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning("{Participant} is waiting for RabbitMQ", settings.ClientProvidedName);
+                await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+            }
+        }
+    }
+
     private async Task HandleAsync(IChannel channel, BasicDeliverEventArgs delivery, CancellationToken cancellationToken)
     {
         try
@@ -50,10 +67,13 @@ internal sealed class RabbitMqParticipantWorker(
                 throw new JsonException("Participant command has an unconfigured ReplyTo queue.");
 
             var command = ParticipantProtocol.ReadCommand(delivery.Body.Span, delivery.BasicProperties);
-            var outcome = await handler.HandleAsync(command, cancellationToken);
-            await channel.BasicPublishAsync(exchange: string.Empty, routingKey: replyTo, mandatory: true,
-                basicProperties: ParticipantProtocol.OutcomeProperties(outcome),
-                body: JsonSerializer.SerializeToUtf8Bytes(outcome.Result), cancellationToken: cancellationToken);
+            var outcome = await handler.HandleAsync(command, replyTo, cancellationToken);
+            if (outcome is not null)
+            {
+                await channel.BasicPublishAsync(exchange: string.Empty, routingKey: replyTo, mandatory: true,
+                    basicProperties: ParticipantProtocol.OutcomeProperties(outcome),
+                    body: JsonSerializer.SerializeToUtf8Bytes(outcome.Result), cancellationToken: cancellationToken);
+            }
             await channel.BasicAckAsync(delivery.DeliveryTag, multiple: false, cancellationToken);
         }
         catch (JsonException error)
