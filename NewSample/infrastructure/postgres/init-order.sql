@@ -39,4 +39,11 @@ CREATE TABLE IF NOT EXISTS ordering.order_items (
     PRIMARY KEY (order_id, line_number)
 );
 
+CREATE TABLE IF NOT EXISTS ordering.incoming_orders (
+    invocation_id uuid PRIMARY KEY,
+    purchase_request_id uuid NOT NULL,
+    saga_instance_id uuid NOT NULL UNIQUE,
+    order_id uuid NOT NULL UNIQUE REFERENCES ordering.orders (id) DEFERRABLE INITIALLY DEFERRED
+);
+
 COMMIT;

@@ -4,6 +4,18 @@
 
 SagaFlow now reads and validates declarative definitions and discovers a static cross-domain definition graph. Each Domain Starter owns its local definitions. Discovery reads published snapshots; it never starts a Saga or invokes the coordinator. gRPC carries definitions only; future command/outcome messaging remains separate.
 
+## NewSample Order BigPicture
+
+[Order YAML'ı](../NewSample/DomainStarters/Order/saga/order-process.yaml), Return ve Procurement süreçlerini `related` olarak tanımlar. Üç uygulama Development profilinde çalışırken [Order Process Explorer](http://localhost:5176/sagaflow/bigpicture) iki uzak tanımı gRPC üzerinden okur. Return tanımını [5188](../NewSample/DomainStarters/Return/appsettings.Development.json), Procurement tanımını [5288](../NewSample/DomainStarters/Procurement/appsettings.Development.json) portunda yayımlar.
+
+[Procurement YAML'ındaki](../NewSample/DomainStarters/Procurement/saga/procurement-process.yaml) `invokes` tanımı Procurement → Order çağrısının kaynağıdır ve [Procurement Process Explorer](http://localhost:5287/sagaflow/bigpicture) ekranında bu yönde görünür. Order ekranındaki iki `related` bağlantısı tanım düzeyindedir. Uzak yayınlar tanımları sunar, kendi BigPicture referanslarını yayımlamaz.
+
+[Return YAML'ı](../NewSample/DomainStarters/Return/saga/return-process.yaml) Order tanımını `related` olarak bildirir. [Return Process Explorer](http://127.0.0.1:5187/sagaflow/bigpicture), Order'ı `5189` portundaki gRPC yayınından keşfeder ve yerel Return → uzak Order kenarını gösterir.
+
+Return referansı eklendikten sonra üç ayrı Development hostu geçici portlarda tekrar çalıştırıldı. Return → Order `related`, Order'ın iki `related` kenarı ve Procurement → Order `invokes` kenarı grafik API'lerinde çözüldü. Keşif hatası ve Saga instance oluşmadı. Return ekranı bu koşuda tarayıcıda sınanmadı.
+
+2026-11-21 doğrulamasında NewSample derlemesi 0 uyarı ve 0 hatayla tamamlandı. Üç ayrı Development hostu ile Order grafiğinde iki çözülmüş `related` kenarı ve Procurement grafiğinde Order'a giden `invokes` kenarı API üzerinden eşleştirildi. Chrome, Order ekranında üç düğüm ve iki kenar, Procurement ekranında iki düğüm ve bir kenar çizdi. Procurement kapatıldığında Order API'sinde yalnız bu referans çözümsüz oldu. Yeniden başlatınca iki referans tekrar çözüldü. Üç veritabanında Saga instance sayısı sıfır kaldı. Tam SagaFlow test paketi bu değişiklikte çalıştırılmadı.
+
 ## Güncel process ilişkisi uzantısı (2026-11-03)
 
 Process Explorer, Dashboard kenar çubuğundaki tek süreç gezinme girişidir. BigPicture topolojisini açar ve ilişkisi olmayan host'ta her yerel tanımı bağımsız **Local** düğüm olarak gösterir. Bir düğüme tıklamak aynı workflow renderer'ında süreç tanımını açar. Düğümün bilgi düğmesi metadata ve keşif nedenini mevcut Drawer'da gösterir. Kenar ve instance ilişki detayları da aynı Drawer'ı kullanır. [Gezinme testleri](../src/SagaFlow.Dashboard.Client/tests/workflowNavigation.test.tsx).

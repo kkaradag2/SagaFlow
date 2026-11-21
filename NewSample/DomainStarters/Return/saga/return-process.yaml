@@ -47,3 +47,10 @@ steps:
         nextStep: completed
       - on: failure
         nextStep: compensation
+
+bigPicture:
+  - domain: order
+    process: order-process
+    version: "1.0"
+    relationship: related
+    endpoint: "http://127.0.0.1:5189"

@@ -51,7 +51,7 @@ Order kendi Saga tanımını yükler, PostgreSQL durum deposunu ve RabbitMQ taş
 
 ### NewSample yerel altyapısı
 
-Depo kökünden `docker compose -f NewSample/compose.yaml up -d --wait` ile [altyapıyı](../NewSample/compose.yaml) başlatın. Paylaşılan PostgreSQL instance'ında Order, Payment, Inventory, ManagerApproval ve Shipment kendi veritabanlarını kullanır. Return ve Procurement veritabanları ileride eklenecek.
+Depo kökünden `docker compose -f NewSample/compose.yaml up -d --wait` ile [altyapıyı](../NewSample/compose.yaml) başlatın. Paylaşılan PostgreSQL instance'ında Order, Return, Procurement, Payment, Inventory, ManagerApproval, Shipment ve Warehouse kendi veritabanlarını kullanır.
 
 | Servis | Varsayılan yerel adres | Kullanıcı |
 |---|---|---|
@@ -63,6 +63,18 @@ Depo kökünden `docker compose -f NewSample/compose.yaml up -d --wait` ile [alt
 | Collector OTLP | gRPC `http://127.0.0.1:14317`, HTTP `http://127.0.0.1:14318` | |
 
 pgAdmin'de `NewSample PostgreSQL` bağlantısı hazır gelir. Bağlanırken PostgreSQL parolasını girin. Yerel geliştirme parolaları ve ortam değişkenleri için [Compose yapılandırmasına](../NewSample/compose.yaml) bakın.
+
+NewSample web uygulamaları HTTP portlarını kendi `appsettings.json` dosyalarından alır. Bu portlar launch profili uygulanmadan başlatıldığında da kullanılır. Domain Starter'lar gRPC tanım keşfini Development ortamında ayrı portta açar.
+
+| Uygulama | HTTP | Development gRPC |
+|---|---:|---:|
+| Order | 5176 | 5189 |
+| Return | 5187 | 5188 |
+| Procurement | 5287 | 5288 |
+| ManagerApproval | 5090 | |
+| Warehouse | 5091 | |
+
+Order, Return ve Procurement launch profilleri tarayıcıyı doğrudan HTTP portundaki `/swagger` adresine yönlendirir. Development gRPC portları domain'ler arası tanım keşfi için HTTP/2 kullanır.
 
 [OpenTelemetry Collector](../NewSample/infrastructure/observability/otel-collector.yaml) logları Loki'ye, trace'leri Tempo'ya gönderir. Prometheus, Collector'ın sunduğu metrikleri çeker. [Grafana kaynakları](../NewSample/infrastructure/observability/grafana-datasources.yaml) başlangıçta tanımlanır. Order ve Return servis logları Collector'a OTLP/gRPC ile gönderilir. [Return kurulumu ve doğrulama kapsamı](07-return-workflow.md#newsample-return).
 
@@ -77,7 +89,7 @@ dotnet run --project NewSample/DomainStarters/Order
 
 [Order controller](../NewSample/DomainStarters/Order/Controllers/OrdersController.cs), `POST http://localhost:5176/orders` isteğini `IOrderService` üzerinden işler. Örnek istek gövdesi aşağıdadır.
 
-Development ortamında [Swagger UI](http://localhost:5176/swagger) üzerinden de istek gönderebilirsiniz. [OpenAPI belgesi](http://localhost:5176/swagger/v1/swagger.json) aynı profilde sunulur.
+Development ortamında [Swagger UI](http://localhost:5176/swagger) üzerinden de istek gönderebilirsiniz. [OpenAPI belgesi](http://localhost:5176/swagger/v1/swagger.json) Order controller uçlarını listeler. SagaFlow'un `/sagaflow/api/` uçlarını gömülü Dashboard kullanır.
 
 ```json
 {
@@ -172,6 +184,10 @@ Güncel [Order YAML](../NewSample/DomainStarters/Order/saga/order-process.yaml),
 Warehouse, `InspectReturn` komutunu alıp depo kararını PostgreSQL'de saklayan bir ASP.NET Core API ve RabbitMQ tüketicisidir. Kararı `return.outcomes` üzerinden Return Domain Starter'a iletir. [Kurulum, API ve doğrulama](07-return-workflow.md#newsample-warehouse).
 
 Return, Warehouse kabulünden sonra mevcut Payment ve Inventory katılımcılarına iade komutlarını gönderir. Python Notification kabul ve ret bildirimlerini simüle eder. Katılımcılar yanıtı orijinal Return kuyruğuna döndürür. [Kurulum ve uçtan uca doğrulama](07-return-workflow.md#newsample-return-katılımcıları).
+
+### NewSample Procurement
+
+Procurement, yönetici onayından sonra Order Saga'yı RabbitMQ üzerinden çağırır ve nihai sonucu bekler. İki domain kendi PostgreSQL veritabanındaki iş kaydına ve Saga durumuna sahiptir. [Procurement kurulumu ve mesaj akışı](06-manager-approval-sample.md#newsample-procurement).
 
 ## S8 — Heterogeneous Technology Participation
 

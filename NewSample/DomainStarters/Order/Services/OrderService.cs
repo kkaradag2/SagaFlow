@@ -2,7 +2,6 @@ using SagaFlow.Core.Abstractions;
 using SagaFlow.Engine.Coordination;
 using Sample.DomainStarters.Order.Contracts;
 using Sample.DomainStarters.Order.Data;
-using Sample.DomainStarters.Order.Domain;
 
 namespace Sample.DomainStarters.Order.Services;
 
@@ -11,31 +10,23 @@ internal sealed class OrderService(
 {
     public async Task<CreateOrderResponse> CreateAsync(CreateOrderRequest request, CancellationToken cancellationToken)
     {
-        var items = request.Items
-            .Select(item => new OrderItem(item.ProductId, item.Quantity, item.UnitPrice))
-            .ToArray();
-        var order = new OrderDetails(
-            Guid.NewGuid(),
-            request.CustomerId,
-            items,
-            items.Sum(item => item.Quantity * item.UnitPrice),
-            OrderStatus.Created,
-            DateTimeOffset.UtcNow);
+        var order = OrderCreation.Create(request);
 
         await repository.AddAsync(order, cancellationToken);
-        logger.LogInformation("Order {OrderId} created with {ItemCount} items", order.Id, items.Length);
+        logger.LogInformation("Order {OrderId} created with {ItemCount} items", order.Id, order.Items.Count);
 
         Guid sagaInstanceId;
         try
         {
             // A client disconnect must not cancel Saga startup after the order commit.
+            // Retain the persisted payload type used by existing Order Sagas for rollback.
             sagaInstanceId = await sagaFlow.StartAsync(new
             {
                 order.Id,
                 order.CustomerId,
                 order.Items,
                 order.Total,
-                TotalQuantity = items.Sum(item => item.Quantity),
+                TotalQuantity = order.Items.Sum(item => item.Quantity),
                 FailStep = request.FailStep?.Trim()
             }, CancellationToken.None);
         }
