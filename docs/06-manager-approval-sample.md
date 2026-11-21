@@ -1,5 +1,28 @@
 # Manager Approval sample
 
+## NewSample Procurement
+
+Procurement, NewSample'da ayrı bir ASP.NET Core hostu ve PostgreSQL veritabanı kullanır. [Swagger](http://localhost:5287/swagger), satın alma talebi oluşturmak için `POST /purchase-requests`, durum sorgulamak için `GET /purchase-requests/{id}` uçlarını gösterir. İstek `employeeId`, `customerId`, `productId`, `quantity` ve `unitPrice` içeren `items` ile isteğe bağlı `failStep` alanını alır. [Controller](../NewSample/DomainStarters/Procurement/Controllers/PurchaseRequestsController.cs) ve [servis](../NewSample/DomainStarters/Procurement/Services/ProcurementService.cs).
+
+Swagger belgesi Procurement controller uçlarıyla sınırlıdır. SagaFlow'un `/sagaflow/api/` uçlarını gömülü Dashboard kullanır.
+
+Mevcut PostgreSQL volume'una Procurement veritabanını ve Order çağrı eşlemesi tablosunu eklemek için depo kökünden betikleri uygulayın. Yeni volume'da Compose her iki betiği de çalıştırır.
+
+```powershell
+Get-Content NewSample/infrastructure/postgres/init-order.sql -Raw | docker compose -f NewSample/compose.yaml exec -T postgres psql -U postgres -d postgres
+Get-Content NewSample/infrastructure/postgres/init-procurement.sql -Raw | docker compose -f NewSample/compose.yaml exec -T postgres psql -U postgres -d postgres
+```
+
+Order, Procurement ve ManagerApproval'u Development profilinde ayrı terminallerde başlatın. Payment, Inventory, Shipment ve Python Notification da Order'ın çalışması için açık olmalıdır. [Order gRPC yayını](../NewSample/DomainStarters/Order/appsettings.Development.json) `http://127.0.0.1:5189` adresini kullanır. [Procurement YAML'ındaki](../NewSample/DomainStarters/Procurement/saga/procurement-process.yaml) `bigPicture` altında `invokes` hedefi Order tanımına işaret eder. SagaFlow 1.0.1 hedef tanımı gRPC ile okur ve yürütüm komutunu RabbitMQ üzerinden iletir.
+
+ManagerApproval, Procurement talebinin kararını `procurement.outcomes` kuyruğuna döndürür. Ortak onay API'sindeki `orderId` alanı bu akışta satın alma talebinin kimliğini taşır. Ret durumunda satın alma talebi `Rejected` olur. Onaydan sonra `Ordering` durumunda Order'ın nihai sonucu beklenir. Order `Completed` olursa satın alma talebi `Fulfilled`, telafiye düşerse `Failed` olur. `failStep: "notification"` Order telafisini denemek için kullanılabilir. [Onay kuyruğu ayarı](../NewSample/Participants/ManagerApproval/appsettings.json) ve [Order çağrısı](../NewSample/DomainStarters/Procurement/Orchestration/ProcurementOrderStep.cs).
+
+Order kendi sipariş kaydını ve kalemlerini oluşturur. Gelen çağrının kimliği, satın alma talebi, hedef Saga ve sipariş kimliği `ordering.incoming_orders` tablosunda eşlenir. Eşleşme ve sipariş aynı PostgreSQL işleminde kaydedilir. [Gelen çağrı servisi](../NewSample/DomainStarters/Order/Services/IncomingOrderService.cs) ve [Order veri katmanı](../NewSample/DomainStarters/Order/Data/PostgreSqlOrderRepository.cs).
+
+**Doğrulama, 2026-11-21.** İzole RabbitMQ vhost'u ve ayrı PostgreSQL veritabanlarıyla yönetici reddinde Order oluşmadı. Onay sonrası Order çağrıyı kabul edip bildirim adımında beklerken Procurement `Ordering` kaldı. Python Notification başlayınca iki Saga `Completed`, satın alma talebi `Fulfilled` oldu. Bildirim hatasında Shipment iptali, stok rezervasyonunun çözülmesi, ödeme ve sipariş iptali PostgreSQL'de doğrulandı. Order ve Procurement Saga durumları `Compensated`, satın alma talebi `Failed` oldu. Başarılı ve telafi edilen talepte sipariş, çağrı ve iki Saga kimliği eşleştirildi. Procurement yeniden başlatıldıktan sonra tamamlanan talep aynı durumla okundu. Doğrudan `POST /orders` yine tamamlandı. Procurement Swagger, HTTP 400/404 ve NuGet Dashboard'un tanım grafiği API'sinde `procurement → order` kenarı doğrulandı.
+
+NewSample derlemesi 0 uyarı ve 0 hata ile geçti. Procurement publish çıktısı SagaFlow 1.0.1 NuGet bağımlılıklarını, YAML'ı ve paket Dashboard'unu içeriyor. Compose ve mevcut volume'a SQL kurulumu doğrulandı. Tam SagaFlow test paketi, tarayıcı görsel kontrolü ve çökme anındaki çağrı tekrar teslimi bu çalışmada sınanmadı.
+
 ## S2-7A Procurement → Order PoC
 
 Uygulama `Implemented`; ayrı OS process deneysel değerlendirme S2-7B `Planned`. [`ProcurementProgram`](../samples/ProcurementProcess/SagaFlow.Procurement/Program.cs), [`PurchaseRequestsController`](../samples/ProcurementProcess/SagaFlow.Procurement/Controllers/PurchaseRequestsController.cs) ve [`procurement-process.yaml`](../samples/ProcurementProcess/SagaFlow.Procurement/saga/procurement-process.yaml) yeni Domain Starter'dır. Procurement kendi business kaydını ve Saga'sını oluşturur; mevcut ManagerApproval participant'ına komut gönderir. Approved → external InvokeOrder → Order terminal sonucu → kendi YAML geçişi; Rejected → business Rejected, invocation yok. Duplicate approval ikinci çağrı oluşturmaz. Domain Starter'lar birbirinin store'una erişmez; merkezi coordinator veya senkron domainler arası HTTP bağımlılığı yoktur.

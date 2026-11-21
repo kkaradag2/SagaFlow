@@ -73,3 +73,15 @@ steps:
         nextStep: compensation
       - event: timeout
         nextStep: compensation
+
+bigPicture:
+  - domain: return
+    process: return-process
+    version: "1.0"
+    relationship: related
+    endpoint: "http://127.0.0.1:5188"
+  - domain: procurement
+    process: procurement-process
+    version: "1.0"
+    relationship: related
+    endpoint: "http://127.0.0.1:5288"

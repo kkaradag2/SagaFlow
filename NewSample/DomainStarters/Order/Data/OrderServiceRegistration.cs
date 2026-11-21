@@ -11,7 +11,7 @@ public static class OrderServiceRegistration
             ?? throw new InvalidOperationException("ConnectionStrings:Order is required.");
 
         services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
-        services.AddScoped<PostgreSqlOrderRepository>();
+        services.AddSingleton<PostgreSqlOrderRepository>();
         services.AddScoped<IOrderService, OrderService>();
         return services;
     }
