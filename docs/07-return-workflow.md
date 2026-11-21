@@ -1,5 +1,39 @@
 # Return Domain ve Warehouse participant
 
+## NewSample Return
+
+Mevcut PostgreSQL volume'una `Return` veritabanını eklemek için depo kökünden aşağıdaki komutları çalıştırın. Yeni volume, [SQL betiğini](../NewSample/infrastructure/postgres/init-return.sql) Compose üzerinden otomatik uygular.
+
+```powershell
+Get-Content NewSample/infrastructure/postgres/init-return.sql -Raw | docker compose -f NewSample/compose.yaml exec -T postgres psql -U postgres -d postgres
+dotnet run --project NewSample/DomainStarters/Return
+```
+
+[Swagger](http://127.0.0.1:5187/swagger) üzerinden `POST /returns` isteğinde `orderId`, `customerId`, `amount` ve `items` gönderin. Her kalem `productId` ve `quantity` içerir. Opsiyonel `failStep` Saga komutunun payload'ına eklenir. [Return servisi](../NewSample/DomainStarters/Return/Services/ReturnService.cs) iade ve kalemlerini tek PostgreSQL işleminde kaydeder, ardından SagaFlow'u başlatır. HTTP 201, `returnId`, `orderId`, `sagaInstanceId` ve `GET /returns/{returnId}` adresini döndürür. GET kalıcı kaydı ve Saga durumunu eşleştirir. Başlangıç çağrısı hata verirse API kaydı koruyup HTTP 503 ile iade kimliğini ve varsa Saga kimliğini döndürür. İade kaydı ile Saga başlangıcı ayrı işlemlerdir. Bu aralıkta süreç kesilirse otomatik kurtarma bu PoC kapsamının dışındadır.
+
+[Return YAML](../NewSample/DomainStarters/Return/saga/return-process.yaml) aşağıdaki kabul, ret ve hata yollarını kullanır. Return kendi `return.outcomes` kuyruğunu tüketir. İş verisi `returns`, Saga state'i `sagaflow` şemasındadır. [SagaFlow Dashboard](http://127.0.0.1:5187/sagaflow/) paket üzerinden sunulur. Development profili salt okunur tanım keşfini `http://127.0.0.1:5188` HTTP/2 adresinde açar. Loki seçicisi `{service_name="newsample-return"}` olur.
+
+**Doğrulama, 2026-11-21.** NewSample derlemesi 0 uyarı ve 0 hatayla tamamlandı. Compose yapılandırması, SQL betiğinin mevcut volume'a uygulanması ve tekrar çalışması doğrulandı. İzole RabbitMQ vhost'u ve PostgreSQL veritabanında kontrollü katılımcı sonuçlarıyla kabul ve ret `Completed`, refund öncesi teknik hata `Failed`, refund sonrası teknik hata `ManualReview` iş durumu verdi. Dört kaydın ikişer kalemi ve Saga kimliği PostgreSQL'de eşleştirildi. Tekrar başlatma sonrasında GET aynı sonucu döndürdü. HTTP 201/400/404 ve kontrollü Saga state yazma hatasında HTTP 503 ile `StartUnconfirmed` doğrulandı. Development Swagger, Dashboard, HTTP/2 gRPC `ListDefinitions`, Production publish hostu ve Loki logları sınandı. İlk derleme iki Npgsql parametre yapıcısı yüzünden, ilk smoke koşusu da test istemcisinin mutlak `Location` adresini birleştirmesi yüzünden başarısız oldu. İkisi düzeltilip yeniden doğrulandı.
+
+Return'a özgü Payment, Inventory ve Notification komutları sonraki aşamadadır. Katılımcıların tamamıyla uçtan uca akış, Order BigPicture üzerinden uzak keşif, görsel tarayıcı kontrolü ve tam SagaFlow test paketi çalıştırılmadı.
+
+### NewSample Warehouse
+
+[Warehouse SQL betiği](../NewSample/infrastructure/postgres/init-warehouse.sql) yeni PostgreSQL volume'unda otomatik çalışır. Mevcut volume için depo kökünden şu komutları kullanın.
+
+```powershell
+Get-Content NewSample/infrastructure/postgres/init-warehouse.sql -Raw | docker compose -f NewSample/compose.yaml exec -T postgres psql -U postgres -d postgres
+dotnet run --project NewSample/Participants/Warehouse
+```
+
+[Warehouse Swagger](http://localhost:5091/swagger) üzerinde `GET /inspections/pending` bekleyen kayıtları listeler. `GET /inspections/{returnId}` bir incelemenin durumunu gösterir. `POST /inspections/{returnId}/decision` yalnızca `{"decision":"accept"}` veya `{"decision":"reject"}` kabul eder. RabbitMQ yayını onaylanmışsa HTTP 200, karar saklanıp gönderim bekliyorsa HTTP 202, karşıt bir karar saklanmışsa HTTP 409 döner. [Warehouse controller](../NewSample/Participants/Warehouse/Controllers/InspectionsController.cs).
+
+Warehouse, `warehouse` kuyruğundan gelen `InspectReturn` komutunu ve yanıt bağlamını `Warehouse.inspection.requests` tablosunda saklar. Karar ve outbox kaydı aynı işlemde yazılır. Gönderici, sonucu orijinal `ReplyTo` adresine (`return.outcomes`) yayımlar. Başarısız gönderim aynı mesaj kimliğiyle yeniden denenir. Kabul ve ret başarılı outcome içinde sırasıyla `accepted: true` ve `accepted: false` olarak taşınır. Sonraki adımı Return YAML'ı seçer. `failStep: "warehouse"` inceleme kaydı oluşturmadan teknik hata sonucu döndürür. [Komut işleyici](../NewSample/Participants/Warehouse/Messaging/InspectionCommandHandler.cs), [outbox](../NewSample/Participants/Warehouse/Data/InspectionOutbox.cs), [gönderici](../NewSample/Participants/Warehouse/Messaging/InspectionOutcomePublisher.cs).
+
+**Doğrulama, 2026-11-21.** NewSample derlemesi 0 uyarı ve 0 hatayla tamamlandı. Compose yapılandırması ve SQL betiğinin mevcut volume'a iki kez uygulanması başarılı. İzole RabbitMQ ve PostgreSQL ile çalışan Return ve Warehouse servislerinde bekleyen inceleme yeniden başlatmadan sonra aynı kimlikle okundu. Tekrar teslim edilen komut ve eşzamanlı dört kabul isteği tek inceleme ve tek başarılı outbox gönderimi üretti. Karşıt karar HTTP 409 döndürdü. Yanıt kuyruğu kaldırıldığında ret kararı HTTP 202 ile saklandı. Kuyruk ve servisler geri geldiğinde outbox aynı mesaj kimliğiyle teslim edildi. Saga, kabulde Payment'a, rette ret bildirimine geçti. Bu adımlardan sonraki sonuçlar kontrollü mesajlarla verildi ve her iki Saga `Completed` oldu. Teknik hata, inceleme oluşturmadan Return iş durumunu `Failed`, Saga durumunu `Compensated` yaptı. Swagger karar örnekleri ve HTTP 400/404 yanıtları da doğrulandı.
+
+## Eski örnek
+
 ## Sahiplik ve ilişki
 
 [`SagaFlow.Return`](../samples/ReturnProcess/SagaFlow.Return/Program.cs) kendi `return-process.yaml` tanımını, `return.outcomes` kuyruğunu, InMemory Saga state'ini ve gömülü dashboard'unu barındırır. [`SagaFlow.Order`](../samples/OrderProcess/SagaFlow.Order/Program.cs) ayrı kalır. [`CreateReturnRequest`](../samples/ReturnProcess/SagaFlow.Return/ReturnModels.cs) bir `OrderId` kabul eder; Return kendi `ReturnId` ve Saga instance ID'sini üretir. Order kaydını sorgulama veya sahipliğini doğrulama bu PoC'de yoktur. `OrderId` iş ilişkisi, Saga instance ID ve correlation ID ise ayrı yürütüm kimlikleridir. [`ReturnsController`](../samples/ReturnProcess/SagaFlow.Return/Controllers/ReturnsController.cs) `GET /returns/{returnId}` ile bu kimlikleri ve türetilen iş durumunu verir.

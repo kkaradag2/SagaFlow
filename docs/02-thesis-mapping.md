@@ -64,7 +64,7 @@ Depo kökünden `docker compose -f NewSample/compose.yaml up -d --wait` ile [alt
 
 pgAdmin'de `NewSample PostgreSQL` bağlantısı hazır gelir. Bağlanırken PostgreSQL parolasını girin. Yerel geliştirme parolaları ve ortam değişkenleri için [Compose yapılandırmasına](../NewSample/compose.yaml) bakın.
 
-[OpenTelemetry Collector](../NewSample/infrastructure/observability/otel-collector.yaml) logları Loki'ye, trace'leri Tempo'ya gönderir. Prometheus, Collector'ın sunduğu metrikleri çeker. [Grafana kaynakları](../NewSample/infrastructure/observability/grafana-datasources.yaml) başlangıçta tanımlanır. Order servis logları Collector'a OTLP/gRPC ile gönderilir.
+[OpenTelemetry Collector](../NewSample/infrastructure/observability/otel-collector.yaml) logları Loki'ye, trace'leri Tempo'ya gönderir. Prometheus, Collector'ın sunduğu metrikleri çeker. [Grafana kaynakları](../NewSample/infrastructure/observability/grafana-datasources.yaml) başlangıçta tanımlanır. Order ve Return servis logları Collector'a OTLP/gRPC ile gönderilir. [Return kurulumu ve doğrulama kapsamı](07-return-workflow.md#newsample-return).
 
 ### NewSample Order API
 
@@ -166,6 +166,10 @@ dotnet run --project NewSample/Participants/Shipment
 Güncel [Order YAML](../NewSample/DomainStarters/Order/saga/order-process.yaml), Inventory sonrasında toplam adet 1000'i aşarsa doğrudan ManagerApproval'a gider. 1000 ve altı doğrudan Shipment'a gider. Yönetici onayı Shipment'ı, ret Inventory → Payment → Order telafisini başlatır.
 
 [Shipment katılımcısı](../NewSample/Participants/Shipment/Messaging/ShipmentCommandHandler.cs), `shipment` kuyruğunda `CreateShipment` ve `CancelShipment` komutlarını işler. Örnek gönderi sipariş kimliğiyle saklanır. Başarılı oluşturma sonucundan sonra `SendOrderNotification` komutunu Order hostundaki SagaFlow üretir. Son bildirim başarısızsa telafi Shipment → Inventory → Payment → Order sırasıyla yürür. `failStep: "shipment"`, gönderi kaydı oluşmadan hata senaryosunu çalıştırır.
+
+### NewSample Warehouse
+
+Warehouse, `InspectReturn` komutunu alıp depo kararını PostgreSQL'de saklayan bir ASP.NET Core API ve RabbitMQ tüketicisidir. Kararı `return.outcomes` üzerinden Return Domain Starter'a iletir. [Kurulum, API ve doğrulama](07-return-workflow.md#newsample-warehouse).
 
 ## S8 — Heterogeneous Technology Participation
 
