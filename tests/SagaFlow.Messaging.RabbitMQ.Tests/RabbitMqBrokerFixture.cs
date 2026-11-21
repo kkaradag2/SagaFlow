@@ -18,7 +18,7 @@ public sealed class RabbitMqBrokerFixture : IAsyncLifetime
         {
             var vhost = Environment.GetEnvironmentVariable("SAGAFLOW_RABBITMQ_TEST_VHOST");
             if (string.IsNullOrWhiteSpace(vhost) || vhost == "/")
-                throw new InvalidOperationException("Set SAGAFLOW_RABBITMQ_TEST_VHOST to a dedicated test vhost; use scripts/run-rabbitmq-integration.ps1.");
+                throw new InvalidOperationException("Set SAGAFLOW_RABBITMQ_TEST_VHOST to a dedicated test vhost; use tests/run-rabbitmq-integration.ps1.");
             return vhost;
         }
     }

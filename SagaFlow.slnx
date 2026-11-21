@@ -1,22 +1,22 @@
 <Solution>
-  <Folder Name="/samples/" />
-  <Folder Name="/samples/ProcurementProcess/">
-    <Project Path="samples/ProcurementProcess/SagaFlow.Procurement/SagaFlow.Procurement.csproj" />
+  <Folder Name="/Sample/DomainStarters/">
+    <Project Path="Sample/DomainStarters/Order/Sample.DomainStarters.Order.csproj" />
+    <Project Path="Sample/DomainStarters/Procurement/Sample.DomainStarters.Procurement.csproj" />
+    <Project Path="Sample/DomainStarters/Return/Sample.DomainStarters.Return.csproj" />
   </Folder>
-  <Folder Name="/samples/OrderProcess/">
-    <Project Path="samples/OrderProcess/SagaFlow.Order/SagaFlow.Order.csproj" />
+  <Folder Name="/Sample/Participants/">
+    <Project Path="Sample/Participants/Inventory/Sample.Participants.Inventory.csproj" />
+    <Project Path="Sample/Participants/ManagerApproval/Sample.Participants.ManagerApproval.csproj" />
+    <Project Path="Sample/Participants/Payment/Sample.Participants.Payment.csproj" />
+    <Project Path="Sample/Participants/Shipment/Sample.Participants.Shipment.csproj" />
+    <Project Path="Sample/Participants/Warehouse/Sample.Participants.Warehouse.csproj" />
   </Folder>
-  <Folder Name="/samples/Participants/">
-    <Project Path="samples/Participants/Shared/SagaFlow.SampleParticipant.Messaging.csproj" />
-    <Project Path="samples/Participants/SagaFlow.Payment/SagaFlow.Payment.csproj" />
-    <Project Path="samples/Participants/SagaFlow.Inventory/SagaFlow.Inventory.csproj" />
-    <Project Path="samples/Participants/SagaFlow.Shipment/SagaFlow.Shipment.csproj" />
-    <Project Path="samples/Participants/SagaFlow.Notification/SagaFlow.Notification.csproj" />
-    <Project Path="samples/Participants/SagaFlow.ManagerApproval/SagaFlow.ManagerApproval.csproj" />
-    <Project Path="samples/Participants/SagaFlow.Warehouse/SagaFlow.Warehouse.csproj" />
-  </Folder>
-  <Folder Name="/samples/ReturnProcess/">
-    <Project Path="samples/ReturnProcess/SagaFlow.Return/SagaFlow.Return.csproj" />
+  <Folder Name="/Sample/Participants/Notification/">
+    <File Path="Sample/Participants/Notification/appsettings.json" />
+    <File Path="Sample/Participants/Notification/main.py" />
+    <File Path="Sample/Participants/Notification/requirements.txt" />
+    <File Path="Sample/Participants/Notification/run-notification.ps1" />
+    <File Path="Sample/Participants/Notification/sagaflow_wire.py" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/SagaFlow.Hosting/SagaFlow.Hosting.csproj" />

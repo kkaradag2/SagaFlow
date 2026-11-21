@@ -60,7 +60,7 @@ public sealed class CrossProcessDefinitionDiscoveryTests
         finally { Directory.Delete(directory, true); }
     }
 
-    /// <summary>Runs the existing sample, captures readiness, and kills the process tree on every exit path.</summary>
+    /// <summary>Runs a test-only publisher in a separate OS process.</summary>
     private sealed class PublisherProcess : IAsyncDisposable
     {
         private readonly Process _process;
@@ -75,15 +75,13 @@ public sealed class CrossProcessDefinitionDiscoveryTests
 
         private PublisherProcess(string directory)
         {
-            var host = Path.Combine(AppContext.BaseDirectory, "DiscoveryProcessFixture", "SagaFlow.Order.dll");
-            if (!File.Exists(host)) throw new FileNotFoundException("Build the hosting tests to copy the sample process fixture.", host);
+            var host = typeof(DefinitionPublisherProgram).Assembly.Location;
             var start = new ProcessStartInfo(Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet")
             {
                 WorkingDirectory = Path.GetDirectoryName(host)!, RedirectStandardOutput = true, RedirectStandardError = true,
                 UseShellExecute = false, CreateNoWindow = true
             };
             foreach (var argument in new[] { host, "--urls", "http://127.0.0.1:0", "--Kestrel:EndpointDefaults:Protocols", "Http2",
-                "--RabbitMq:Enabled", "false",
                 "--SagaFlow:Publication:Enabled", "true", "--SagaFlow:Publication:IncludeBigPictureSources", "true",
                 "--SagaFlow:DefinitionPath", Path.Combine(directory, "purchase.yaml"), "--Logging:LogLevel:Microsoft.Hosting.Lifetime", "Information" }) start.ArgumentList.Add(argument);
             _process = new() { StartInfo = start, EnableRaisingEvents = true };

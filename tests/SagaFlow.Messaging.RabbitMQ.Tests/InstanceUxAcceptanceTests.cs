@@ -123,7 +123,8 @@ public sealed partial class ProcessInvocationIntegrationTests
                 var manifestPath = Path.Combine(evidence, "manifest.json");
                 await File.WriteAllTextAsync(manifestPath, JsonSerializer.Serialize(manifest));
                 browser = Process.Start(new ProcessStartInfo("node") { WorkingDirectory = root, UseShellExecute = false, CreateNoWindow = true,
-                    RedirectStandardOutput = true, RedirectStandardError = true, ArgumentList = { "scripts/verify-instance-ux.mjs", manifestPath } })!;
+                    RedirectStandardOutput = true, RedirectStandardError = true,
+                    ArgumentList = { "tests/SagaFlow.Messaging.RabbitMQ.Tests/verify-instance-ux.mjs", manifestPath } })!;
                 stdout = browser.StandardOutput.ReadToEndAsync(); stderr = browser.StandardError.ReadToEndAsync();
                 var limit = DateTime.UtcNow.AddSeconds(90);
                 while (!File.Exists(signal) && !browser.HasExited && DateTime.UtcNow < limit) await Task.Delay(25);

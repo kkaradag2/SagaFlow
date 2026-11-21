@@ -214,7 +214,8 @@ public sealed partial class ProcessInvocationIntegrationTests
             if (useBrowser)
             {
                 browser = Process.Start(new ProcessStartInfo("node") { WorkingDirectory = RepoRoot(), UseShellExecute = false, CreateNoWindow = true,
-                    RedirectStandardOutput = true, RedirectStandardError = true, ArgumentList = { "scripts/verify-bigpicture-ux.mjs", manifestPath } })!;
+                    RedirectStandardOutput = true, RedirectStandardError = true,
+                    ArgumentList = { "tests/SagaFlow.Messaging.RabbitMQ.Tests/verify-bigpicture-ux.mjs", manifestPath } })!;
                 stdout = browser.StandardOutput.ReadToEndAsync(); stderr = browser.StandardError.ReadToEndAsync();
             }
             async Task Checkpoint(string name, Func<Task> action)
