@@ -13,6 +13,7 @@ services:
       - ./infrastructure/postgres/init-payment.sql:/docker-entrypoint-initdb.d/02-init-payment.sql:ro
       - ./infrastructure/postgres/init-inventory.sql:/docker-entrypoint-initdb.d/03-init-inventory.sql:ro
       - ./infrastructure/postgres/init-manager-approval.sql:/docker-entrypoint-initdb.d/04-init-manager-approval.sql:ro
+      - ./infrastructure/postgres/init-shipment.sql:/docker-entrypoint-initdb.d/05-init-shipment.sql:ro
     healthcheck:
       test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "postgres"]
       interval: 5s
