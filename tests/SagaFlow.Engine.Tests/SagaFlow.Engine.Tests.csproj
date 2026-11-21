@@ -26,7 +26,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\..\samples\OrderProcess\SagaFlow.Order\saga\order-process.yaml" Link="order-process.yaml" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\Fixtures\order-process.yaml" Link="order-process.yaml" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

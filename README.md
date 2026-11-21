@@ -4,7 +4,7 @@ SagaFlow.Net is a lightweight .NET library and embedded dashboard for defining, 
 
 SagaFlow.Net is developed as the software artifact of the thesis titled "A Local-Orchestration-Based Reference Architecture for Hybrid Saga Coordination in Microservice Architectures."
 
-Current status: SagaFlow loads YAML definitions, optionally discovers definitions through gRPC, and coordinates Saga execution and compensation inside the Domain Starter. Applications select InMemory or PostgreSQL for coordination state and can enable RabbitMQ for messaging. See [local coordination and state semantics](docs/04-local-saga-coordination.md) and [definition/discovery documentation](docs/03-yaml-definition-discovery.md).
+Current status: SagaFlow loads YAML definitions, optionally discovers definitions through gRPC, and coordinates Saga execution and compensation inside the Domain Starter. Applications select InMemory or PostgreSQL for coordination state and can enable RabbitMQ for messaging.
 
 SagaFlow does not require a separately deployed orchestration server. The engine is embedded into the domain starter microservice through the hosting integration.
 
@@ -17,20 +17,15 @@ src/
   SagaFlow.Hosting/
   SagaFlow.Dashboard/
   SagaFlow.Dashboard.Client/
-samples/
-  OrderProcess/SagaFlow.Order/
-  ProcurementProcess/SagaFlow.Procurement/
-  Participants/SagaFlow.Payment/
-  Participants/SagaFlow.Inventory/
-  Participants/SagaFlow.Shipment/
-  Participants/SagaFlow.Notification/
+Sample/
+  DomainStarters/
+  Participants/
+  Sample.slnx
 tests/
   SagaFlow.Core.Tests/
   SagaFlow.Engine.Tests/
   SagaFlow.Hosting.Tests/
   SagaFlow.Samples.Tests/
-docs/
-  02-thesis-mapping.md
 ```
 
 ## Project Mapping
@@ -40,9 +35,8 @@ docs/
 - `SagaFlow.Hosting`: in-process ASP.NET Core integration.
 - `SagaFlow.Dashboard`: embedded dashboard asset host.
 - `SagaFlow.Dashboard.Client`: React/Vite dashboard source.
-- `SagaFlow.Order`: OrderProcess Domain Starter and `POST /orders` API.
-- `SagaFlow.Procurement`: purchase-request Domain Starter; reuses ManagerApproval, then invokes Order through RabbitMQ. [Run instructions and boundaries](docs/06-manager-approval-sample.md#s2-7a-procurement--order-poc).
-- `SagaFlow.Payment`, `SagaFlow.Inventory`, `SagaFlow.Shipment`, `SagaFlow.Notification`: independent participant Worker Services using business-only JSON and AMQP execution metadata, without a SagaFlow runtime/SDK dependency. [BPI-1A wire contract](docs/04-local-saga-coordination.md#bpi-1a-dil-bağımsız-participant-wire-sözleşmesi).
+- `Sample/DomainStarters`: Order, Return, and Procurement APIs with embedded SagaFlow.
+- `Sample/Participants`: independent .NET participants and the Python Notification worker. They use business JSON and AMQP execution metadata.
 
 ## Feature Model Alignment
 
@@ -77,7 +71,7 @@ Select exactly one storage provider. Reference `SagaFlow.Storage.InMemory` and i
 `SagaFlow.Storage.InMemory.DependencyInjection` to call `options.Storage.UseInMemory()`.
 PostgreSQL initializes and validates its schema before hosted services start.
 RabbitMQ accepts an `amqp://` or `amqps://` connection URI. A host can omit messaging
-when it only loads or publishes definitions. The Order, Return, and Procurement samples select PostgreSQL in code; their `ConnectionStrings:SagaFlow` settings determine the database. Use `scripts/run-sample-postgresql.ps1` for the normal sample setup.
+when it only loads or publishes definitions. The Order, Return, and Procurement samples select PostgreSQL in code. Start the sample infrastructure with `docker compose -f Sample/compose.yaml up -d` and launch the sample projects from `SagaFlow.slnx` or `Sample/Sample.slnx`.
 
 `options.UseDashboard()` automatically exposes the read-only UI, API, and SignalR hub
 at `/sagaflow`. Set a custom prefix with `options.UseDashboard(dashboard => dashboard.Path = "/admin/sagas")`.
