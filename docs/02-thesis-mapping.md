@@ -43,15 +43,15 @@ BPI-1C: external coordination completion business Result üretmez; step status/t
 
 ## NewSample iskeleti
 
-[NewSample](../NewSample/NewSample.slnx), mevcut prototipin yanında üç bağımsız Domain Starter ve altı katılımcı için uygulama iskeletini içerir. Order, Return ve Procurement .NET 10 ASP.NET Core hostlarıdır. Payment, Inventory, Shipment, ManagerApproval ve Warehouse .NET 10 konsollarıdır. [Notification](../NewSample/Participants/Notification/main.py), `python NewSample/Participants/Notification/main.py` ile çalıştırılan bağımsız Python konsoludur.
+[NewSample](../NewSample/NewSample.slnx), mevcut prototipin yanında üç bağımsız Domain Starter ve altı katılımcı için uygulamaları içerir. Order, Return ve Procurement .NET 10 ASP.NET Core hostlarıdır. ManagerApproval bir ASP.NET Core API, Payment, Inventory, Shipment ve Warehouse .NET 10 konsollarıdır. [Notification](../NewSample/Participants/Notification/main.py), `python NewSample/Participants/Notification/main.py` ile çalıştırılan bağımsız Python konsoludur.
 
 .NET proje adları mimarideki rolleri izler. Domain Starter'lar `Sample.DomainStarters.<Domain>`, katılımcılar `Sample.Participants.<Participant>` biçimini kullanır.
 
-Order kendi Saga tanımını yükler, PostgreSQL durum deposunu ve RabbitMQ taşımasını kaydeder ve Dashboard'u sunar. Payment ve Inventory, Order Saga'nın ödeme ve stok komutlarını RabbitMQ üzerinden işler. Diğer katılımcıların mesaj akışı ve gRPC keşfi sonraki uygulama aşamasındadır. [Derleme ve başlangıç doğrulaması](01-PROJECT_STATUS.md#newsample-iskeleti).
+Order kendi Saga tanımını yükler, PostgreSQL durum deposunu ve RabbitMQ taşımasını kaydeder ve Dashboard'u sunar. Payment, Inventory ve ManagerApproval, Order Saga'nın ödeme, stok ve onay komutlarını RabbitMQ üzerinden işler. Diğer katılımcıların mesaj akışı ve gRPC keşfi sonraki uygulama aşamasındadır. [Derleme ve başlangıç doğrulaması](01-PROJECT_STATUS.md#newsample-iskeleti).
 
 ### NewSample yerel altyapısı
 
-Depo kökünden `docker compose -f NewSample/compose.yaml up -d --wait` ile [altyapıyı](../NewSample/compose.yaml) başlatın. Paylaşılan PostgreSQL instance'ında Order, Payment ve Inventory kendi veritabanlarını kullanır. Return ve Procurement veritabanları ileride eklenecek.
+Depo kökünden `docker compose -f NewSample/compose.yaml up -d --wait` ile [altyapıyı](../NewSample/compose.yaml) başlatın. Paylaşılan PostgreSQL instance'ında Order, Payment, Inventory ve ManagerApproval kendi veritabanlarını kullanır. Return ve Procurement veritabanları ileride eklenecek.
 
 | Servis | Varsayılan yerel adres | Kullanıcı |
 |---|---|---|
@@ -127,6 +127,19 @@ dotnet run --project NewSample/Participants/Inventory
 Temiz veritabanında `sku-1` ve `sku-2` için 100'er, `sku-bulk` için 2000, `sku-limited` için 5 adet örnek stok bulunur. Betik tekrar çalıştırıldığında mevcut stokları korur.
 
 [Inventory ayarları](../NewSample/Participants/Inventory/appsettings.json) ile worker `inventory` kuyruğundan `ReserveInventory` ve `ReleaseInventory` alır. Başarılı rezervasyonda aynı ürüne ait kalemler toplanır ve bütün stok hareketleri tek işlemde kaydedilir. Stok yetersizliği veya `failStep: "inventory"` durumunda Payment iade edilir ve Order iptal olur. Rezervasyon sonrasındaki hatada akış önce stoğu geri ekler, sonra Payment ve Order'ı iptal eder. Rezervasyon kayıtları `Reserved` veya `Released` olarak saklanır. Tekrar teslim stok miktarını ikinci kez değiştirmez.
+
+### NewSample ManagerApproval
+
+[ManagerApproval kurulum betiği](../NewSample/infrastructure/postgres/init-manager-approval.sql) yeni volume'da otomatik çalışır. Mevcut volume ile depo kökünden şu komutları kullanın.
+
+```powershell
+Get-Content NewSample/infrastructure/postgres/init-manager-approval.sql -Raw | docker compose -f NewSample/compose.yaml exec -T postgres psql -U postgres -d postgres
+dotnet run --project NewSample/Participants/ManagerApproval
+```
+
+[Swagger](http://localhost:5090/swagger) Development ortamında açılır. `GET /approvals/pending` üzerinden `approvalId` seçin. `POST /approvals/{approvalId}/decision` için Swagger'daki **Examples** menüsünden `{"decision":"approve"}` veya `{"decision":"reject"}` gövdesini seçebilirsiniz. Karar kaydedilip RabbitMQ onayı bekleniyorsa 202 döner ve `Location` başlığındaki `GET /approvals/{approvalId}` ile durum izlenir. Broker onayı kaydedildiğinde aynı karar 200, ters karar 409 döndürür.
+
+[Onay handler'ı](../NewSample/Participants/ManagerApproval/Messaging/ApprovalCommandHandler.cs), ACK öncesinde talebi ve orijinal RabbitMQ yanıt bağlamını saklar. Karar ve outbox aynı PostgreSQL işleminde kaydedilir. [Gönderici](../NewSample/Participants/ManagerApproval/Messaging/ApprovalOutcomePublisher.cs), orijinal `ReplyTo` kuyruğuna ve aynı outbox mesaj kimliğiyle `RequestManagerApprovalCompleted` gönderir. Hem onay hem ret için `sf-outcome=success` kullanılır. `approved: true` Shipment'a, `approved: false` Inventory → Payment → Order telafisine gider.
 
 ## S8 — Heterogeneous Technology Participation
 

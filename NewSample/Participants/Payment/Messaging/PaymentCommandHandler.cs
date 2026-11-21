@@ -7,7 +7,7 @@ namespace Sample.Participants.Payment.Messaging;
 
 internal sealed class PaymentCommandHandler(PaymentService payments) : IParticipantCommandHandler
 {
-    public async Task<ParticipantOutcome> HandleAsync(ParticipantCommand command, CancellationToken cancellationToken)
+    public async Task<ParticipantOutcome?> HandleAsync(ParticipantCommand command, string replyTo, CancellationToken cancellationToken)
     {
         Guid orderId;
         string? error;

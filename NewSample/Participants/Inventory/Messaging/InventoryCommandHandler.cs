@@ -8,7 +8,7 @@ namespace Sample.Participants.Inventory.Messaging;
 
 internal sealed class InventoryCommandHandler(InventoryService inventory) : IParticipantCommandHandler
 {
-    public async Task<ParticipantOutcome> HandleAsync(ParticipantCommand command, CancellationToken cancellationToken)
+    public async Task<ParticipantOutcome?> HandleAsync(ParticipantCommand command, string replyTo, CancellationToken cancellationToken)
     {
         switch (command.Name, command.Headers.IsCompensation)
         {
