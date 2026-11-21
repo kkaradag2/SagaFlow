@@ -47,7 +47,7 @@ BPI-1C: external coordination completion business Result üretmez; step status/t
 
 .NET proje adları mimarideki rolleri izler. Domain Starter'lar `Sample.DomainStarters.<Domain>`, katılımcılar `Sample.Participants.<Participant>` biçimini kullanır.
 
-Order kendi Saga tanımını yükler, PostgreSQL durum deposunu ve RabbitMQ taşımasını kaydeder ve Dashboard'u sunar. Payment, Inventory ve ManagerApproval, Order Saga'nın ödeme, stok ve onay komutlarını RabbitMQ üzerinden işler. Diğer katılımcıların mesaj akışı ve gRPC keşfi sonraki uygulama aşamasındadır. [Derleme ve başlangıç doğrulaması](01-PROJECT_STATUS.md#newsample-iskeleti).
+Order kendi Saga tanımını yükler, PostgreSQL durum deposunu ve RabbitMQ taşımasını kaydeder ve Dashboard'u sunar. Payment, Inventory, Notification ve ManagerApproval Order Saga'nın ödeme, stok, bildirim ve onay komutlarını RabbitMQ üzerinden işler. Diğer katılımcıların mesaj akışı ve gRPC keşfi sonraki uygulama aşamasındadır. [Derleme ve başlangıç doğrulaması](01-PROJECT_STATUS.md#newsample-iskeleti).
 
 ### NewSample yerel altyapısı
 
@@ -140,6 +140,19 @@ dotnet run --project NewSample/Participants/ManagerApproval
 [Swagger](http://localhost:5090/swagger) Development ortamında açılır. `GET /approvals/pending` üzerinden `approvalId` seçin. `POST /approvals/{approvalId}/decision` için Swagger'daki **Examples** menüsünden `{"decision":"approve"}` veya `{"decision":"reject"}` gövdesini seçebilirsiniz. Karar kaydedilip RabbitMQ onayı bekleniyorsa 202 döner ve `Location` başlığındaki `GET /approvals/{approvalId}` ile durum izlenir. Broker onayı kaydedildiğinde aynı karar 200, ters karar 409 döndürür.
 
 [Onay handler'ı](../NewSample/Participants/ManagerApproval/Messaging/ApprovalCommandHandler.cs), ACK öncesinde talebi ve orijinal RabbitMQ yanıt bağlamını saklar. Karar ve outbox aynı PostgreSQL işleminde kaydedilir. [Gönderici](../NewSample/Participants/ManagerApproval/Messaging/ApprovalOutcomePublisher.cs), orijinal `ReplyTo` kuyruğuna ve aynı outbox mesaj kimliğiyle `RequestManagerApprovalCompleted` gönderir. Hem onay hem ret için `sf-outcome=success` kullanılır. `approved: true` Shipment'a, `approved: false` Inventory → Payment → Order telafisine gider.
+
+### NewSample Notification
+
+Depo kökünden [Python bağımlılığını](../NewSample/Participants/Notification/requirements.txt) kurup katılımcıyı başlatın.
+
+```powershell
+python -m pip install -r NewSample/Participants/Notification/requirements.txt
+python NewSample/Participants/Notification/main.py
+```
+
+[RabbitMQ ayarları](../NewSample/Participants/Notification/appsettings.json) `managerNotification` kuyruğunda `NotifyManager`, `notification` kuyruğunda `SendOrderNotification` eşlemesini tanımlar. Bağlantı `SAGAFLOW_NOTIFICATION_AMQP_URL` ile geçersiz kılınabilir. [Python katılımcısı](../NewSample/Participants/Notification/main.py) bildirimi terminalde simüle eder. Order isteğinde `failStep` ilgili adımla eşleşirse başarısız outcome üretir.
+
+[Mesaj göndericisi](../NewSample/Participants/Notification/sagaflow_wire.py) sonucu komutun orijinal `ReplyTo` adresine, Order için `order.outcomes` kuyruğuna, RabbitMQ onayıyla yayımlar. Bildirim komutu bu onaydan sonra ACK alır. SagaFlow, Order hostunda sonucu işler ve YAML'a göre yeni yönetici onay komutunu üretir, Saga'yı tamamlar veya telafiyi başlatır.
 
 ## S8 — Heterogeneous Technology Participation
 
